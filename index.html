@@ -1,0 +1,1739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>DNC vs D.T.J.</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+  canvas { display: block; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// Safe ellipse wrapper — ctx.ellipse needs 7 args, this handles the translate/scale approach
+function ell(x, y, rx, ry, rot, s, e) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  ctx.scale(rx, ry);
+  ctx.arc(0, 0, 1, s, e);
+  ctx.restore();
+}
+const W = 480, H = 854;
+let scale = 1;
+
+function resize() {
+  scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+  canvas.width = W; canvas.height = H;
+  canvas.style.width = W * scale + 'px';
+  canvas.style.height = H * scale + 'px';
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ─────────────────────────────────────────────
+//  GAME LAYOUT DATA
+// ─────────────────────────────────────────────
+const PLAT_H = 14;
+const platforms = [
+  { x:  0,  y: 790, w: 480, h: PLAT_H, tilt: 0,    dir:  1 }, // floor — full width, no drops
+  { x: 80,  y: 660, w: 400, h: PLAT_H, tilt:-2.5,  dir: -1 }, // R2 — extends to right edge
+  { x: 10,  y: 530, w: 370, h: PLAT_H, tilt: 2.5,  dir:  1 }, // R3
+  { x: 80,  y: 400, w: 370, h: PLAT_H, tilt:-2.5,  dir: -1 }, // R4
+  { x: 10,  y: 270, w: 370, h: PLAT_H, tilt: 2.5,  dir:  1 }, // R5
+  { x: 60,  y: 140, w: 360, h: PLAT_H, tilt: 0,    dir:  1 }, // TOP
+];
+const ladders = [
+  { x:  80, y: 672, h: 118 },  // [0] floor->P1 left  — moved x:60->80, now inside P1
+  { x: 370, y: 672, h: 118 },  // [1] floor->P1 right — unchanged
+  { x: 120, y: 548, h: 118 },  // [2] P1->P2          — y:542->548, base flush with P1
+  { x: 340, y: 419, h: 118 },  // [3] P2->P3          — y:412->419, base flush with P2
+  { x:  90, y: 289, h: 118 },  // [4] P3->P4          — y:282->289, base flush with P3
+  { x: 350, y: 159, h: 118 },  // [5] P4->TOP         — y:152->159, base flush with P4
+];
+const LADDER_W = 24;
+const TOP = platforms[5];
+const FLOOR = platforms[0];
+
+// ─────────────────────────────────────────────
+//  STATE MACHINE
+// ─────────────────────────────────────────────
+// INTRO_BLACK → INTRO_TITLE → INTRO_ESCALATOR → INTRO_STAIRS
+// → INTRO_TAUNT → INTRO_SHATTER → GAMEPLAY
+let state = 'INTRO_BLACK', stateT = 0, totalT = 0;
+let skipDone = false;
+
+function skipToGame() {
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; }
+}
+
+// ─────────────────────────────────────────────
+//  INPUT
+// ─────────────────────────────────────────────
+const keys = {};
+const GAME_KEYS = new Set(['ArrowLeft','ArrowRight','Space','KeyA','KeyZ']);
+window.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (GAME_KEYS.has(e.code)) e.preventDefault();
+  if (state !== 'GAMEPLAY') skipToGame();
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// Touch state
+const touch = { left:false, right:false, climbUp:false, climbDown:false, jump:false };
+const activeTouches = {};
+
+// ─────────────────────────────────────────────
+//  PLAYER STATE
+// ─────────────────────────────────────────────
+const GRAVITY   = 1400;
+const JUMP_VY   = -560;
+const WALK_SPD  = 130;
+const CLIMB_SPD = 110;
+
+const player = {
+  x: FLOOR.x + 60,
+  y: FLOOR.y - 1,  // just above surface so physics settles correctly
+  vx: 0, vy: 0,
+  onGround: false,
+  onLadder: false,
+  facing: 1,
+  walkT: 0,
+  ladderCooldown: 0,
+};
+
+// ─────────────────────────────────────────────
+//  PHYSICS HELPERS
+// ─────────────────────────────────────────────
+function getPlatY(plat, px) {
+  const mid = plat.x + plat.w / 2;
+  const rad = plat.tilt * Math.PI / 180;
+  return plat.y + Math.tan(rad) * (px - mid);
+}
+
+// Can player grab this ladder? Must be near the ladder's BASE platform surface.
+function ladderAtBase(px, py) {
+  for (const lad of ladders) {
+    const ladCx = lad.x + LADDER_W / 2;
+    if (Math.abs(px - ladCx) > LADDER_W * 0.8) continue;
+    // Find the platform at the bottom of this ladder
+    for (const plat of platforms) {
+      if (px < plat.x - 2 || px > plat.x + plat.w + 2) continue;
+      const platY = getPlatY(plat, px);
+      // This platform is at the base of the ladder if its surface is near lad.y+h
+      if (Math.abs(platY - (lad.y + lad.h)) < 20) {
+        // Player must be standing on that platform
+        if (Math.abs(py - platY) < 12) return lad;
+      }
+    }
+  }
+  return null;
+}
+
+// Is player currently within a ladder's climbable range?
+// Match the FULL ladder height — from lad.y all the way to lad.y+h
+// Exit conditions are handled explicitly in updatePlayer
+function ladderContaining(px, py) {
+  for (const lad of ladders) {
+    const ladCx = lad.x + LADDER_W / 2;
+    if (Math.abs(px - ladCx) > LADDER_W * 0.8) continue;
+    // Full range: top to base
+    if (py >= lad.y - 26 && py <= lad.y + lad.h + 8) return lad;
+  }
+  return null;
+}
+
+// Platform is SOLID to walking player always.
+// When climbing, open a gap at the ladder's x ONLY for the platform
+// that the ladder BASE sits on (the one the player is climbing FROM).
+// The destination platform (top of ladder) stays solid until the explicit
+// top-exit snaps the player onto it.
+function platSolidAt(px, plat, climbing) {
+  if (!climbing) return true;
+  for (const lad of ladders) {
+    const ladCx = lad.x + LADDER_W / 2;
+    if (Math.abs(px - ladCx) > LADDER_W * 0.65) continue;
+    const platYatLad = getPlatY(plat, ladCx);
+    // Open gap for ANY platform the ladder passes through vertically
+    // (base platform, destination platform, or any mid-platform)
+    if (platYatLad >= lad.y - 10 && platYatLad <= lad.y + lad.h + 10) return false;
+  }
+  return true;
+}
+
+// ─────────────────────────────────────────────
+//  UPDATE PLAYER
+// ─────────────────────────────────────────────
+function updatePlayer(dt) {
+  const left   = keys['ArrowLeft']  || touch.left;
+  const right  = keys['ArrowRight'] || touch.right;
+  const climbU = keys['KeyA']       || touch.climbUp;
+  const climbD = keys['KeyZ']       || touch.climbDown;
+  const doJump = keys['Space']      || touch.jump;
+
+  // Tick cooldown
+  if (player.ladderCooldown > 0) player.ladderCooldown -= dt;
+
+  // ══════════════════════════════════════════
+  //  CLIMB STATE
+  // ══════════════════════════════════════════
+  if (player.onLadder) {
+    const lad = ladderContaining(player.x, player.y);
+
+    if (!lad) {
+      player.onLadder = false;
+      // fall through to walk state
+    } else {
+      // Lock x to ladder center
+      player.x = lad.x + LADDER_W / 2;
+
+      // Vertical movement
+      if (climbU)      player.y -= CLIMB_SPD * dt;
+      else if (climbD) player.y += CLIMB_SPD * dt;
+      if (climbU || climbD) player.walkT += dt;
+
+      // Jump off ladder
+      if (doJump) {
+        player.onLadder = false;
+        player.vy = JUMP_VY;
+        player.ladderCooldown = 0.3;
+        return;
+      }
+
+      // ── TOP EXIT: player reached the top of the ladder ──
+      if (player.y <= lad.y + 4) {
+        // Find destination platform — generous x margin so edge ladders find their platform
+        let snapY = lad.y;
+        let bestDiff = 999;
+        for (const plat of platforms) {
+          if (player.x < plat.x - 16 || player.x > plat.x + plat.w + 16) continue;
+          const py = getPlatY(plat, player.x);
+          if (py > lad.y + 6) continue; // must be at or above ladder top
+          const diff = Math.abs(py - lad.y);
+          if (diff < bestDiff) { bestDiff = diff; snapY = py; }
+        }
+        player.y = snapY;
+        player.vy = 0;
+        player.onLadder = false;
+        player.onGround = true;
+        player.ladderCooldown = 0.5;
+        return;
+      }
+
+      // ── BOTTOM EXIT: player reached the base of the ladder ──
+      if (player.y >= lad.y + lad.h - 2) {
+        // Snap to the platform below
+        let snapY = lad.y + lad.h;
+        for (const plat of platforms) {
+          if (player.x < plat.x - 4 || player.x > plat.x + plat.w + 4) continue;
+          const py = getPlatY(plat, player.x);
+          if (Math.abs(py - (lad.y + lad.h)) < 15) { snapY = py; break; }
+        }
+        player.y = snapY;
+        player.vy = 0;
+        player.onLadder = false;
+        player.onGround = true;
+        player.ladderCooldown = 0.2;
+        return;
+      }
+
+      return; // stay in climb state
+    }
+  }
+
+  // ══════════════════════════════════════════
+  //  WALK STATE
+  // ══════════════════════════════════════════
+
+  // Horizontal movement
+  if (left)       { player.vx = -WALK_SPD; player.facing = -1; }
+  else if (right) { player.vx =  WALK_SPD; player.facing =  1; }
+  else            { player.vx = 0; }
+
+  // Grab ladder at base (A pressed, cooldown clear)
+  // Don't require onGround strictly — player may be on tilted platform edge
+  if (climbU && player.ladderCooldown <= 0) {
+    const lad = ladderAtBase(player.x, player.y);
+    if (lad) {
+      player.onLadder = true;
+      player.x = lad.x + LADDER_W / 2;
+      player.vx = 0;
+      player.vy = 0;
+      return;
+    }
+  }
+
+  // Jump
+  if (doJump && player.onGround) {
+    player.vy = JUMP_VY;
+    player.onGround = false;
+  }
+
+  // Gravity
+  player.vy += GRAVITY * dt;
+  player.vy = Math.min(player.vy, 900); // terminal velocity
+
+  // Integrate position
+  player.x += player.vx * dt;
+  player.y += player.vy * dt;
+
+  // ── PLATFORM COLLISION ──────────────────────
+  // Platforms are SOLID to walking player.
+  // Gap only opens at ladder x when player.onLadder.
+  player.onGround = false;
+  for (const plat of platforms) {
+    // Horizontal bounds check
+    if (player.x < plat.x - 2 || player.x > plat.x + plat.w + 2) continue;
+
+    const platY = getPlatY(plat, player.x);
+    const prevY = player.y - player.vy * dt;
+
+    // Only collide when moving downward (or standing still)
+    if (player.vy < 0) continue;
+
+    // Player must have been ABOVE platform last frame
+    if (prevY > platY + 1) continue;  // was below — skip (already passed through)
+
+    // Player must have reached or crossed platform surface this frame
+    if (player.y < platY - 1) continue;  // hasn't reached yet
+
+    // Is platform solid here?
+    if (!platSolidAt(player.x, plat, player.onLadder)) continue;
+
+    // LAND
+    player.y = platY;
+    player.vy = 0;
+    player.onGround = true;
+    break;
+  }
+
+  // Screen bounds
+  player.x = Math.max(8, Math.min(W - 8, player.x));
+
+  // Ceiling
+  if (player.y < 40) { player.y = 40; player.vy = 0; }
+
+  // Fell off bottom — respawn
+  if (player.y > H + 50) {
+    player.x = FLOOR.x + 60;
+    player.y = FLOOR.y;
+    player.vy = 0;
+    player.onGround = true;
+    player.ladderCooldown = 0;
+  }
+
+  if (player.vx !== 0 && player.onGround) player.walkT += dt;
+}
+
+// ─────────────────────────────────────────────
+//  STARS
+// ─────────────────────────────────────────────
+const stars = Array.from({ length: 80 }, () => ({
+  x: Math.random() * W, y: Math.random() * H * 0.7,
+  r: Math.random() * 1.6 + 0.2, a: Math.random()
+}));
+
+// ─────────────────────────────────────────────
+//  PARTICLES
+// ─────────────────────────────────────────────
+let particles = [];
+function boom(x, y, n = 30, big = false) {
+  const cols = ['#ff6600','#ffcc00','#ff3300','#ffffff','#ff8800'];
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const spd = (big ? 220 : 130) + Math.random() * 100;
+    particles.push({ x, y, vx: Math.cos(a)*spd, vy: Math.sin(a)*spd - (big?60:0),
+      life: 1, decay: 0.7 + Math.random() * 0.5,
+      r: (big ? 7 : 3) + Math.random() * 4,
+      color: cols[Math.floor(Math.random() * cols.length)] });
+  }
+}
+
+// ─────────────────────────────────────────────
+//  BRICK TUMBLE  (shatter transition)
+// ─────────────────────────────────────────────
+let bricks = [];
+let shakeAmt = 0;
+
+function initBricks() {
+  bricks = [];
+  // Bricks cascade FROM DTJ's feet (TOP platform) DOWN through each platform
+  // Each platform level = one cascade wave, top to bottom
+  // This makes the platforms look like ruins of the building structure
+
+  const platLevels = [
+    TOP,           // wave 0 — starts at DTJ's feet
+    platforms[4],  // wave 1
+    platforms[3],  // wave 2
+    platforms[2],  // wave 3
+    platforms[1],  // wave 4
+    platforms[0],  // wave 5 — floor
+  ];
+
+  platLevels.forEach((plat, wave) => {
+    const bw = 38, bh = 16;
+    const cols = Math.floor(plat.w / bw) + 2;
+    for (let col = 0; col < cols; col++) {
+      const localX = col * bw - 4;
+      const bx = plat.x + localX;
+      // Tilt-adjusted y at this x position
+      const mid = plat.x + plat.w / 2;
+      const rad = plat.tilt * Math.PI / 180;
+      const by = plat.y + Math.tan(rad) * (bx - mid);
+
+      bricks.push({
+        x: bx,
+        startY: by,
+        y: by,
+        w: bw - 2, h: bh - 2,
+        // Cascade outward from center — inner bricks fall first
+        vx: (col - cols/2) * 12 + (Math.random()-0.5) * 40,
+        vy: 0,
+        rot: 0,
+        rotV: (Math.random()-0.5) * 6,
+        // Delay cascades: wave controls which platform, col controls inside-out order
+        // Inner columns (closer to center) go first within each wave
+        delay: wave * 0.25 + Math.abs(col - cols/2) * 0.03 + Math.random()*0.05,
+        active: false,
+        wave,
+        color: `hsl(${35+wave*8},${22+Math.random()*18}%,${42+Math.random()*18}%)`
+      });
+    }
+  });
+}
+
+// ─────────────────────────────────────────────
+//  ESCALATOR INTRO STATE
+// ─────────────────────────────────────────────
+// DTJ walks from right → steps on escalator → rides up (escalator covers him like a tube)
+let esc = { x: W + 60, y: H - 110, phase: 'walk', t: 0, progress: 0, armSwing: 0 };
+
+// ─────────────────────────────────────────────
+//  STAIRS INTRO STATE
+// ─────────────────────────────────────────────
+// DTJ walks from bottom-left → center → up the stairs
+let stairsPhase = 'walk'; // 'walk' | 'climb' | 'top'
+let stairsX = -60, stairsY = H - 110, stairsStep = 0, stairsT = 0;
+const STAIR_TOP_X = W / 2 - 10, STAIR_TOP_Y = 320; // top of stairs = BLDG_BASE
+const STAIR_MID_X = W / 2 - 10; // where he stops before climbing
+
+// Arm raise for taunt
+let tauntArm = 0, tauntBubble = 0;
+
+// Shatter progress
+let shatterT = 0, rampReveal = 0, buildingFade = 1;
+
+// Zoom state for INTRO_STAIRS — uniform scale, center-anchored
+// At s=1.506: stair top (y=320) → screen y=140 (=TOP.y), center X stays at W/2=240
+// ox = W/2*(1-s) keeps building centered horizontally
+let zoomS = 0.9, zoomOy = 0, zoomOx = 24;
+const ZOOM_S_START  = 0.9,   ZOOM_OX_START = 24,    ZOOM_OY_START = 0;
+const ZOOM_S_END    = 1.506,  ZOOM_OX_END   = -121,  ZOOM_OY_END   = -342;
+
+// ─────────────────────────────────────────────
+//  TICKER
+// ─────────────────────────────────────────────
+const TICKER = 'FAKE NEWS!   TOTAL WITCH HUNT   GREATEST ECONOMY EVER   VERY STABLE GENIUS   PERFECT PHONE CALL   DEEP STATE EXPOSED   BELIEVE ME   NOBODY KNOWS MORE THAN ME   ★   ';
+let tickX = W;
+
+// ─────────────────────────────────────────────
+//  NIGHTSCAPE CITY BACKGROUND  (escalator scene)
+// ─────────────────────────────────────────────
+function drawNightCity() {
+  // Sky gradient — deep purple-blue night
+  const sg = ctx.createLinearGradient(0, 0, 0, H);
+  sg.addColorStop(0, '#05040f');
+  sg.addColorStop(0.5, '#0a0820');
+  sg.addColorStop(1, '#12103a');
+  ctx.fillStyle = sg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars
+  stars.forEach(s => {
+    ctx.fillStyle = `rgba(255,255,255,${s.a * 0.9})`;
+    ctx.beginPath(); ctx.arc(s.x, s.y * 0.8, s.r, 0, Math.PI * 2); ctx.fill();
+  });
+
+  // Moon
+  ctx.fillStyle = '#ffffee';
+  ctx.shadowColor = '#ffffaa'; ctx.shadowBlur = 20;
+  ctx.beginPath(); ctx.arc(380, 60, 28, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur = 0;
+  // Moon crater detail
+  ctx.fillStyle = '#eeeedd';
+  ctx.beginPath(); ctx.arc(390, 52, 7, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(374, 68, 5, 0, Math.PI * 2); ctx.fill();
+
+  // Background buildings silhouette
+  const buildings = [
+    {x:0,   w:50,  h:320, color:'#080618'},
+    {x:45,  w:35,  h:280, color:'#090720'},
+    {x:75,  w:60,  h:400, color:'#07061a'},
+    {x:130, w:40,  h:260, color:'#0a0820'},
+    {x:165, w:80,  h:500, color:'#060515'}, // tall center tower
+    {x:240, w:45,  h:350, color:'#08071c'},
+    {x:280, w:30,  h:290, color:'#090820'},
+    {x:305, w:55,  h:420, color:'#070618'},
+    {x:355, w:40,  h:310, color:'#0a0920'},
+    {x:390, w:50,  h:360, color:'#080719'},
+    {x:435, w:50,  h:280, color:'#090820'},
+  ];
+  buildings.forEach(b => {
+    ctx.fillStyle = b.color;
+    ctx.fillRect(b.x, H - b.h - 80, b.w, b.h);
+    // Window grid
+    for (let wy = H - b.h - 70; wy < H - 90; wy += 22) {
+      for (let wx = b.x + 4; wx < b.x + b.w - 8; wx += 14) {
+        const on = Math.random() > 0.35;
+        ctx.fillStyle = on ? `rgba(255,220,120,${0.2 + Math.random()*0.5})` : `rgba(0,0,20,0.9)`;
+        ctx.fillRect(wx, wy, 8, 12);
+      }
+    }
+  });
+
+  // D.T.J. TOWER sign on center tall building
+  ctx.fillStyle = '#c8a44a';
+  ctx.font = 'bold 9px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('D.T.J. TOWER', 205, H - 500 - 80 + 18);
+
+  // Ground street
+  const gg = ctx.createLinearGradient(0, H - 80, 0, H);
+  gg.addColorStop(0, '#0e0d22');
+  gg.addColorStop(1, '#181630');
+  ctx.fillStyle = gg;
+  ctx.fillRect(0, H - 80, W, 80);
+
+  // Street reflections
+  ctx.fillStyle = 'rgba(200,164,74,0.06)';
+  ctx.fillRect(0, H - 40, W, 40);
+
+  // Street lights
+  [80, 200, 340, 420].forEach(lx => {
+    ctx.strokeStyle = '#555577';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(lx, H - 80); ctx.lineTo(lx, H - 160); ctx.stroke();
+    ctx.fillStyle = '#ffee88';
+    ctx.shadowColor = '#ffee88'; ctx.shadowBlur = 12;
+    ctx.beginPath(); ctx.arc(lx, H - 162, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+  });
+}
+
+// ─────────────────────────────────────────────
+//  ESCALATOR DRAWING  (covers character while riding)
+// ─────────────────────────────────────────────
+const ESC_X1 = 80, ESC_Y1 = H - 90;   // bottom entry
+const ESC_X2 = 260, ESC_Y2 = 200;     // top exit
+
+function drawEscalatorStructure(animT) {
+  const dx = ESC_X2 - ESC_X1, dy = ESC_Y2 - ESC_Y1;
+  const len = Math.sqrt(dx*dx + dy*dy);
+  const ang = Math.atan2(dy, dx);
+
+  ctx.save();
+  ctx.translate(ESC_X1, ESC_Y1);
+  ctx.rotate(ang);
+
+  // Glass tube / enclosure — the character is hidden inside this
+  ctx.fillStyle = 'rgba(180,220,255,0.12)';
+  ctx.strokeStyle = 'rgba(180,220,255,0.5)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(-10, -38, len + 20, 60, 6);
+  ctx.fill(); ctx.stroke();
+
+  // Gold handrail top
+  ctx.strokeStyle = '#d4af37';
+  ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(0, -26); ctx.lineTo(len, -26); ctx.stroke();
+
+  // Gold handrail bottom
+  ctx.strokeStyle = '#b8960c';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(0, 18); ctx.lineTo(len, 18); ctx.stroke();
+
+  // Moving steps inside
+  const stepSpacing = 28;
+  const scrollOffset = (animT * 60) % stepSpacing;
+  ctx.strokeStyle = 'rgba(212,175,55,0.7)';
+  ctx.lineWidth = 2;
+  for (let sx = -scrollOffset; sx < len + 10; sx += stepSpacing) {
+    ctx.beginPath(); ctx.moveTo(sx, -20); ctx.lineTo(sx + 16, -20); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(sx + 16, -20); ctx.lineTo(sx + 16, -4); ctx.stroke();
+  }
+
+  // Side frame / structural
+  ctx.fillStyle = '#c8a44a';
+  ctx.fillRect(-12, -40, 12, 80);
+  ctx.fillRect(len, -40, 12, 80);
+
+  // Gold trim strips
+  ctx.fillStyle = '#d4af37';
+  ctx.fillRect(0, -40, len, 4);
+  ctx.fillRect(0, 36, len, 4);
+
+  ctx.restore();
+
+  // Base platform at bottom entry
+  ctx.fillStyle = '#c8a44a';
+  ctx.fillRect(ESC_X1 - 20, ESC_Y1 - 4, 50, 8);
+  // Top landing platform
+  ctx.fillRect(ESC_X2 - 20, ESC_Y2 - 4, 50, 8);
+}
+
+// ─────────────────────────────────────────────
+//  LINCOLN MEMORIAL PARODY BUILDING
+// ─────────────────────────────────────────────
+function drawLincolnBuilding(alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // Night sky behind
+  const sg = ctx.createLinearGradient(0, 0, 0, H);
+  sg.addColorStop(0, '#04040e');
+  sg.addColorStop(1, '#0c0c28');
+  ctx.fillStyle = sg; ctx.fillRect(0, 0, W, H);
+
+  stars.forEach(s => {
+    ctx.fillStyle = `rgba(255,255,255,${s.a * 0.8})`;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+  });
+
+  // Reflection pool / reflecting pool in front
+  ctx.fillStyle = '#0a0a20';
+  ctx.fillRect(40, 680, 400, 60);
+  const rg = ctx.createLinearGradient(0, 680, 0, 740);
+  rg.addColorStop(0, 'rgba(180,180,220,0.08)');
+  rg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = rg; ctx.fillRect(40, 680, 400, 60);
+
+  // Building layout: 3/8 building (top), 5/8 stairs (bottom)
+  // H=854: building occupies y=40..320 (280px), stairs y=320..794 (474px, 15 steps)
+  const BX = 20, BW = 440;
+  const BLDG_TOP = 40;      // pediment peak
+  const BLDG_BASE = 320;    // top of stairs / base of columns
+  const STAIR_BOT = 794;    // bottom of stairs = ground
+  const N_STEPS = 15;
+  const STEP_H = Math.floor((STAIR_BOT - BLDG_BASE) / N_STEPS); // ~31px each
+
+  // Pediment (triangular top)
+  ctx.fillStyle = '#d8d8c8';
+  ctx.beginPath();
+  ctx.moveTo(BX, BLDG_BASE - 160); ctx.lineTo(BX + BW/2, BLDG_TOP);
+  ctx.lineTo(BX + BW, BLDG_BASE - 160);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#aaa898'; ctx.lineWidth = 1; ctx.stroke();
+
+  // Entablature band
+  ctx.fillStyle = '#e2e2d2';
+  ctx.fillRect(BX, BLDG_BASE - 160, BW, 26);
+
+  // Frieze text
+  ctx.fillStyle = '#888878';
+  ctx.font = 'bold 8px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('LINCOLN MEMORIAL  ★  (THIS IS A PARODY)', W/2, BLDG_BASE - 140);
+
+  // Columns — 12 fluted
+  const COL_TOP = BLDG_BASE - 134;
+  const COL_BOT = BLDG_BASE - 8;
+  for (let i = 0; i < 12; i++) {
+    const cx = BX + 18 + i * 34;
+    const cg = ctx.createLinearGradient(cx, 0, cx + 20, 0);
+    cg.addColorStop(0, '#c8c8b8'); cg.addColorStop(0.3, '#e4e4d4');
+    cg.addColorStop(0.7, '#d8d8c8'); cg.addColorStop(1, '#b8b8a8');
+    ctx.fillStyle = cg;
+    ctx.fillRect(cx, COL_TOP, 20, COL_BOT - COL_TOP);
+    ctx.fillStyle = '#e8e8d8'; ctx.fillRect(cx-2, COL_TOP-4, 24, 8);
+    ctx.fillStyle = '#d0d0c0'; ctx.fillRect(cx-2, COL_BOT-2, 24, 8);
+  }
+
+  // Stylobate
+  ctx.fillStyle = '#d8d8c8';
+  ctx.fillRect(BX - 6, BLDG_BASE - 10, BW + 12, 12);
+
+  // Steps — 15 steps filling the bottom 5/8
+  for (let s = 0; s < N_STEPS; s++) {
+    const sx = BX - s * 6, sw = BW + s * 12;
+    const sy = BLDG_BASE + s * STEP_H;
+    const stepG = ctx.createLinearGradient(0, sy, 0, sy + STEP_H);
+    stepG.addColorStop(0, '#e0e0d0'); stepG.addColorStop(1, '#c8c8b8');
+    ctx.fillStyle = stepG;
+    ctx.fillRect(sx, sy, sw, STEP_H);
+    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.fillRect(sx, sy + STEP_H - 4, sw, 4);
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.fillRect(sx, sy, sw, 3);
+  }
+
+  // Ground
+  ctx.fillStyle = '#0a1a0a'; ctx.fillRect(0, STAIR_BOT, W, 60);
+  ctx.fillStyle = '#0d220d'; ctx.fillRect(0, STAIR_BOT, W, 8);
+
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────
+//  D.T.J. CHARACTER  (based on reference: muscle cartoon, navy suit, red tie, blonde hair)
+// ─────────────────────────────────────────────
+function drawDTJ(x, y, sc = 1, armRaise = 0, walking = false, walkT = 0) {
+  sc = sc * 0.80;  // scale down 20% globally
+  ctx.save();
+  ctx.translate(x, y - 28 * sc);  // feet (y=28 local) land at y
+  ctx.scale(sc, sc);
+
+  const legSwing = walking ? Math.sin(walkT * 8) * 12 : 0;
+  const bodyBob = walking ? Math.abs(Math.sin(walkT * 8)) * -2 : 0;
+
+  // ── Shadow ─────────────────────────────────
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath(); ell(0, 2, 18, 5, 0, 0, Math.PI * 2); ctx.fill();
+
+  // ── Legs (chunky, muscular) ─────────────────
+  ctx.fillStyle = '#13135a';
+  // Left leg
+  ctx.save(); ctx.translate(-9, bodyBob);
+  ctx.rotate(legSwing * Math.PI/180);
+  ctx.beginPath(); ctx.roundRect(-7, 0, 14, 26, [0,0,5,5]); ctx.fill();
+  ctx.restore();
+  // Right leg
+  ctx.save(); ctx.translate(9, bodyBob);
+  ctx.rotate(-legSwing * Math.PI/180);
+  ctx.beginPath(); ctx.roundRect(-7, 0, 14, 26, [0,0,5,5]); ctx.fill();
+  ctx.restore();
+
+  // Shoes
+  ctx.fillStyle = '#0a0a0a';
+  ctx.beginPath(); ell(-9, 28, 10, 5, -0.1, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ell(9, 28, 10, 5, 0.1, 0, Math.PI*2); ctx.fill();
+  // Shoe highlight
+  ctx.fillStyle = '#222';
+  ctx.beginPath(); ell(-9, 25, 6, 3, -0.1, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ell(9, 25, 6, 3, 0.1, 0, Math.PI*2); ctx.fill();
+
+  // ── Body (wide, muscular torso) ─────────────
+  ctx.save(); ctx.translate(0, bodyBob);
+
+  // Suit jacket — very wide shoulders
+  const bodyG = ctx.createLinearGradient(-28, -36, 28, 0);
+  bodyG.addColorStop(0, '#1e2070'); bodyG.addColorStop(0.5, '#1a1a6a'); bodyG.addColorStop(1, '#141460');
+  ctx.fillStyle = bodyG;
+  ctx.beginPath();
+  ctx.moveTo(-28, -2);
+  ctx.quadraticCurveTo(-30, -24, -24, -36);
+  ctx.lineTo(-10, -36);
+  ctx.lineTo(0, -22);
+  ctx.lineTo(10, -36);
+  ctx.lineTo(24, -36);
+  ctx.quadraticCurveTo(30, -24, 28, -2);
+  ctx.lineTo(18, 2);
+  ctx.lineTo(-18, 2);
+  ctx.closePath(); ctx.fill();
+
+  // Jacket lapels
+  ctx.fillStyle = '#161660';
+  ctx.beginPath(); ctx.moveTo(-10,-36); ctx.lineTo(0,-22); ctx.lineTo(-18,2); ctx.lineTo(-22,-10); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(10,-36);  ctx.lineTo(0,-22); ctx.lineTo(18,2);  ctx.lineTo(22,-10);  ctx.closePath(); ctx.fill();
+
+  // White shirt
+  ctx.fillStyle = '#f5f5f5';
+  ctx.beginPath(); ctx.moveTo(-6,-36); ctx.lineTo(6,-36); ctx.lineTo(8,2); ctx.lineTo(-8,2); ctx.closePath(); ctx.fill();
+
+  // Red tie — long, classic
+  ctx.fillStyle = '#cc0000';
+  ctx.beginPath();
+  ctx.moveTo(-4,-34); ctx.lineTo(4,-34);
+  ctx.lineTo(6,-4); ctx.lineTo(0, 8); ctx.lineTo(-6,-4);
+  ctx.closePath(); ctx.fill();
+  // Tie knot
+  ctx.fillStyle = '#aa0000';
+  ctx.beginPath(); ell(0, -32, 4, 3, 0, 0, Math.PI*2); ctx.fill();
+  // Tie shine
+  ctx.fillStyle = '#ee2222';
+  ctx.beginPath(); ctx.moveTo(-1,-33); ctx.lineTo(1,-33); ctx.lineTo(2,-20); ctx.lineTo(-1,-20); ctx.closePath(); ctx.fill();
+
+  // Pocket square
+  ctx.fillStyle = '#f0f0f0';
+  ctx.beginPath(); ctx.moveTo(14,-28); ctx.lineTo(20,-28); ctx.lineTo(20,-24); ctx.lineTo(14,-22); ctx.closePath(); ctx.fill();
+
+  // Suit button
+  ctx.fillStyle = '#0a0a50';
+  ctx.beginPath(); ctx.arc(0, -4, 2, 0, Math.PI*2); ctx.fill();
+
+  // ── Arms (massive) ─────────────────────────
+  const lAng = armRaise * (-Math.PI * 0.75) - 0.2;
+  const rAng = armRaise * ( Math.PI * 0.75) + 0.2;
+
+  // Left arm
+  ctx.save(); ctx.translate(-26, -28);
+  ctx.rotate(lAng + (walking ? Math.sin(walkT*8+Math.PI)*0.3 : 0));
+  // Upper arm (big)
+  const laG = ctx.createLinearGradient(-10,0,10,0);
+  laG.addColorStop(0,'#1e2070'); laG.addColorStop(1,'#141460');
+  ctx.fillStyle = laG;
+  ctx.beginPath(); ell(0, 14, 11, 18, 0, 0, Math.PI*2); ctx.fill();
+  // Cuff
+  ctx.fillStyle = '#f0f0f0';
+  ctx.beginPath(); ctx.roundRect(-7,26,14,7,[3]); ctx.fill();
+  // Fist (closed)
+  ctx.fillStyle = '#ffcc99';
+  ctx.beginPath(); ell(0, 36, 9, 8, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#eebb88';
+  ctx.beginPath(); ell(0, 34, 9, 5, 0, 0, Math.PI*2); ctx.fill();
+  // Knuckle lines
+  ctx.strokeStyle = '#cc9966'; ctx.lineWidth = 1;
+  [-4,-1,2,5].forEach(kx => { ctx.beginPath(); ctx.moveTo(kx,30); ctx.lineTo(kx,36); ctx.stroke(); });
+  ctx.restore();
+
+  // Right arm
+  ctx.save(); ctx.translate(26, -28);
+  ctx.rotate(rAng + (walking ? Math.sin(walkT*8)*0.3 : 0));
+  const raG = ctx.createLinearGradient(-10,0,10,0);
+  raG.addColorStop(0,'#141460'); raG.addColorStop(1,'#1e2070');
+  ctx.fillStyle = raG;
+  ctx.beginPath(); ell(0, 14, 11, 18, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#f0f0f0';
+  ctx.beginPath(); ctx.roundRect(-7,26,14,7,[3]); ctx.fill();
+  ctx.fillStyle = '#ffcc99';
+  ctx.beginPath(); ell(0, 36, 9, 8, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#eebb88';
+  ctx.beginPath(); ell(0, 34, 9, 5, 0, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#cc9966'; ctx.lineWidth = 1;
+  [-4,-1,2,5].forEach(kx => { ctx.beginPath(); ctx.moveTo(kx,30); ctx.lineTo(kx,36); ctx.stroke(); });
+  ctx.restore();
+
+  ctx.restore(); // body bob
+
+  // ── Head (on top of wide shoulders) ────────
+  ctx.save(); ctx.translate(0, bodyBob);
+
+  // Neck
+  ctx.fillStyle = '#ffcc99';
+  ctx.beginPath(); ctx.roundRect(-5,-42,10,8,[2]); ctx.fill();
+
+  // Head shape — wide, slight jowls
+  const hg = ctx.createRadialGradient(-3,-54,2, 0,-52,16);
+  hg.addColorStop(0,'#ffd8aa'); hg.addColorStop(1,'#ffbb88');
+  ctx.fillStyle = hg;
+  ctx.beginPath();
+  ell(0, -52, 15, 18, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // Jowl shading
+  ctx.fillStyle = 'rgba(200,140,80,0.3)';
+  ctx.beginPath(); ell(-10, -44, 7, 8, 0.3, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ell(10, -44, 7, 8, -0.3, 0, Math.PI*2); ctx.fill();
+
+  // ── Hair (swept blond combover) ─────────────
+  // Base mass
+  ctx.fillStyle = '#d4a830';
+  ctx.beginPath(); ell(0, -66, 16, 10, 0, 0, Math.PI*2); ctx.fill();
+  // Swoop right
+  ctx.fillStyle = '#c89a28';
+  ctx.beginPath(); ell(10, -64, 10, 7, -0.4, 0, Math.PI*2); ctx.fill();
+  // Light streak
+  ctx.fillStyle = '#e8c050';
+  ctx.beginPath(); ell(-4, -68, 9, 4, 0.2, 0, Math.PI*2); ctx.fill();
+  // Bright highlight
+  ctx.fillStyle = '#f0d070';
+  ctx.beginPath(); ell(-6, -70, 5, 2.5, 0.4, 0, Math.PI*2); ctx.fill();
+  // Front swoop detail
+  ctx.fillStyle = '#b88820';
+  ctx.beginPath();
+  ctx.moveTo(-14,-60); ctx.quadraticCurveTo(0,-72,14,-58);
+  ctx.lineWidth=0; ctx.fill();
+
+  // ── Face ───────────────────────────────────
+  // Eyes — small, intense, close-set
+  // Eye whites
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ell(-5, -56, 4, 3.5, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ell(5, -56, 4, 3.5, 0, 0, Math.PI*2); ctx.fill();
+  // Blue irises
+  ctx.fillStyle = '#4466cc';
+  ctx.beginPath(); ell(-5, -56, 2.5, 2.5, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ell(5, -56, 2.5, 2.5, 0, 0, Math.PI*2); ctx.fill();
+  // Pupils
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ell(-5, -56, 1.2, 1.2, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ell(5, -56, 1.2, 1.2, 0, 0, Math.PI*2); ctx.fill();
+  // Eye shine
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(-4,-57,0.9,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 6,-57,0.9,0,Math.PI*2); ctx.fill();
+
+  // Brows — thick, furrowed downward-center (angry/intense)
+  ctx.fillStyle = '#b07820';
+  ctx.save();
+  ctx.translate(-5,-61); ctx.rotate(0.3);
+  ctx.beginPath(); ctx.roundRect(-5,-1.5,10,3,[1]); ctx.fill();
+  ctx.restore();
+  ctx.save();
+  ctx.translate(5,-61); ctx.rotate(-0.3);
+  ctx.beginPath(); ctx.roundRect(-5,-1.5,10,3,[1]); ctx.fill();
+  ctx.restore();
+
+  // Nose — rounded, prominent
+  ctx.fillStyle = '#eebb88';
+  ctx.beginPath(); ell(0, -50, 5, 4, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#cc9966';
+  ctx.beginPath(); ell(-2, -49, 1.8, 1.2, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ell(2, -49, 1.8, 1.2, 0, 0, Math.PI*2); ctx.fill();
+
+  // Mouth — pursed/smirk
+  ctx.strokeStyle = '#bb7744'; ctx.lineWidth = 1.8; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-6,-43); ctx.quadraticCurveTo(0,-40,6,-43); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(4,-43); ctx.quadraticCurveTo(7,-41,6,-39); ctx.stroke();
+
+  ctx.restore(); // head
+
+  ctx.restore(); // main
+}
+
+// ─────────────────────────────────────────────
+//  DONKEY CHARACTER  (pixel-art pinstripe suit style)
+// ─────────────────────────────────────────────
+function drawDonkey(x, y, sc = 1, flip = false, walking = false, walkT = 0) {
+  ctx.save();
+  ctx.translate(x, y - 24 * sc);  // feet (y=24 local) land at y
+  if (flip) ctx.scale(-1, 1);
+  ctx.scale(sc, sc);
+
+  const legSwing = walking ? Math.sin(walkT * 9) * 14 : 0;
+  const bob = walking ? Math.abs(Math.sin(walkT * 9)) * -2 : 0;
+
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  ctx.beginPath(); ell(0, 2, 14, 4, 0, 0, Math.PI*2); ctx.fill();
+
+  // ── Legs ──────────────────────────────────
+  ctx.fillStyle = '#1a2060';
+  // Left
+  ctx.save(); ctx.translate(-7, bob);
+  ctx.rotate(legSwing * Math.PI/180);
+  ctx.beginPath(); ctx.roundRect(-5,0,10,22,[0,0,4,4]); ctx.fill();
+  // Pinstripe
+  ctx.strokeStyle = 'rgba(100,120,200,0.3)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(-2,2); ctx.lineTo(-2,20); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(1,2);  ctx.lineTo(1,20);  ctx.stroke();
+  ctx.restore();
+  // Right
+  ctx.save(); ctx.translate(7, bob);
+  ctx.rotate(-legSwing * Math.PI/180);
+  ctx.beginPath(); ctx.roundRect(-5,0,10,22,[0,0,4,4]); ctx.fill();
+  ctx.strokeStyle = 'rgba(100,120,200,0.3)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(-2,2); ctx.lineTo(-2,20); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(1,2);  ctx.lineTo(1,20);  ctx.stroke();
+  ctx.restore();
+
+  // Shoes — brown boots
+  ctx.fillStyle = '#5c3820';
+  ctx.beginPath(); ell(-7, 24, 8, 5, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ell(7, 24, 8, 5, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#7a4e30';
+  ctx.beginPath(); ell(-7, 22, 5, 3, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ell(7, 22, 5, 3, 0, 0, Math.PI*2); ctx.fill();
+
+  // ── Body ──────────────────────────────────
+  ctx.save(); ctx.translate(0, bob);
+
+  // Pinstripe suit jacket — dark navy-blue
+  const bg = ctx.createLinearGradient(-15,-30,15,2);
+  bg.addColorStop(0,'#1e2468'); bg.addColorStop(0.5,'#1a2060'); bg.addColorStop(1,'#141850');
+  ctx.fillStyle = bg;
+  ctx.beginPath(); ctx.roundRect(-15,-30,30,34,[3,3,2,2]); ctx.fill();
+
+  // Pinstripes on jacket
+  ctx.strokeStyle = 'rgba(130,150,220,0.25)'; ctx.lineWidth=1;
+  for (let px=-12; px<14; px+=5) {
+    ctx.beginPath(); ctx.moveTo(px,-30); ctx.lineTo(px,4); ctx.stroke();
+  }
+
+  // Lapels
+  ctx.fillStyle = '#161a55';
+  ctx.beginPath(); ctx.moveTo(-15,-30); ctx.lineTo(0,-18); ctx.lineTo(-15,-8); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo( 15,-30); ctx.lineTo(0,-18); ctx.lineTo( 15,-8); ctx.closePath(); ctx.fill();
+
+  // Cream shirt
+  ctx.fillStyle = '#f0ead0';
+  ctx.beginPath(); ctx.moveTo(-5,-30); ctx.lineTo(5,-30); ctx.lineTo(6,4); ctx.lineTo(-6,4); ctx.closePath(); ctx.fill();
+
+  // Red tie
+  ctx.fillStyle = '#cc1111';
+  ctx.beginPath();
+  ctx.moveTo(-3,-28); ctx.lineTo(3,-28);
+  ctx.lineTo(4,-6); ctx.lineTo(0,4); ctx.lineTo(-4,-6);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#aa0000';
+  ctx.beginPath(); ell(0, -26, 3, 2, [0, 0, Math.PI*2]); ctx.fill();
+
+  // Button
+  ctx.fillStyle = '#c8a44a';
+  ctx.beginPath(); ctx.arc(0,-2,2,0,Math.PI*2); ctx.fill();
+
+  // Tail
+  ctx.strokeStyle = '#1a2060'; ctx.lineWidth=3; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(14,-6); ctx.quadraticCurveTo(24,-12,20,-22); ctx.stroke();
+  ctx.fillStyle = '#111830';
+  ctx.beginPath(); ell(20, -23, 4, 5, -0.4, 0, Math.PI*2); ctx.fill();
+
+  // Arms
+  const armSwing = walking ? Math.sin(walkT * 9 + Math.PI) * 0.3 : 0;
+  // Left arm (hand in pocket-ish, or swinging)
+  ctx.save(); ctx.translate(-16,-18);
+  ctx.rotate(-0.1 + armSwing);
+  ctx.fillStyle = '#1a2060';
+  ctx.beginPath(); ctx.roundRect(-5,0,10,18,[4]); ctx.fill();
+  // Cuff
+  ctx.fillStyle = '#f0ead0';
+  ctx.beginPath(); ctx.roundRect(-4,14,8,5,[2]); ctx.fill();
+  // Hand
+  ctx.fillStyle = '#7080bb';
+  ctx.beginPath(); ell(0, 22, 5, 4, 0, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  ctx.restore(); // body
+
+  // ── Head ──────────────────────────────────
+  ctx.save(); ctx.translate(0, bob);
+
+  // Long donkey neck
+  ctx.fillStyle = '#5566aa';
+  ctx.beginPath(); ctx.roundRect(-5,-38,10,10,[3]); ctx.fill();
+
+  // Big round donkey head — blue/purple
+  const hg = ctx.createRadialGradient(-3,-52,2,0,-50,18);
+  hg.addColorStop(0,'#6677bb'); hg.addColorStop(1,'#4455aa');
+  ctx.fillStyle = hg;
+  ctx.beginPath(); ell(0, -50, 17, 18, 0, 0, Math.PI*2); ctx.fill();
+
+  // Long upright ears
+  // Left ear
+  ctx.fillStyle = '#4455aa';
+  ctx.beginPath(); ell(-12, -70, 5, 14, -0.15, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#cc8888'; // pink inner
+  ctx.beginPath(); ell(-12, -70, 2.5, 9, -0.15, 0, Math.PI*2); ctx.fill();
+
+  // Right ear
+  ctx.fillStyle = '#4455aa';
+  ctx.beginPath(); ell(12, -70, 5, 14, 0.15, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#cc8888';
+  ctx.beginPath(); ell(12, -70, 2.5, 9, 0.15, 0, Math.PI*2); ctx.fill();
+
+  // Dark forelock
+  ctx.fillStyle = '#223355';
+  ctx.beginPath(); ell(3, -65, 6, 8, 0.2, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ell(-2, -66, 4, 6, 0, 0, Math.PI*2); ctx.fill();
+
+  // Muzzle — pink
+  ctx.fillStyle = '#e8aaaa';
+  ctx.beginPath(); ell(2, -40, 11, 9, 0.1, 0, Math.PI*2); ctx.fill();
+  // Muzzle shading
+  ctx.fillStyle = '#d09090';
+  ctx.beginPath(); ell(2, -38, 8, 5, 0.1, 0, Math.PI*2); ctx.fill();
+  // Nostrils
+  ctx.fillStyle = '#994444';
+  ctx.beginPath(); ell(-2, -38, 2.5, 2, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ell(6, -38, 2.5, 2, 0, 0, Math.PI*2); ctx.fill();
+
+  // Eyes — half-lidded cool expression (like the reference)
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ell(-6, -52, 4.5, 4, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ell(6, -52, 4.5, 4, 0, 0, Math.PI*2); ctx.fill();
+  // Amber iris
+  ctx.fillStyle = '#996622';
+  ctx.beginPath(); ell(-6, -52, 2.8, 2.8, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ell(6, -52, 2.8, 2.8, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ell(-6, -52, 1.4, 1.4, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ell(6, -52, 1.4, 1.4, 0, 0, Math.PI*2); ctx.fill();
+  // Half-lid (cool/confident look)
+  ctx.fillStyle = '#4455aa';
+  ctx.beginPath(); ell(-6, -55, 4.5, 2.5, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ell(6, -55, 4.5, 2.5, 0, 0, Math.PI*2); ctx.fill();
+  // Eye shine
+  ctx.fillStyle = '#ffffff99';
+  ctx.beginPath(); ctx.arc(-5,-52,1,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 7,-52,1,0,Math.PI*2); ctx.fill();
+
+  // Smirk smile
+  ctx.strokeStyle = '#884444'; ctx.lineWidth=2; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(-4,-33); ctx.quadraticCurveTo(2,-30,8,-32); ctx.stroke();
+
+  ctx.restore();
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────
+//  PLATFORM DRAWING
+// ─────────────────────────────────────────────
+function drawPlatform(p) {
+  ctx.save();
+  ctx.translate(p.x + p.w/2, p.y + p.h/2);
+  ctx.rotate(p.tilt * Math.PI / 180);
+  const hw = p.w/2, hh = p.h/2;
+  // Shadow
+  ctx.fillStyle = '#6b5220';
+  ctx.fillRect(-hw+3, -hh+4, p.w, p.h);
+  // Body
+  const pg = ctx.createLinearGradient(0,-hh,0,hh);
+  pg.addColorStop(0,'#e8c46a'); pg.addColorStop(0.3,'#c8a44a'); pg.addColorStop(1,'#9a7830');
+  ctx.fillStyle = pg;
+  ctx.fillRect(-hw,-hh,p.w,p.h);
+  // Rivet bolts
+  ctx.fillStyle = '#6b5220';
+  for (let rx = -hw+14; rx < hw-14; rx += 38) {
+    ctx.beginPath(); ctx.arc(rx, 0, 3.5, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#c8a44a';
+    ctx.beginPath(); ctx.arc(rx-0.5,-0.5,2,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#6b5220';
+  }
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────
+//  LADDER DRAWING
+// ─────────────────────────────────────────────
+function drawLadder(l) {
+  const {x, y, h} = l;
+  // Rails
+  const lg = ctx.createLinearGradient(x,0,x+LADDER_W,0);
+  lg.addColorStop(0,'#c8a800'); lg.addColorStop(0.5,'#f0d020'); lg.addColorStop(1,'#c8a800');
+  ctx.fillStyle = lg;
+  ctx.fillRect(x, y, 4, h);
+  ctx.fillRect(x+LADDER_W-4, y, 4, h);
+  // Rungs
+  for (let ry = y+8; ry < y+h-4; ry+=16) {
+    ctx.fillStyle = '#a08800';
+    ctx.fillRect(x+4, ry, LADDER_W-8, 5);
+    ctx.fillStyle = '#d4b000';
+    ctx.fillRect(x+4, ry, LADDER_W-8, 2);
+  }
+}
+
+// ─────────────────────────────────────────────
+//  TV (small, on top platform)
+// ─────────────────────────────────────────────
+function drawTV(x, y, label, t) {
+  const w=36, h=30;
+  // Stand
+  ctx.fillStyle='#222244';
+  ctx.fillRect(x+w/2-3,y+h,6,7);
+  ctx.fillRect(x+w/2-8,y+h+6,16,3);
+  // Case
+  ctx.fillStyle='#1a1a3a';
+  ctx.strokeStyle='#4444aa'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.roundRect(x,y,w,h,4); ctx.fill(); ctx.stroke();
+  // Bezel
+  ctx.fillStyle='#111';
+  ctx.beginPath(); ctx.roundRect(x+3,y+3,w-6,h-9,2); ctx.fill();
+  // Screen
+  ctx.save();
+  ctx.beginPath(); ctx.roundRect(x+3,y+3,w-6,h-9,2); ctx.clip();
+  ctx.fillStyle = label==='CNN' ? '#0d0808' : '#08080d';
+  ctx.fillRect(x+3,y+3,w-6,h-9);
+  // Scan band
+  const sb = ((t*25)%(h-9))+y+3;
+  ctx.fillStyle = label==='CNN' ? 'rgba(255,50,50,0.15)':'rgba(50,100,255,0.15)';
+  ctx.fillRect(x+3,sb,w-6,5);
+  // Static noise
+  for(let ni=0;ni<6;ni++){
+    ctx.fillStyle=`rgba(255,255,255,${Math.random()*0.06})`;
+    ctx.fillRect(x+3+Math.random()*(w-6), y+3+Math.random()*(h-9), Math.random()*8+2, 1);
+  }
+  // Tiny text
+  ctx.fillStyle = label==='CNN'?'#ff4444':'#4488ff';
+  ctx.font='4px monospace'; ctx.textAlign='left';
+  ctx.fillText('BREAKING',x+4,y+10);
+  ctx.fillStyle='#aaa'; ctx.fillText('LIVE',x+4,y+15);
+  // Scan lines overlay
+  for(let sl=y+3;sl<y+h-6;sl+=2){
+    ctx.fillStyle='rgba(0,0,0,0.18)';
+    ctx.fillRect(x+3,sl,w-6,1);
+  }
+  ctx.restore();
+  // Power LED
+  ctx.fillStyle=label==='CNN'?'#ff2200':'#0055ff';
+  ctx.beginPath(); ctx.arc(x+w-6,y+h-5,2,0,Math.PI*2); ctx.fill();
+  // Label
+  ctx.fillStyle=label==='CNN'?'#cc0000':'#0033bb';
+  ctx.fillRect(x+3,y+h-8,w-6,7);
+  ctx.fillStyle='#fff'; ctx.font='bold 5px monospace'; ctx.textAlign='center';
+  ctx.fillText(label,x+w/2,y+h-3);
+}
+
+// ─────────────────────────────────────────────
+//  TICKER
+// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  TOUCH CONTROL BOXES
+// ─────────────────────────────────────────────
+const BW = 90, BH = 75;
+const boxLeft  = { x: 0,      y: H-BH,       w: BW,   h: BH, action:'left'  };
+const boxRight = { x: BW,     y: H-BH,       w: BW,   h: BH, action:'right' };
+const boxJump  = { x: 0,      y: H-BH*2,     w: BW*2, h: BH, action:'jump'  };
+const boxUp    = { x: W-BW,   y: H*0.45,     w: BW,   h: BH, action:'up'    };
+const boxDown  = { x: W-BW,   y: H*0.45+BH,  w: BW,   h: BH, action:'down'  };
+const allBoxes = [boxLeft, boxRight, boxJump, boxUp, boxDown];
+
+function getBoxAt(tx, ty) {
+  for (const b of allBoxes) {
+    if (tx>=b.x && tx<=b.x+b.w && ty>=b.y && ty<=b.y+b.h) return b;
+  }
+  return null;
+}
+
+function applyTouchState() {
+  touch.left=touch.right=touch.climbUp=touch.climbDown=false;
+  for (const id in activeTouches) {
+    const a = activeTouches[id].action;
+    if (a==='left')  touch.left=true;
+    if (a==='right') touch.right=true;
+    if (a==='up')    touch.climbUp=true;
+    if (a==='down')  touch.climbDown=true;
+  }
+}
+
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (state !== 'GAMEPLAY') { skipToGame(); return; }
+  canvas.setPointerCapture(e.pointerId);
+  const r=canvas.getBoundingClientRect();
+  const tx=(e.clientX-r.left)/scale, ty=(e.clientY-r.top)/scale;
+  const b=getBoxAt(tx,ty);
+  activeTouches[e.pointerId]={action:b?b.action:null,box:b};
+  if (b&&b.action==='jump') { touch.jump=true; setTimeout(()=>{touch.jump=false;},120); }
+  applyTouchState();
+});
+canvas.addEventListener('pointermove', e => {
+  e.preventDefault();
+  if (!(e.pointerId in activeTouches)) return;
+  const r=canvas.getBoundingClientRect();
+  const tx=(e.clientX-r.left)/scale, ty=(e.clientY-r.top)/scale;
+  const b=getBoxAt(tx,ty);
+  const prev=activeTouches[e.pointerId];
+  if (b&&b.action==='jump'&&prev.action!=='jump') { touch.jump=true; setTimeout(()=>{touch.jump=false;},120); }
+  activeTouches[e.pointerId]={action:b?b.action:null,box:b};
+  applyTouchState();
+});
+canvas.addEventListener('pointerup',     e=>{delete activeTouches[e.pointerId]; applyTouchState();});
+canvas.addEventListener('pointercancel', e=>{delete activeTouches[e.pointerId]; applyTouchState();});
+
+function drawDpad() {
+  if (state!=='GAMEPLAY') return;
+  ctx.save();
+  const defs=[
+    {b:boxJump, icon:'JUMP', big:false},
+    {b:boxLeft, icon:'◀',   big:true},
+    {b:boxRight,icon:'▶',   big:true},
+    {b:boxUp,   icon:'▲',   big:true},
+    {b:boxDown, icon:'▼',   big:true},
+  ];
+  for (const {b,icon,big} of defs) {
+    const active=Object.values(activeTouches).some(t=>t.box===b);
+    ctx.fillStyle=active?'rgba(255,255,255,0.28)':'rgba(255,255,255,0.10)';
+    ctx.beginPath(); ctx.roundRect(b.x+2,b.y+2,b.w-4,b.h-4,10); ctx.fill();
+    ctx.strokeStyle=active?'rgba(255,255,255,0.5)':'rgba(255,255,255,0.2)';
+    ctx.lineWidth=1.5; ctx.stroke();
+    ctx.fillStyle=active?'#fff':'rgba(255,255,255,0.55)';
+    ctx.font=big?'bold 28px monospace':'bold 16px monospace';
+    ctx.textAlign='center';
+    ctx.fillText(icon, b.x+b.w/2, b.y+b.h/2+big?10:6);
+  }
+  ctx.restore();
+}
+
+function drawTicker() {
+  const ty=30;
+  ctx.fillStyle='#cc0000'; ctx.fillRect(0,ty,W,18);
+  // BREAKING badge
+  ctx.fillStyle='#ffff00'; ctx.fillRect(0,ty,70,18);
+  ctx.fillStyle='#cc0000'; ctx.font='bold 9px monospace'; ctx.textAlign='center';
+  ctx.fillText('BREAKING',35,ty+13);
+  // Divider
+  ctx.fillStyle='#fff'; ctx.fillRect(70,ty+2,2,14);
+  // Scrolling text
+  ctx.save();
+  ctx.beginPath(); ctx.rect(72,ty,W-72,18); ctx.clip();
+  ctx.fillStyle='#ffff00'; ctx.font='bold 10px monospace'; ctx.textAlign='left';
+  ctx.fillText(TICKER, tickX, ty+13);
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────
+//  HUD
+// ─────────────────────────────────────────────
+function drawHUD() {
+  ctx.fillStyle='rgba(0,0,10,0.88)'; ctx.fillRect(0,0,W,30);
+  ctx.fillStyle='#ff4444'; ctx.font='bold 13px monospace'; ctx.textAlign='left';
+  ctx.fillText('♥ ♥ ♥', 8, 21);
+  ctx.fillStyle='#ffffff'; ctx.textAlign='center';
+  ctx.fillText('DNC vs D.T.J.', W/2, 21);
+  ctx.fillStyle='#ffcc00'; ctx.textAlign='right';
+  ctx.fillText('SCORE: 0', W-8, 21);
+}
+
+// ─────────────────────────────────────────────
+//  SPEECH BUBBLE
+// ─────────────────────────────────────────────
+function drawBubble(x, y, text, alpha) {
+  ctx.save(); ctx.globalAlpha = alpha;
+  const pw=180, ph=48, px=x-pw/2, py=y-ph-20;
+  ctx.fillStyle='#fff'; ctx.strokeStyle='#cc0000'; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.roundRect(px,py,pw,ph,8); ctx.fill(); ctx.stroke();
+  // Tail
+  ctx.beginPath(); ctx.moveTo(x-12,py+ph); ctx.lineTo(x,py+ph+20); ctx.lineTo(x+12,py+ph); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#cc0000'; ctx.font='bold 15px monospace'; ctx.textAlign='center';
+  ctx.fillText(text, x, py+22);
+  ctx.fillStyle='#555'; ctx.font='9px monospace';
+  ctx.fillText('(probably!)', x, py+38);
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────
+//  GAMEPLAY LAYOUT
+// ─────────────────────────────────────────────
+function drawGameplay(shake) {
+  const sx = shake ? (Math.random()-0.5)*shakeAmt : 0;
+  const sy = shake ? (Math.random()-0.5)*shakeAmt : 0;
+  ctx.save(); ctx.translate(sx, sy);
+
+  // Sky
+  const sg = ctx.createLinearGradient(0,0,0,H);
+  sg.addColorStop(0,'#090918'); sg.addColorStop(1,'#12123a');
+  ctx.fillStyle=sg; ctx.fillRect(0,0,W,H);
+
+  // Stars
+  stars.forEach(s=>{
+    ctx.fillStyle=`rgba(255,255,255,${s.a*0.5})`;
+    ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,Math.PI*2); ctx.fill();
+  });
+
+  // Ground
+  ctx.fillStyle='#08081e'; ctx.fillRect(0,804,W,50);
+  ctx.fillStyle='#0a0a28'; ctx.fillRect(0,804,W,6);
+
+  // Platforms
+  platforms.forEach(drawPlatform);
+  // Ladders
+  ladders.forEach(drawLadder);
+
+  // TVs on top platform
+  drawTV(TOP.x+8,         TOP.y-68, 'CNN',   totalT);
+  drawTV(TOP.x+8,         TOP.y-34, 'CNN',   totalT+0.4);
+  drawTV(TOP.x+TOP.w-46,  TOP.y-68, 'MSNBC', totalT);
+  drawTV(TOP.x+TOP.w-46,  TOP.y-34, 'MSNBC', totalT+0.4);
+
+  // D.T.J. at top center
+  drawDTJ(TOP.x + 80, TOP.y, 1.0, 0);  // sc=1.0, foot offset handles positioning
+
+  // Player character (DNC)
+  const walking = player.vx !== 0 || player.onLadder;
+  drawDonkey(player.x, player.y, 0.65, player.facing < 0, walking, player.walkT);
+
+  // Money pickups
+  [{x:160,y:645},{x:260,y:385},{x:130,y:255}].forEach(m=>{
+    ctx.fillStyle='#44cc44'; ctx.fillRect(m.x-11,m.y-11,22,22);
+    ctx.fillStyle='#88ff88'; ctx.fillRect(m.x-9,m.y-9,18,4);
+    ctx.fillStyle='#005500'; ctx.font='bold 11px monospace'; ctx.textAlign='center';
+    ctx.fillText('$',m.x,m.y+5);
+  });
+
+  ctx.restore();
+
+  drawHUD();
+  drawTicker();
+  drawDpad();
+
+  // DEBUG OVERLAY — remove before final deploy
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(0, 30, 220, 110);
+  ctx.fillStyle = '#0f0';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'left';
+  const dbg = [
+    `x:${player.x.toFixed(1)} y:${player.y.toFixed(1)}`,
+    `vx:${player.vx.toFixed(0)} vy:${player.vy.toFixed(0)}`,
+    `onGround:${player.onGround} onLadder:${player.onLadder}`,
+    `cooldown:${player.ladderCooldown.toFixed(2)}`,
+    `A:${keys['KeyA']||false} Z:${keys['KeyZ']||false} SPC:${keys['Space']||false}`,
+    `climbUp:${touch.climbUp} climbDn:${touch.climbDown}`,
+  ];
+  dbg.forEach((t,i) => ctx.fillText(t, 4, 44 + i*16));
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────
+//  MAIN LOOP
+// ─────────────────────────────────────────────
+let lastT = 0;
+
+function loop(ts) {
+  requestAnimationFrame(loop);
+  const dt = Math.min((ts-lastT)/1000, 0.05);
+  lastT = ts; totalT += dt; stateT += dt;
+
+  // Ticker scroll
+  tickX -= 70*dt;
+  if (tickX < -(ctx.measureText(TICKER).width||1200)) tickX = W;
+
+  // Star twinkle
+  stars.forEach(s=>{ s.a+=((Math.random()-0.5)*0.025); s.a=Math.max(0.1,Math.min(1,s.a)); });
+
+  // Particles
+  particles.forEach(p=>{
+    p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=260*dt; p.life-=p.decay*dt;
+  });
+  particles=particles.filter(p=>p.life>0);
+
+  // Shake decay
+  if (shakeAmt>0) shakeAmt=Math.max(0,shakeAmt-18*dt);
+
+  // State transitions
+  switch(state) {
+    case 'INTRO_BLACK':
+      if(stateT>1.4){state='INTRO_TITLE';stateT=0;} break;
+
+    case 'INTRO_TITLE':
+      if(stateT>2.8){state='INTRO_ESCALATOR';stateT=0;esc={x:W+60,y:H-110,phase:'walk',t:0,progress:0,armSwing:0};} break;
+
+    case 'INTRO_ESCALATOR':
+      esc.t+=dt; esc.armSwing=totalT;
+      if(esc.phase==='walk'){
+        esc.x-=90*dt; // walk left toward escalator entry
+        if(esc.x<=ESC_X1+10){esc.phase='rise';esc.progress=0;}
+      } else {
+        esc.progress=Math.min(esc.progress+dt/3.5,1); // 3.5s ride
+        // interpolate along escalator line
+        esc.x=ESC_X1+(ESC_X2-ESC_X1)*esc.progress;
+        esc.y=ESC_Y1+(ESC_Y2-ESC_Y1)*esc.progress;
+        if(esc.progress>=1&&stateT>5.5){
+          state='INTRO_STAIRS'; stateT=0;
+          stairsPhase='walk'; stairsX=-60; stairsY=H-110; stairsT=0;
+        }
+      }
+      break;
+
+    case 'INTRO_STAIRS':
+      stairsT+=dt;
+      if(stairsPhase==='walk'){
+        stairsX+=110*dt;
+        // Zoom in during walk: 0→2.5s ease from establishing shot to final zoom
+        const zp = Math.min(stairsT / 2.5, 1);
+        const ze = zp * zp * (3 - 2 * zp); // smoothstep easing
+        zoomS  = ZOOM_S_START  + (ZOOM_S_END  - ZOOM_S_START)  * ze;
+        zoomOx = ZOOM_OX_START + (ZOOM_OX_END - ZOOM_OX_START) * ze;
+        zoomOy = ZOOM_OY_START + (ZOOM_OY_END - ZOOM_OY_START) * ze;
+        if(stairsX>=STAIR_MID_X-10){stairsPhase='climb';}
+      } else if(stairsPhase==='climb'){
+        // Walk up the stairs — 11 steps, each ~17px rise
+        const climbDur=3.0;
+        const prog=Math.min(stairsT/climbDur,1); // stairsT resets at phase change
+        // stairs go from bottom step (y≈794) up to top step (y≈607)
+        stairsX=STAIR_MID_X+(prog*0)  ; // stays roughly centered
+        stairsY=794 - prog*(794 - STAIR_TOP_Y);
+        if(prog>=1){stairsPhase='top'; stairsT=0;}
+      } else if(stairsPhase==='top') {
+        // Walk left from stair center to gameplay position (TOP.x+80)
+        const targetX = TOP.x + 80;  // = 140
+        const walkSpeed = 80; // px per second — STAIR_MID_X(230) → 140 = 90px ~1.1s
+        stairsY = TOP.y;
+        if(stairsX > targetX + 1) {
+          stairsX -= walkSpeed * dt;
+          if(stairsX < targetX) stairsX = targetX;
+        } else {
+          // Reached target — hold briefly then transition
+          stairsX = targetX;
+          if(stairsT > 1.2) {  // 1.2s at top before taunt
+            state='INTRO_TAUNT'; stateT=0; tauntArm=0; tauntBubble=0;
+          }
+        }
+      }
+      break;
+
+    case 'INTRO_TAUNT':
+      // Phase 1 (0-2.5s): TVs are broadcasting, DTJ watches arms down
+      // Phase 2 (2.5s+): DTJ raises arms, yells FAKE NEWS
+      if(stateT < 2.5) {
+        tauntArm = 0;
+        tauntBubble = 0;
+      } else {
+        tauntArm = Math.min((stateT-2.5)/0.9, 1);
+        tauntBubble = stateT > 3.2 ? Math.min((stateT-3.2)/0.5, 1) : 0;
+      }
+      if(stateT > 6.0){
+        state='INTRO_SHATTER';stateT=0;shatterT=0;rampReveal=0;buildingFade=1;
+        initBricks();
+        boom(W/2,300,36,true);
+        shakeAmt=14;
+      }
+      break;
+
+    case 'INTRO_SHATTER':
+      shatterT+=dt;
+      // Building fades out
+      buildingFade=Math.max(1-shatterT*1.2,0);
+      // Bricks activate top→bottom, tumble down
+      bricks.forEach(b=>{
+        if(shatterT>b.delay){
+          b.active=true;
+          b.vy+=400*dt;
+          b.y+=b.vy*dt;
+          b.x+=b.vx*dt;
+          b.rot+=b.rotV*dt;
+          if(!b.exploded && b.y>b.startY+30){
+            b.exploded=true;
+            boom(b.x+b.w/2, b.y+b.h/2, 2);
+          }
+        }
+      });
+      // Platforms/grid reveal — delay until wave 2+ clears (0.5s after start)
+      rampReveal=Math.min(Math.max(shatterT-0.4,0)/2.2,1);
+      // Shake on first hit
+      if(shatterT>0.5&&shatterT<0.55){ shakeAmt=10; boom(W/2,500,28,true); }
+      if(shatterT>1.2&&shatterT<1.25){ shakeAmt=8; }
+      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; }
+      break;
+  }
+
+  // ── RENDER ───────────────────────────────
+  ctx.clearRect(0,0,W,H);
+
+  switch(state) {
+
+    case 'INTRO_BLACK': {
+      ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+      const a=Math.min(stateT/0.9,1);
+      ctx.globalAlpha=a;
+      ctx.fillStyle='#cc0000'; ctx.font='bold 12px monospace'; ctx.textAlign='center';
+      ctx.fillText('● INSERT QUARTER ●',W/2,H/2);
+      ctx.globalAlpha=1;
+      break;
+    }
+
+    case 'INTRO_TITLE': {
+      ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+      // CRT scanlines
+      for(let sl=0;sl<H;sl+=3){ctx.fillStyle='rgba(0,0,0,0.3)';ctx.fillRect(0,sl,W,1);}
+      const a=Math.min(stateT/0.6,1); ctx.globalAlpha=a;
+      ctx.shadowColor='#cc0000'; ctx.shadowBlur=30;
+      ctx.fillStyle='#cc0000'; ctx.font='bold 48px monospace'; ctx.textAlign='center';
+      ctx.fillText('DNC',W/2,H/2-70);
+      ctx.shadowBlur=0;
+      ctx.fillStyle='#ffcc00'; ctx.font='bold 22px monospace';
+      ctx.fillText('vs.',W/2,H/2-28);
+      ctx.shadowColor='#4466ff'; ctx.shadowBlur=20;
+      ctx.fillStyle='#ffffff'; ctx.font='bold 44px monospace';
+      ctx.fillText('D.T.J.',W/2,H/2+24);
+      ctx.shadowBlur=0;
+      ctx.fillStyle='#888'; ctx.font='10px monospace';
+      ctx.fillText('CLIMB THE TOWER OF POWER',W/2,H/2+62);
+      ctx.fillStyle='#333'; ctx.font='9px monospace';
+      ctx.fillText('© SATIRE ENTERTAINMENT  ★  ALL FICTIONAL',W/2,H-28);
+      ctx.globalAlpha=1;
+      ctx.fillStyle='rgba(255,255,255,0.35)'; ctx.font='10px monospace';
+      ctx.fillText('TAP / ANY KEY TO SKIP',W/2,H-10);
+      break;
+    }
+
+    case 'INTRO_ESCALATOR': {
+      drawNightCity();
+
+      // Draw escalator FIRST (back layer)
+      drawEscalatorStructure(esc.t);
+
+      // Character — hidden inside escalator glass during 'rise'
+      if(esc.phase==='walk'){
+        // Walking toward escalator from right — fully visible
+        drawDTJ(esc.x, esc.y, 1, 0, true, esc.armSwing);
+      } else {
+        // Inside escalator — clip to tube area so he appears inside it
+        ctx.save();
+        const dx=ESC_X2-ESC_X1, dy=ESC_Y2-ESC_Y1;
+        const ang=Math.atan2(dy,dx);
+        const len=Math.sqrt(dx*dx+dy*dy);
+        ctx.translate(ESC_X1,ESC_Y1); ctx.rotate(ang);
+        ctx.beginPath(); ctx.rect(-2,-36,len+4,60); ctx.clip();
+        ctx.rotate(-ang); ctx.translate(-ESC_X1,-ESC_Y1);
+        // draw at escalator position — slightly smaller inside tube
+        drawDTJ(esc.x, esc.y, 0.88, 0, false, esc.armSwing);
+        ctx.restore();
+      }
+
+      // D.T.J. label
+      if(esc.phase==='walk'){
+        ctx.fillStyle='#ffcc00'; ctx.font='bold 11px monospace'; ctx.textAlign='center';
+        ctx.fillText('D.T.J.',esc.x,esc.y-80);
+      }
+
+      // Chyron
+      ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,H-55,W,32);
+      ctx.fillStyle='#cc0000'; ctx.fillRect(0,H-55,W,5);
+      ctx.fillStyle='#ffcc00'; ctx.font='bold 11px monospace'; ctx.textAlign='center';
+      ctx.fillText('D.T.J. ARRIVES AT TOWER  ★  LIVE COVERAGE',W/2,H-32);
+      ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.font='10px monospace';
+      ctx.fillText('TAP / ANY KEY TO SKIP',W/2,H-8);
+      break;
+    }
+
+    case 'INTRO_STAIRS': {
+      // Apply zoom transform — building scales so stairs top aligns with TOP.y
+      ctx.save();
+      ctx.translate(zoomOx, zoomOy);
+      ctx.scale(zoomS, zoomS);
+      drawLincolnBuilding(1);
+      ctx.restore();
+
+      // DTJ in zoomed coords: transform his building-space position to screen space
+      const dtjScreenX = stairsX * zoomS + zoomOx;
+      const dtjScreenY = stairsY * zoomS + zoomOy;
+      drawDTJ(dtjScreenX, dtjScreenY, 1.1 * zoomS, 0,
+              stairsPhase==='walk'||stairsPhase==='climb', stairsT);
+
+      // "D.T.J." nameplate when at top
+      if(stairsPhase==='top'){
+        ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(W/2-80,H/2-20,160,30);
+        ctx.fillStyle='#ffcc00'; ctx.font='bold 14px monospace'; ctx.textAlign='center';
+        ctx.fillText('D.T.J. HAS ARRIVED',W/2,H/2);
+      }
+
+      ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.font='10px monospace'; ctx.textAlign='center';
+      ctx.fillText('TAP / ANY KEY TO SKIP',W/2,H-12);
+      break;
+    }
+
+    case 'INTRO_TAUNT': {
+      // Keep final zoom during taunt
+      ctx.save();
+      ctx.translate(ZOOM_OX_END, ZOOM_OY_END);
+      ctx.scale(ZOOM_S_END, ZOOM_S_END);
+      drawLincolnBuilding(1);
+      ctx.restore();
+
+      // All positions in screen space (already zoomed)
+      const tauntSY = stairsY;  // stairsY was already snapped to TOP.y
+      const tvAlpha = Math.min(stateT / 0.8, 1);
+      ctx.globalAlpha = tvAlpha;
+      drawTV(tauntSY - 80, tauntSY - 100, 'CNN', totalT);
+      drawTV(tauntSY + 40, tauntSY - 100, 'MSNBC', totalT);
+      ctx.globalAlpha = 1;
+      if(stateT < 2.5) {
+        const phrases = ['RUSSIA HOAX!', 'INSURRECTION!', 'THREAT TO DEMOCRACY!'];
+        const pi = Math.floor(stateT * 1.2) % phrases.length;
+        const pa = Math.sin(stateT * 3) * 0.5 + 0.5;
+        ctx.globalAlpha = pa;
+        ctx.fillStyle = '#ff4444'; ctx.font = 'bold 11px monospace'; ctx.textAlign = 'center';
+        ctx.fillText(phrases[pi], stairsX - 40, tauntSY - 130 - (stateT % 0.8) * 20);
+        ctx.globalAlpha = 1;
+      }
+      drawDTJ(stairsX, stairsY, 1.1, tauntArm);
+      if(tauntBubble>0.05) drawBubble(stairsX+30, stairsY-80, '"FAKE NEWS!"', tauntBubble);
+      ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.font='10px monospace'; ctx.textAlign='center';
+      ctx.fillText('TAP / ANY KEY TO SKIP',W/2,H-12);
+      break;
+    }
+
+    case 'INTRO_SHATTER': {
+      // Fading building behind — keep final zoom
+      if(buildingFade>0){
+        ctx.save();
+        ctx.translate(ZOOM_OX_END, ZOOM_OY_END);
+        ctx.scale(ZOOM_S_END, ZOOM_S_END);
+        drawLincolnBuilding(buildingFade);
+        ctx.restore();
+      }
+
+      // Gameplay grid phasing in
+      if(rampReveal>0){
+        ctx.globalAlpha=rampReveal;
+        drawGameplay(false);
+        ctx.globalAlpha=1;
+      }
+
+      // Bricks tumbling
+      const shakeX=(Math.random()-0.5)*shakeAmt;
+      const shakeY=(Math.random()-0.5)*shakeAmt;
+      ctx.save(); ctx.translate(shakeX,shakeY);
+      bricks.forEach(b=>{
+        if(!b.active) return;
+        ctx.save();
+        ctx.translate(b.x+b.w/2, b.y+b.h/2);
+        ctx.rotate(b.rot);
+        ctx.fillStyle=b.color;
+        ctx.fillRect(-b.w/2,-b.h/2,b.w,b.h);
+        // Mortar line
+        ctx.strokeStyle='rgba(0,0,0,0.4)'; ctx.lineWidth=1;
+        ctx.strokeRect(-b.w/2,-b.h/2,b.w,b.h);
+        // Highlight
+        ctx.fillStyle='rgba(255,255,255,0.15)';
+        ctx.fillRect(-b.w/2,-b.h/2,b.w,3);
+        ctx.restore();
+      });
+      ctx.restore();
+
+      // DTJ stays at his platform position during shatter — 
+      // the building crumbles around him, he remains standing
+      if(buildingFade > 0 || rampReveal < 1) {
+        ctx.globalAlpha = Math.max(buildingFade, rampReveal);
+        drawDTJ(TOP.x + 80, TOP.y, 1.0, tauntArm);
+        ctx.globalAlpha = 1;
+      }
+
+      // Particles
+      particles.forEach(p=>{
+        ctx.globalAlpha=Math.max(p.life,0);
+        ctx.fillStyle=p.color;
+        ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
+      });
+      ctx.globalAlpha=1;
+
+      // Screen flash on big impacts
+      if(shatterT<0.12){
+        ctx.fillStyle=`rgba(255,255,255,${(0.12-shatterT)/0.12*0.7})`;
+        ctx.fillRect(0,0,W,H);
+      }
+      if(shatterT>0.5&&shatterT<0.62){
+        ctx.fillStyle=`rgba(255,180,0,${(0.62-shatterT)/0.12*0.5})`;
+        ctx.fillRect(0,0,W,H);
+      }
+      break;
+    }
+
+    case 'GAMEPLAY': {
+      updatePlayer(dt);
+      drawGameplay(shakeAmt>0);
+      // Particles leftover
+      particles.forEach(p=>{
+        ctx.globalAlpha=Math.max(p.life,0);
+        ctx.fillStyle=p.color;
+        ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
+      });
+      ctx.globalAlpha=1;
+      // Press to start
+      if(stateT<4){
+        const ba=Math.sin(stateT*4)>0;
+        if(ba){
+          ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(0,H/2-55,W,75);
+          ctx.fillStyle='#ffcc00'; ctx.font='bold 18px monospace'; ctx.textAlign='center';
+          ctx.fillText('PRESS ANY KEY TO PLAY',W/2,H/2-16);
+          ctx.fillStyle='#aaa'; ctx.font='11px monospace';
+          ctx.fillText('← → MOVE   SPACE JUMP   ↑↓ CLIMB',W/2,H/2+14);
+        }
+      }
+      break;
+    }
+  }
+}
+
+requestAnimationFrame(ts=>{ lastT=ts; requestAnimationFrame(loop); });
+</script>
+</body>
+</html>
