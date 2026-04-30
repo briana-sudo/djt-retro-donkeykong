@@ -158,6 +158,14 @@ const ladders = [
 const LADDER_W = 24;
 const TOP = platforms[5];
 const FLOOR = platforms[0];
+// Block C — single source of truth for DTJ + barrel positions on TOP.
+// TOP is x=60 w=360 (Notion spec). Layout left→right:
+//   TVs (CNN col @ TOP.x+8, MSNBC col @ TOP.x+50, both ranges end ~146)
+//   → barrel decoration @ BARREL_X (range ~212–248)
+//   → DTJ @ DTJ_GAMEPLAY_X (range ~295–345)
+//   → ~75px empty zone at right edge
+const BARREL_X        = TOP.x + 170;   // = 230 (capsule spawn origin)
+const DTJ_GAMEPLAY_X  = TOP.x + 260;   // = 320 (intro walks here too)
 
 // ─────────────────────────────────────────────
 //  STATE MACHINE
@@ -484,7 +492,7 @@ let dtjThrowT = 0;       // throw animation timer (>0 → show dtj_throw)
 function spawnCapsule() {
   // Block 2.6 — Level 1: capsules always roll rightward from the static barrel at TOP.x+50.
   capsules.push({
-    x: TOP.x + 50,                 // spawns FROM the static barrel decoration
+    x: BARREL_X,                   // Block C — spawns from the static barrel decoration
     y: TOP.y - CAPSULE_R,          // sitting on TOP platform
     vx: CAPSULE_ROLL_SPD,          // always positive (rightward)
     vy: 0,
@@ -1787,16 +1795,18 @@ function drawGameplay(shake) {
   ladders.forEach(drawLadder);
 
   // TVs on top platform
-  drawTV(TOP.x+8,         TOP.y-68, 'CNN',   totalT);
-  drawTV(TOP.x+8,         TOP.y-34, 'CNN',   totalT+0.4);
-  drawTV(TOP.x+TOP.w-46,  TOP.y-68, 'MSNBC', totalT);
-  drawTV(TOP.x+TOP.w-46,  TOP.y-34, 'MSNBC', totalT+0.4);
+  // Block C — both TV stacks shifted LEFT (CNN col + MSNBC col, side-by-side).
+  // Frees the right ~270px of TOP for the barrel decoration + DTJ.
+  drawTV(TOP.x+8,  TOP.y-68, 'CNN',   totalT);
+  drawTV(TOP.x+8,  TOP.y-34, 'CNN',   totalT+0.4);
+  drawTV(TOP.x+50, TOP.y-68, 'MSNBC', totalT);
+  drawTV(TOP.x+50, TOP.y-34, 'MSNBC', totalT+0.4);
 
   // Block 2.6 — static barrel decoration on TOP, screen-LEFT of DTJ (which is DTJ's right hand side).
   // Drawn AFTER platforms but BEFORE DTJ so DTJ overlaps it visually if they cross.
   // Decorative only — no entity, no collision. Capsules spawn FROM this position (TOP.x+50).
   // y arg is the foot/bottom edge sitting on TOP surface; footFrac=1.0 anchors the bottom there.
-  drawSprite('barrel_upright', TOP.x + 50, TOP.y, CAPSULE_R * 2, false, 1.0);
+  drawSprite('barrel_upright', BARREL_X, TOP.y, CAPSULE_R * 2, false, 1.0);
 
   // Capsules + briefcases (rendered behind characters so DNC/DTJ overlap looks right)
   drawCapsules();
@@ -1807,9 +1817,9 @@ function drawGameplay(shake) {
   // flip=false because the dtj_throw asset's default orientation already places the throwing arm on screen-right.
   // If field-test shows the arm rendering on screen-left, flip this single boolean to true.
   if (dtjThrowT > 0) {
-    drawSprite('dtj_throw', TOP.x + 80, TOP.y, 110, false, 0.92);
+    drawSprite('dtj_throw', DTJ_GAMEPLAY_X, TOP.y, 110, false, 0.92);
   } else {
-    drawSprite('dtj_idle', TOP.x + 80, TOP.y, 110);
+    drawSprite('dtj_idle', DTJ_GAMEPLAY_X, TOP.y, 110);
   }
 
   // Player character (DNC)
@@ -1904,17 +1914,18 @@ function loop(ts) {
         stairsY=794 - prog*(794 - STAIR_TOP_Y);
         if(prog>=1){stairsPhase='top'; stairsT=0;}
       } else if(stairsPhase==='top') {
-        // Walk left from stair center to gameplay position (TOP.x+80)
-        const targetX = TOP.x + 80;  // = 140
-        const walkSpeed = 80; // px per second — STAIR_MID_X(230) → 140 = 90px ~1.1s
+        // Block C — walk from stair center to gameplay position (DTJ_GAMEPLAY_X=320),
+        // bidirectional in case future layouts put DTJ left or right of STAIR_MID_X.
+        const targetX = DTJ_GAMEPLAY_X;
+        const walkSpeed = 80;        // px per second
         stairsY = TOP.y;
-        if(stairsX > targetX + 1) {
-          stairsX -= walkSpeed * dt;
-          if(stairsX < targetX) stairsX = targetX;
+        const dx = targetX - stairsX;
+        if (Math.abs(dx) > walkSpeed * dt) {
+          stairsX += Math.sign(dx) * walkSpeed * dt;
         } else {
           // Reached target — hold briefly then transition
           stairsX = targetX;
-          if(stairsT > 1.2) {  // 1.2s at top before taunt
+          if (stairsT > 1.2) {       // 1.2s at top before taunt
             state='INTRO_TAUNT'; stateT=0; tauntArm=0; tauntBubble=0;
           }
         }
@@ -2161,7 +2172,7 @@ function loop(ts) {
       // DTJ stays at his platform position during shatter
       if(buildingFade > 0 || rampReveal < 1) {
         ctx.globalAlpha = Math.max(buildingFade, rampReveal);
-        drawSprite('dtj_idle', TOP.x + 80, TOP.y, 110);
+        drawSprite('dtj_idle', DTJ_GAMEPLAY_X, TOP.y, 110);
         ctx.globalAlpha = 1;
       }
 
