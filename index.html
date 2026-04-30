@@ -217,7 +217,7 @@ let state = 'INTRO_BLACK', stateT = 0, totalT = 0;
 let skipDone = false;
 
 function skipToGame() {
-  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjThrowT = 0; briefcases.length = 0; helpers.length = 0; player.lives = 3; player.invulnT = 0; playerScore = 0; multiplier = 1.0; multiplierT = 0; pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; pelosi.timer = PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN); pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; }
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; briefcases.length = 0; helpers.length = 0; player.lives = 3; player.invulnT = 0; playerScore = 0; multiplier = 1.0; multiplierT = 0; pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; pelosi.timer = PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN); pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; }
 }
 
 // ─────────────────────────────────────────────
@@ -537,31 +537,74 @@ const CAPSULE_LIFE = 30.0;
 // tilt while rolling; this only controls the initial throw and the render mirror.
 const CAPSULE_THROW_DIR = -1;
 
+// C3 — DTJ throw animation state machine. On capsule spawn timer fire (and only if IDLE),
+// DTJ walks RIGHT to BARREL_X (0.4s, dtj_walk/dtj_walk2 cycle), throws (0.3s, dtj_throw mirrored),
+// walks back LEFT to DTJ_GAMEPLAY_X (0.3s, walk-cycle mirrored), returns to IDLE. Capsule spawns
+// at the START of the THROW phase so its origin is BARREL_X. Static barrel decoration never moves.
+// If the spawn timer fires during anim, the new throw kicks off as soon as state returns to IDLE
+// (condition gate below handles this naturally — no separate queue var needed).
+const DTJ_WALK_TO_DURATION   = 0.4;
+const DTJ_THROW_DURATION     = 0.3;
+const DTJ_WALK_BACK_DURATION = 0.3;
+let dtjAnimState = 'IDLE';                  // 'IDLE' | 'WALK_TO_BARREL' | 'THROW' | 'WALK_BACK'
+let dtjAnimT     = 0;
+let dtjAnimX     = DTJ_GAMEPLAY_X;          // current x during the animation
+
 function spawnCapsule() {
-  // F4 — Level 1: capsules now spawn from the barrel and roll/are thrown to screen LEFT.
-  // DTJ stands left of the barrel; capsules pass under DTJ then off the left edge of TOP, cascading down.
+  // C3 — pure entity spawn. Position/direction unchanged. Throw animation timing + spawn-interval
+  // recompute live in updateCapsules now (so the capsule pops into existence at the right phase
+  // of DTJ's animation, not as a side effect of the spawn-timer firing).
   capsules.push({
-    x: BARREL_X,                   // Block C — spawns from the static barrel decoration
-    y: TOP.y - CAPSULE_R,          // sitting on TOP platform
+    x: BARREL_X,                                // spawns from the static barrel decoration
+    y: TOP.y - CAPSULE_R,                       // sitting on TOP platform
     vx: CAPSULE_THROW_DIR * CAPSULE_ROLL_SPD,   // G4 — sign derived from CAPSULE_THROW_DIR
     vy: 0,
     rolling: true,
     onPlat: TOP,
     rot: 0,
-    lifeTimer: CAPSULE_LIFE,       // C2 — long enough for full cascade to FLOOR + off-screen exit
+    lifeTimer: CAPSULE_LIFE,                    // C2 — long enough for full cascade
   });
-  dtjThrowT = 0.5;
-  // Block 2.5 — random spawn interval preserved (2.5–4.5s)
-  capsuleSpawnInterval = 2.5 + Math.random() * 2.0;
 }
 
 function updateCapsules(dt) {
-  if (dtjThrowT > 0) dtjThrowT -= dt;
-
+  // C3 — drive DTJ throw animation. State transitions handle their own x interpolation and the
+  // capsule entity spawn (at the start of the THROW phase).
   capsuleSpawnT += dt;
-  if (capsuleSpawnT >= capsuleSpawnInterval) {
-    capsuleSpawnT = 0;
-    spawnCapsule();
+  if (dtjAnimState === 'IDLE') {
+    if (capsuleSpawnT >= capsuleSpawnInterval) {
+      capsuleSpawnT = 0;
+      capsuleSpawnInterval = 2.5 + Math.random() * 2.0;
+      dtjAnimState = 'WALK_TO_BARREL';
+      dtjAnimT = 0;
+      dtjAnimX = DTJ_GAMEPLAY_X;
+    }
+  } else {
+    dtjAnimT += dt;
+    if (dtjAnimState === 'WALK_TO_BARREL') {
+      const t = Math.min(dtjAnimT / DTJ_WALK_TO_DURATION, 1);
+      dtjAnimX = DTJ_GAMEPLAY_X + (BARREL_X - DTJ_GAMEPLAY_X) * t;
+      if (t >= 1) {
+        dtjAnimX = BARREL_X;
+        dtjAnimState = 'THROW';
+        dtjAnimT = 0;
+        spawnCapsule();                                       // capsule pops out at start of THROW
+      }
+    } else if (dtjAnimState === 'THROW') {
+      if (dtjAnimT >= DTJ_THROW_DURATION) {
+        dtjAnimState = 'WALK_BACK';
+        dtjAnimT = 0;
+      }
+    } else if (dtjAnimState === 'WALK_BACK') {
+      const t = Math.min(dtjAnimT / DTJ_WALK_BACK_DURATION, 1);
+      dtjAnimX = BARREL_X + (DTJ_GAMEPLAY_X - BARREL_X) * t;
+      if (t >= 1) {
+        dtjAnimX = DTJ_GAMEPLAY_X;
+        dtjAnimState = 'IDLE';
+        dtjAnimT = 0;
+        // If the spawn timer is already past threshold (queued during anim), the next loop will
+        // re-fire from the IDLE branch above — no explicit queue var needed.
+      }
+    }
   }
 
   for (let i = capsules.length - 1; i >= 0; i--) {
@@ -2385,15 +2428,21 @@ function drawGameplay(shake) {
   drawHelpers();
   drawPelosi();
 
-  // D.T.J. at top center — swap to throw sprite during throw window.
-  // G4 — flip is derived from CAPSULE_THROW_DIR, not a hardcoded boolean. dtj_throw default
-  // orientation is right-facing; a leftward throw (CAPSULE_THROW_DIR < 0) mirrors the sprite
-  // so the throwing arm leads the capsule. Flipping the constant flips both the spawn vx
-  // and this render in lockstep.
-  if (dtjThrowT > 0) {
-    drawSprite('dtj_throw', DTJ_GAMEPLAY_X, TOP.y, 110, CAPSULE_THROW_DIR < 0, 1.0);
+  // D.T.J. — C3 state-driven render.
+  //   IDLE:           dtj_idle at DTJ_GAMEPLAY_X (no flip)
+  //   WALK_TO_BARREL: dtj_walk/dtj_walk2 alternating, x interpolates DTJ_GAMEPLAY_X → BARREL_X (no flip)
+  //   THROW:          dtj_throw at BARREL_X, flip = CAPSULE_THROW_DIR < 0 (mirrors for leftward throw)
+  //   WALK_BACK:      dtj_walk/dtj_walk2 alternating, x interpolates BARREL_X → DTJ_GAMEPLAY_X (flip=true)
+  // dtj_throw is fired ONLY at BARREL_X. dtj_idle is fired ONLY at DTJ_GAMEPLAY_X.
+  if (dtjAnimState === 'IDLE') {
+    drawSprite('dtj_idle', DTJ_GAMEPLAY_X, TOP.y, 110, false, 1.0);
+  } else if (dtjAnimState === 'THROW') {
+    drawSprite('dtj_throw', dtjAnimX, TOP.y, 110, CAPSULE_THROW_DIR < 0, 1.0);
   } else {
-    drawSprite('dtj_idle', DTJ_GAMEPLAY_X, TOP.y, 110);
+    // WALK_TO_BARREL or WALK_BACK — alternate walk frames every 0.1s
+    const walkSprite = (Math.floor(dtjAnimT * 10) % 2 === 0) ? 'dtj_walk' : 'dtj_walk2';
+    const walkFlip   = (dtjAnimState === 'WALK_BACK');         // walk-back faces left
+    drawSprite(walkSprite, dtjAnimX, TOP.y, 110, walkFlip, 1.0);
   }
 
   // Player character (DNC)
