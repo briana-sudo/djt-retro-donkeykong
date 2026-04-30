@@ -141,6 +141,15 @@ for (const [name, src] of Object.entries(spriteData)) {
   sprites[name].onload = () => {
     processSprite(name, sprites[name]);
     spritesLoaded++;
+    // G1 — once all sprites have finished loading + processing, enumerate the cache so it's
+    // immediately visible in devtools whether anything is missing.
+    if (spritesLoaded === spritesTotal) {
+      const keys = Object.keys(spriteCache).sort();
+      console.log('G1 — sprite cache ready: ' + keys.length + ' / ' + spritesTotal + ' sprites');
+      console.log('G1 — cache keys: ' + keys.join(', '));
+      const missing = Object.keys(spriteData).filter(k => !spriteCache[k]);
+      if (missing.length) console.error('G1 — sprites MISSING from cache:', missing);
+    }
   };
   sprites[name].onerror = (e) => console.warn('Block A — sprite FAILED to load:', name, e);
   sprites[name].src = src;
