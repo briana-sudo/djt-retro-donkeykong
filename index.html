@@ -2809,7 +2809,14 @@ function loop(ts) {
       if(stateT>1.4){state='INTRO_TITLE';stateT=0;} break;
 
     case 'INTRO_TITLE':
-      if(stateT>2.8){state='INTRO_ESCALATOR';stateT=0;esc={x:W+60,y:H-110,phase:'walk',t:0,progress:0,armSwing:0};} break;
+      if(stateT>2.8){state='INTRO_ESCALATOR';stateT=0;esc={x:W+60,y:H-80,phase:'walk',t:0,progress:0,armSwing:0};} break;
+                              // INTRO-ESC FIX — walk-phase y was H-110 (744), which floated DTJ
+                              // ~30px above the street top. Set to H-80 (774) so feet sit on the
+                              // street where lamp pole bases meet the ground (drawNightCity:
+                              // ctx.fillRect(0, H-80, W, 80) — street strip starts at H-80).
+                              // Rise-phase interpolation overwrites esc.y from ESC_Y1 (H-90=764)
+                              // so transitioning to rise produces a small "step up onto the
+                              // escalator" snap that reads naturally.
 
     case 'INTRO_ESCALATOR':
       esc.t+=dt; esc.armSwing=totalT;
