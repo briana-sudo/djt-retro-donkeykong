@@ -3366,12 +3366,44 @@ function loop(ts) {
 
     case 'CUTSCENE_BETWEEN': {
       cutsceneT += dt;
-      // I2 — procedural sky (gradient + drifting clouds). I6 will add eagle + DTJ + bubble + LEVEL 2 placeholder.
       drawCutsceneSky(dt);
-      const pulseB = 0.5 + 0.5 * Math.sin(stateT * 4);
-      ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulseB).toFixed(3) + ')';
-      ctx.font = 'bold 14px monospace';
-      ctx.fillText('TAP TO RESTART', W/2, 780);
+
+      // I6 — eagle + DTJ fly across sky. Eagle enters from left (x=-80, y=H/2) at 80 px/s,
+      // stops at stateT >= 4.5s. DTJ pinned 60px below eagle.
+      const eagle = cutsceneEagle;
+      if (eagle.mode === 'idle') {
+        eagle.x = -80;
+        eagle.y = H / 2;
+        eagle.mode = 'between';
+      }
+      if (eagle.mode === 'between' && stateT < 4.5) {
+        eagle.x += 80 * dt;
+      }
+      const dtjX = eagle.x;
+      const dtjY = eagle.y + 60;
+      drawSprite('dtj_idle',    dtjX, dtjY, 80, false, 1.0);
+      drawSprite('eagle_carry', eagle.x, eagle.y, 80, false, 1.0);
+
+      // I6 — DTJ speech bubble rotation (3 lines, each 1.5s, no fade)
+      let bubbleText = null;
+      if      (stateT < 1.5) bubbleText = 'THANK YOU PATRIOTS!';
+      else if (stateT < 3.0) bubbleText = 'GREATEST VOTERS EVER!';
+      else if (stateT < 4.5) bubbleText = 'WE LOVE THE EAGLE!';
+      if (bubbleText) {
+        drawCutsceneBubble(dtjX, dtjY - 80, bubbleText, 1.0);
+      }
+
+      // I6 — at t=5.0s reveal LEVEL 2 COMING SOON header + TAP TO RESTART prompt
+      if (stateT >= 5.0) {
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 26px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('LEVEL 2 COMING SOON', W/2, 220);
+        const pulseB = 0.5 + 0.5 * Math.sin(stateT * 4);
+        ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulseB).toFixed(3) + ')';
+        ctx.font = 'bold 14px monospace';
+        ctx.fillText('TAP TO RESTART', W/2, 260);
+      }
       break;
     }
   }
