@@ -54,7 +54,10 @@ const spriteData = {
   zombie_glasses: 'sprites/zombie_glasses.png',
   zombie_dad: 'sprites/zombie_dad.png',
   barrel_upright: 'sprites/barrel_upright.png',
-  barrel_endview: 'sprites/barrel_endview.png'
+  barrel_endview: 'sprites/barrel_endview.png',
+  // I2 — RNC convention stage background. 960×541 RGBA. Used as the cutscene backdrop in
+  // CUTSCENE_PHASE1 / CUTSCENE_PHASE3 / CUTSCENE_SCORE (letterboxed in the canvas).
+  rnc_stage: 'sprites/rnc_stage.png'
 };
 
 // G1 REPLACEMENT — sprites ship as PNGs with real alpha (rembg-converted from the original JPGs;
@@ -265,6 +268,7 @@ function cutsceneAdvance() {
   if (state === 'CUTSCENE_SCORE') {
     state = 'CUTSCENE_BETWEEN';
     stateT = 0;
+    seedCutsceneClouds();                                 // I2 — fresh cloud layout each visit
     return;
   }
   if (state === 'CUTSCENE_BETWEEN') {
@@ -2496,6 +2500,65 @@ function drawHeart(cx, cy, size, filled) {
   }
 }
 
+// ─────────────────────────────────────────────
+//  I2 — CUTSCENE BACKGROUNDS
+// ─────────────────────────────────────────────
+// rnc_stage backdrop. The PNG is 960×541 (16:9-ish). Game canvas is 480×854 portrait.
+// We scale the stage to canvas WIDTH (480 wide → 270.5 tall) and letterbox solid black above
+// and below. STAGE_FLOOR_Y is the canvas y where sprites' feet should sit on the gold-star
+// carpet floor (per spec — close to the lower-third of the scaled stage band).
+const STAGE_CANVAS_TOP   = 292;
+const STAGE_FLOOR_Y      = 540;
+const STAGE_LEFT_BOUND   = 0;
+const STAGE_RIGHT_BOUND  = W;
+
+function drawRncStage() {
+  // Black backdrop (letterbox bars above/below the stage band)
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+  const cached = spriteCache['rnc_stage'];
+  if (!cached) return;                                    // sprite not loaded yet — keep the bars
+  const stageH = W * (cached.height / cached.width);      // preserve aspect at canvas width
+  ctx.drawImage(cached, 0, STAGE_CANVAS_TOP, W, stageH);
+}
+
+// Procedural sky for CUTSCENE_BETWEEN. Vertical gradient + 3–5 drifting cloud blobs.
+// Cloud state initialized lazily on first draw and re-seeded any time the cutscene re-enters.
+const CUTSCENE_CLOUDS = [];
+function seedCutsceneClouds() {
+  CUTSCENE_CLOUDS.length = 0;
+  const N = 4 + Math.floor(Math.random() * 2);            // 4 or 5 clouds
+  for (let i = 0; i < N; i++) {
+    CUTSCENE_CLOUDS.push({
+      x: Math.random() * W,
+      y: 80 + Math.random() * 380,                        // upper / middle band
+      r: 28 + Math.random() * 22,                         // base blob radius
+      spd: 8 + Math.random() * 8,                         // ~10 px/s leftward drift
+    });
+  }
+}
+function drawCutsceneSky(dt) {
+  if (CUTSCENE_CLOUDS.length === 0) seedCutsceneClouds();
+  // Vertical gradient — light blue (top) to deeper blue (bottom)
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0,    '#9ec9ee');
+  g.addColorStop(0.55, '#5ea0d2');
+  g.addColorStop(1,    '#27579b');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  // Drift + render clouds. Each cloud is three overlapping white circles for that "puffy" look.
+  for (const c of CUTSCENE_CLOUDS) {
+    c.x -= c.spd * dt;
+    if (c.x < -c.r * 3) c.x = W + c.r * 3;                // wrap around right edge
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.beginPath();
+    ctx.arc(c.x,             c.y,           c.r,         0, Math.PI*2);
+    ctx.arc(c.x + c.r * 0.8, c.y - c.r*0.2, c.r * 0.85,  0, Math.PI*2);
+    ctx.arc(c.x - c.r * 0.7, c.y - c.r*0.1, c.r * 0.75,  0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
 function drawHUD() {
   // F1 — HUD background fill REMOVED. Hearts, title, and score render directly over the night
   // sky. (Was: ctx.fillStyle='rgba(0,0,10,0.88)'; ctx.fillRect(0, HUD_Y, W, HUD_HEIGHT);)
@@ -3083,12 +3146,10 @@ function loop(ts) {
 
     case 'CUTSCENE_PHASE1': {
       cutsceneT += dt;
-      // I2/I3 placeholder: black bg + state label. Real content lands in I3.
-      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 18px monospace'; ctx.textAlign = 'center';
-      ctx.fillText('CUTSCENE_PHASE1', W/2, H/2);
-      ctx.fillStyle = '#888'; ctx.font = '12px monospace';
-      ctx.fillText('t=' + stateT.toFixed(2) + 's', W/2, H/2 + 24);
+      // I2 — RNC stage backdrop (black letterbox + scaled stage png). I3 will add DNC, DTJ, dialogue.
+      drawRncStage();
+      ctx.fillStyle = '#888'; ctx.font = '12px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('CUTSCENE_PHASE1  t=' + stateT.toFixed(2), W/2, 30);
       if (stateT >= CUTSCENE_PHASE1_DURATION) {
         state = 'CUTSCENE_PHASE3';
         stateT = 0;
@@ -3098,13 +3159,10 @@ function loop(ts) {
 
     case 'CUTSCENE_PHASE3': {
       cutsceneT += dt;
-      // I2/I4 placeholder: black bg + state label. Real eagle descent/ascent lands in I4.
-      // Auto-advances at 3s for now so the chain is testable end-to-end.
-      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 18px monospace'; ctx.textAlign = 'center';
-      ctx.fillText('CUTSCENE_PHASE3', W/2, H/2);
-      ctx.fillStyle = '#888'; ctx.font = '12px monospace';
-      ctx.fillText('t=' + stateT.toFixed(2) + 's', W/2, H/2 + 24);
+      // I2 — RNC stage backdrop. I4 will add eagle descend/ascend with DTJ.
+      drawRncStage();
+      ctx.fillStyle = '#888'; ctx.font = '12px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('CUTSCENE_PHASE3  t=' + stateT.toFixed(2), W/2, 30);
       if (stateT >= 3.0) {
         state = 'CUTSCENE_SCORE';
         stateT = 0;
@@ -3114,7 +3172,8 @@ function loop(ts) {
 
     case 'CUTSCENE_SCORE': {
       cutsceneT += dt;
-      // I5 placeholder: minimal centered score panel. Real breakdown lands in I5.
+      // I2 — RNC stage backdrop with 0.85 black overlay. I5 will populate the breakdown.
+      drawRncStage();
       ctx.fillStyle = 'rgba(0,0,0,0.85)'; ctx.fillRect(0, 0, W, H);
       ctx.fillStyle = '#fff'; ctx.font = 'bold 26px monospace'; ctx.textAlign = 'center';
       ctx.fillText('LEVEL 1 COMPLETE', W/2, 300);
@@ -3129,10 +3188,8 @@ function loop(ts) {
 
     case 'CUTSCENE_BETWEEN': {
       cutsceneT += dt;
-      // I6 placeholder. Real sky + eagle + LEVEL 2 COMING SOON lands in I6.
-      ctx.fillStyle = '#1a3a6a'; ctx.fillRect(0, 0, W, H);
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 18px monospace'; ctx.textAlign = 'center';
-      ctx.fillText('CUTSCENE_BETWEEN', W/2, H/2);
+      // I2 — procedural sky (gradient + drifting clouds). I6 will add eagle + DTJ + bubble + LEVEL 2 placeholder.
+      drawCutsceneSky(dt);
       const pulseB = 0.5 + 0.5 * Math.sin(stateT * 4);
       ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulseB).toFixed(3) + ')';
       ctx.font = 'bold 14px monospace';
