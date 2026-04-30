@@ -6,7 +6,11 @@
 <title>DNC vs DJT</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+  /* E1 — body sits flush at top-left of the visible viewport. 100dvh adapts to iOS URL-bar
+     collapsing so the body never extends past the visible area. Horizontal centering only —
+     canvas anchors to top, so y=0 is always at the viewport top edge. */
+  html, body { background: #000; height: 100dvh; overflow: hidden; }
+  body { display: flex; justify-content: center; }
   canvas { display: block; image-rendering: pixelated; }
 </style>
 </head>
@@ -167,13 +171,20 @@ const W = 480, H = 854;
 let scale = 1;
 
 function resize() {
-  scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+  // E1 — use clientWidth/Height (excludes browser chrome, scrollbars) so the canvas always
+  // fits the *visible* area on iOS Safari and desktop Chrome. window.innerHeight on iOS can
+  // report the larger viewport (URL bar collapsed) which caused the canvas top to be cropped.
+  const vw = document.documentElement.clientWidth;
+  const vh = document.documentElement.clientHeight;
+  scale = Math.min(vw / W, vh / H);
   canvas.width = W; canvas.height = H;
   canvas.style.width = W * scale + 'px';
   canvas.style.height = H * scale + 'px';
 }
 resize();
 window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', resize);                // mobile rotation
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resize); // iOS URL-bar shrink
 
 // ─────────────────────────────────────────────
 //  GAME LAYOUT DATA
