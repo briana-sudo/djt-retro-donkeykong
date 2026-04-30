@@ -253,9 +253,10 @@ const player = {
   facing: 1,
   walkT: 0,
   ladderCooldown: 0,
-  ladderEntryY: 0,   // y position when ladder was grabbed — for exit detection
-  lives: 3,          // Block 3 — decremented by hit(), reset on GAMEPLAY entry
-  invulnT: 0,        // Block 3 — invulnerability timer (s); blink while >0
+  ladderEntryY: 0,        // y position when ladder was grabbed — for exit detection
+  lives: 3,               // Block 3 — decremented by hit(), reset on GAMEPLAY entry
+  invulnT: 0,             // Block 3 — invulnerability timer (s); blink while >0
+  lastGroundedPlat: FLOOR,// D3 — last platform the player stood on (used for above-platform kill block)
 };
 
 // ─────────────────────────────────────────────
@@ -378,18 +379,20 @@ function updatePlayer(dt) {
       if (player.y <= lad.y + 4 && player.y < player.ladderEntryY - 8) {
         // Find destination platform — generous x margin so edge ladders find their platform
         let snapY = lad.y;
+        let snapPlat = null;                              // D3 — track for lastGroundedPlat
         let bestDiff = 999;
         for (const plat of platforms) {
           if (player.x < plat.x - 16 || player.x > plat.x + plat.w + 16) continue;
           const py = getPlatY(plat, player.x);
           if (py > lad.y + 6) continue; // must be at or above ladder top
           const diff = Math.abs(py - lad.y);
-          if (diff < bestDiff) { bestDiff = diff; snapY = py; }
+          if (diff < bestDiff) { bestDiff = diff; snapY = py; snapPlat = plat; }
         }
         player.y = snapY;
         player.vy = 0;
         player.onLadder = false;
         player.onGround = true;
+        if (snapPlat) player.lastGroundedPlat = snapPlat; // D3
         player.ladderCooldown = 0.5;
         return;
       }
@@ -399,15 +402,17 @@ function updatePlayer(dt) {
       if (player.y >= lad.y + lad.h - 2 && player.y > player.ladderEntryY + 8) {
         // Snap to the platform below
         let snapY = lad.y + lad.h;
+        let snapPlat = null;                              // D3 — track for lastGroundedPlat
         for (const plat of platforms) {
           if (player.x < plat.x - 4 || player.x > plat.x + plat.w + 4) continue;
           const py = getPlatY(plat, player.x);
-          if (Math.abs(py - (lad.y + lad.h)) < 15) { snapY = py; break; }
+          if (Math.abs(py - (lad.y + lad.h)) < 15) { snapY = py; snapPlat = plat; break; }
         }
         player.y = snapY;
         player.vy = 0;
         player.onLadder = false;
         player.onGround = true;
+        if (snapPlat) player.lastGroundedPlat = snapPlat; // D3
         player.ladderCooldown = 0.2;
         return;
       }
@@ -492,6 +497,7 @@ function updatePlayer(dt) {
     player.y = platY;
     player.vy = 0;
     player.onGround = true;
+    player.lastGroundedPlat = plat;                       // D3 — track for above-platform kill block
     break;
   }
 
@@ -508,6 +514,7 @@ function updatePlayer(dt) {
     player.vy = 0;
     player.onGround = true;
     player.ladderCooldown = 0;
+    player.lastGroundedPlat = FLOOR;                      // D3
   }
 
   if (player.vx !== 0 && player.onGround) player.walkT += dt;
@@ -696,11 +703,20 @@ function updateCapsules(dt) {
     // despawn the capsule. Capsule keeps cascading; only helper-kill, Pelosi-grab, and off-screen
     // exit can remove it. The 1s invulnerability timer prevents double-hit damage, and the player
     // respawns at FLOOR.x+60 — by the time invuln expires the capsule has moved on.
-    if (
-      c.x + CAPSULE_R > player.x - 10 &&
-      c.x - CAPSULE_R < player.x + 10 &&
-      c.y + CAPSULE_R > player.y - 32 &&
-      c.y - CAPSULE_R < player.y - 4
+    //
+    // D3 — block unfair kills from capsules rolling on platforms ABOVE the player. If the capsule
+    // is on a platform whose y is strictly above (smaller y in screen coords) than the player's
+    // last-grounded platform's y, the capsule is "out of the player's space" and the AABB overlap
+    // is ignored. Capsules mid-fall (c.onPlat=null) and capsules on the same/lower platform still
+    // hit. lastGroundedPlat tracks the platform the player most recently stood on (set on every
+    // landing — walk-state collision, ladder top/bottom exit, and respawn).
+    const playerPlat = player.lastGroundedPlat || FLOOR;
+    const capsuleOnAbove = c.onPlat && c.onPlat.y < playerPlat.y;
+    if (!capsuleOnAbove &&
+        c.x + CAPSULE_R > player.x - 10 &&
+        c.x - CAPSULE_R < player.x + 10 &&
+        c.y + CAPSULE_R > player.y - 32 &&
+        c.y - CAPSULE_R < player.y - 4
     ) {
       hit('capsule');                                     // decrement lives + i-frames; no splice
     }
@@ -727,6 +743,7 @@ function hit(source) {
   player.onGround = true;
   player.ladderCooldown = 0;
   player.ladderEntryY = 0;
+  player.lastGroundedPlat = FLOOR;                        // D3
 }
 
 function drawCapsules() {
