@@ -490,11 +490,12 @@ let dtjThrowT = 0;       // throw animation timer (>0 → show dtj_throw)
 // Block 2.6 — lastSpawnDir removed; Level 1 capsules always roll rightward from the static barrel
 
 function spawnCapsule() {
-  // Block 2.6 — Level 1: capsules always roll rightward from the static barrel at TOP.x+50.
+  // F4 — Level 1: capsules now spawn from the barrel and roll/are thrown to screen LEFT.
+  // DTJ stands left of the barrel; capsules pass under DTJ then off the left edge of TOP, cascading down.
   capsules.push({
     x: BARREL_X,                   // Block C — spawns from the static barrel decoration
     y: TOP.y - CAPSULE_R,          // sitting on TOP platform
-    vx: CAPSULE_ROLL_SPD,          // always positive (rightward)
+    vx: -CAPSULE_ROLL_SPD,         // F4 — negative vx (leftward)
     vy: 0,
     rolling: true,
     onPlat: TOP,
@@ -2027,11 +2028,9 @@ function drawGameplay(shake) {
   drawHelpers();
 
   // D.T.J. at top center — swap to throw sprite during throw window.
-  // Block 2.6 — Level 1 throws are always rightward, so dtj_throw uses a fixed flip (no conditional).
-  // flip=false because the dtj_throw asset's default orientation already places the throwing arm on screen-right.
-  // If field-test shows the arm rendering on screen-left, flip this single boolean to true.
+  // F4 — Level 1 throws are now LEFTWARD, so dtj_throw flip=true (mirrors so throwing arm faces screen-left toward the spawn arc).
   if (dtjThrowT > 0) {
-    drawSprite('dtj_throw', DTJ_GAMEPLAY_X, TOP.y, 110, false, 0.92);
+    drawSprite('dtj_throw', DTJ_GAMEPLAY_X, TOP.y, 110, true, 0.92);
   } else {
     drawSprite('dtj_idle', DTJ_GAMEPLAY_X, TOP.y, 110);
   }
