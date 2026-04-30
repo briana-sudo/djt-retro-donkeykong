@@ -269,19 +269,120 @@ let skipDone = false;
 //     At t=1.2s: lives -= 1 → respawn (lives>0) or GAME_OVER (lives==0).
 //     Block L (DTJ YMCA dance) will play simultaneously on top of this — coexist, don't gate.
 //   GAME_OVER: breakdown overlay (reuses CUTSCENE_SCORE layout via drawScoreBreakdown). Shows
-//     final + high score + creator credit. Tap → restartFromGameOver → INTRO_BLACK.
+//     final + high score + creator credit. Tap → restartFromGameOver → INTRO_BLACK or GAMEPLAY.
+//
+// K — ragdoll+burst code path is now SHARED. Antifa entities thrown by Secret Service reuse
+// the same physics + debris + flash via spawnRagdollBurst() and the per-entity ragdoll fields
+// (deathVx, deathVy, deathRotation, ragdollPhase, ragdollT). The deathDebris array is renamed
+// `ragdollDebris` and ticks every frame in the main loop regardless of state — both player
+// burst and Antifa burst items share the array.
 const DEATH_REACTION_DURATION   = 1.2;
 const DEATH_PHASE1_MAX_DURATION = 0.8;     // hard cap on ragdoll phase even if player stays on-screen
 const DEATH_BURST_FALL_TRIGGER  = 40;      // px below FLOOR before phase1→phase2 forced
 const DEATH_DEBRIS_COUNT        = 12;
+const RAGDOLL_DEBRIS_LIFE       = 0.4;     // K — debris alpha-fades over this duration (s)
+const RAGDOLL_BURST_FLASH_ALPHA = 0.6;     // K — full-screen white flash alpha at burst moment
 let   deathReactionT            = 0;
 let   deathPhase                = 'phase1';// 'phase1' | 'phase2'
-let   deathBurstFlashT          = 0;       // ticks down from 1 to 0 across one frame after burst
-const deathDebris               = [];
+let   ragdollBurstFlashT        = 0;       // ticks down from 1 across one frame after any burst
+const ragdollDebris             = [];     // K — shared between player + Antifa bursts
 let   gameOverFinalScore        = 0;
 let   highScore                 = 0;
 let   highScoreNew              = false;   // true on game over if final beat the prior high
+let   highScoreInitials         = '';      // K — 3-char A-Z, persisted in localStorage
+let   introHasPlayed            = false;   // K — set true at INTRO_SHATTER end; per-session, not persisted
 const HIGH_SCORE_KEY            = 'djt_high_score';
+const HIGH_SCORE_INITIALS_KEY   = 'djt_high_score_initials';
+
+// K — shared debris-burst spawn. Used by both player DEATH_REACTION phase2 and Antifa RAGDOLL
+// phase2. Each item: 4-6px square, random vx [-150,150], vy [-300,-100], gravity, rotates,
+// alpha-fades over RAGDOLL_DEBRIS_LIFE seconds. Also triggers the one-frame full-screen white flash.
+function spawnRagdollBurst(cx, cy, n) {
+  const count = (typeof n === 'number') ? n : DEATH_DEBRIS_COUNT;
+  for (let i = 0; i < count; i++) {
+    ragdollDebris.push({
+      x:    cx,
+      y:    cy,
+      vx:   -150 + Math.random() * 300,
+      vy:   -300 + Math.random() * 200,
+      size: 4 + Math.random() * 2,
+      rot:  Math.random() * Math.PI * 2,
+      rotV: -8 + Math.random() * 16,
+      life: RAGDOLL_DEBRIS_LIFE,
+      t:    0,
+      color: ['#ffffff', '#aaccff', '#ff88aa', '#ffcc66'][Math.floor(Math.random() * 4)],
+    });
+  }
+  ragdollBurstFlashT = 1;                                // 1 frame of full-bright flash
+}
+
+// K — global tick for ragdoll debris. Called from main loop top regardless of state so items
+// drain naturally even if state changes (e.g. player wins to cutscene mid-Antifa-burst).
+function tickRagdollDebris(dt) {
+  for (let i = ragdollDebris.length - 1; i >= 0; i--) {
+    const d = ragdollDebris[i];
+    d.t  += dt;
+    d.x  += d.vx * dt;
+    d.y  += d.vy * dt;
+    d.vy += GRAVITY * dt;
+    d.rot += d.rotV * dt;
+    if (d.t >= d.life) ragdollDebris.splice(i, 1);
+  }
+}
+
+function renderRagdollDebrisAndFlash() {
+  for (const d of ragdollDebris) {
+    const a = Math.max(0, 1 - d.t / d.life);
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.translate(d.x, d.y);
+    ctx.rotate(d.rot);
+    ctx.fillStyle = d.color;
+    ctx.fillRect(-d.size / 2, -d.size / 2, d.size, d.size);
+    ctx.restore();
+  }
+  if (ragdollBurstFlashT > 0) {
+    ctx.save();
+    ctx.globalAlpha = RAGDOLL_BURST_FLASH_ALPHA;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+    ragdollBurstFlashT = 0;                              // one-frame; cleared after first render
+  }
+}
+
+// K — Secret Service entity. Decorative-only system: 3 stationary units that fade in when an
+// Antifa starts climbing ladder[5] (P4→TOP), grab-and-throw any Antifa exiting onto TOP near
+// ladder[5], fade out 0.5s after the last Antifa dies. ZERO interaction with player or capsules.
+//   units[0] — DTJ bodyguard (decorative; never grabs or throws)
+//   units[1] — left flank of ladder[5]
+//   units[2] — right flank of ladder[5]
+const SS_GRAB_DURATION    = 0.2;
+const SS_FADE_DURATION    = 0.5;
+const SS_THROW_VY         = -300;
+const SS_THROW_VX_MAG     = 200;                          // sign randomized per throw
+const SS_TARGET_LADDER_IX = 5;                            // ladders[5] = P4 → TOP
+const SS_HEIGHT           = 64;                           // 2x render scale, matches helper standard
+const SS_GRAB_X_RANGE     = 40;                           // antifa within ±40 of ladder[5] cx triggers grab
+const ss = {
+  active: false,
+  fadeAlpha: 0,
+  fadeOutTimer: 0,
+  units: [
+    { x: 0, y: 0, state: 'IDLE', stateT: 0, targetAntifa: null },
+    { x: 0, y: 0, state: 'IDLE', stateT: 0, targetAntifa: null },
+    { x: 0, y: 0, state: 'IDLE', stateT: 0, targetAntifa: null },
+  ],
+};
+
+// K — initials entry sub-state of GAME_OVER. Shows when (highScoreNew) OR (highScore===0 AND
+// playerScore > 0). UI renders ON TOP of the score breakdown, between the totals row and the
+// TAP TO RESTART prompt. Submit on 3rd confirm writes initials to localStorage.
+let   initialsEntryActive   = false;
+let   initialsCursor        = 0;
+const initialsLetters       = ['A', 'A', 'A'];
+let   initialsConfirmedT    = 0;                          // post-submit "INITIALS SAVED" timer (s)
+const INITIALS_CONFIRM_DURATION = 1.0;
 function loadHighScore() {
   try {
     const raw = localStorage.getItem(HIGH_SCORE_KEY);
@@ -291,9 +392,26 @@ function loadHighScore() {
   } catch (e) { return 0; }                // Safari private mode etc — silently default to 0
 }
 function saveHighScore(score) {
-  try { localStorage.setItem(HIGH_SCORE_KEY, String(Math.floor(score))); } catch (e) {}
+  try { localStorage.setItem(HIGH_SCORE_KEY, String(Math.floor(score))); }
+  catch (e) { if (typeof console !== 'undefined') console.warn('saveHighScore failed:', e); }
 }
-highScore = loadHighScore();
+// K — high-score initials (3-char A-Z). Malformed payloads (non-string, wrong length, non-A-Z
+// chars) treated as empty so HUD falls back to "HI: ---" cleanly.
+function loadHighScoreInitials() {
+  try {
+    const raw = localStorage.getItem(HIGH_SCORE_INITIALS_KEY);
+    if (typeof raw !== 'string') return '';
+    if (raw.length !== 3) return '';
+    if (!/^[A-Z]{3}$/.test(raw)) return '';
+    return raw;
+  } catch (e) { return ''; }
+}
+function saveHighScoreInitials(initials) {
+  try { localStorage.setItem(HIGH_SCORE_INITIALS_KEY, String(initials)); }
+  catch (e) { if (typeof console !== 'undefined') console.warn('saveHighScoreInitials failed:', e); }
+}
+highScore         = loadHighScore();
+highScoreInitials = loadHighScoreInitials();
 
 // I1 — cutscene input: route a tap to the next phase based on current state.
 //   CUTSCENE_PHASE1 / CUTSCENE_PHASE3 with cutsceneT >= 10s: skip straight to SCORE
@@ -338,14 +456,11 @@ function cutsceneAdvance() {
     return;
   }
   if (state === 'CUTSCENE_BETWEEN') {
-    // I-CORR-3 — drop any tail before returning to the intro loop.
-    clearCaptions();
-    // I-EAGLE-REWRITE — cutscene cycle done; release combo for clean intro replay.
-    comboActive  = false;
-    dtjStageMode = 'NONE';
-    state = 'INTRO_BLACK';
-    stateT = 0;
-    scoreFloats.length = 0;
+    // K — tap on BETWEEN end card runs the SAME full-reset path as GAME_OVER tap. introHasPlayed
+    // is true here (player won the level → must have completed intro), so restartLevel skips
+    // straight to GAMEPLAY. This avoids replaying the 8-second intro every win cycle. Defensive
+    // false-branch handles the (unreachable) case where we somehow got here without intro.
+    restartLevel(introHasPlayed);
     return;
   }
 }
@@ -364,9 +479,25 @@ window.addEventListener('keydown', e => {
   if (GAME_KEYS.has(e.code)) e.preventDefault();
   // I1 — cutscene states route through cutsceneAdvance (which honors per-state rules).
   // WIN_FREEZE eats input (still in pause). Intro states bounce to GAMEPLAY via skipToGame.
-  // J — DEATH_FREEZE eats input (placeholder; Block L's YMCA dance handles its own timing).
-  //     GAME_OVER tap routes through restartFromGameOver — full reset, replay intro.
+  // J — DEATH_REACTION eats input. GAME_OVER tap = restartFromGameOver — full reset.
   if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_REACTION') return;
+  // K — INITIALS_ENTRY input intercept (must precede GAME_OVER tap-to-restart).
+  //   ArrowUp / W       → cycle current letter forward (A→B→...→Z→A)
+  //   ArrowDown / S     → cycle backward
+  //   ArrowRight / D / Enter / Space → confirm + advance (3rd confirm submits)
+  //   ArrowLeft         → backspace (move cursor back, doesn't clear)
+  //   Letter keys A-Z   → direct-set current letter, auto-advance (3rd direct-set submits)
+  if (state === 'GAME_OVER' && initialsEntryActive) {
+    e.preventDefault();
+    if (e.code === 'ArrowUp'    || e.code === 'KeyW') { cycleInitialsLetter(+1); return; }
+    if (e.code === 'ArrowDown'  || e.code === 'KeyS') { cycleInitialsLetter(-1); return; }
+    if (e.code === 'ArrowRight' || e.code === 'KeyD' || e.code === 'Enter' || e.code === 'Space') {
+      confirmInitialsLetter(); return;
+    }
+    if (e.code === 'ArrowLeft') { backspaceInitials(); return; }
+    if (/^Key[A-Z]$/.test(e.code)) { setInitialsLetter(e.code.charAt(3)); return; }
+    return;                                                              // eat all other input
+  }
   if (state === 'GAME_OVER') { restartFromGameOver(); return; }
   if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
   if (state !== 'GAMEPLAY') skipToGame();
@@ -992,8 +1123,9 @@ function hit(source, capsule) {
   stateT = 0;
   deathReactionT = 0;
   deathPhase = 'phase1';
-  deathDebris.length = 0;
-  deathBurstFlashT = 0;
+  // K — ragdollDebris is now a SHARED pool (player + Antifa). DON'T clear it on hit() — leftover
+  // Antifa debris from prior splats keeps draining naturally. Burst flash is a one-frame state.
+  ragdollBurstFlashT = 0;
   // Ragdoll launch — capsule.vx sign drives horizontal velocity. Defensive fallback if no
   // capsule was passed in (shouldn't happen post-J refactor but keeps the call site safe).
   const dirSign = (capsule && typeof capsule.vx === 'number')
@@ -1027,7 +1159,15 @@ function respawnPlayer() {
 // entities cleared. highScore PERSISTS (already saved to localStorage at game-over moment).
 // Transitions to INTRO_BLACK so the intro replays from the top — mirrors the BETWEEN→INTRO_BLACK
 // path in cutsceneAdvance for consistency.
-function restartFromGameOver() {
+// K — single shared full-reset helper used by GAME_OVER tap-to-restart AND CUTSCENE_BETWEEN
+// tap-to-restart. If `skipIntro` is true, transitions directly to GAMEPLAY (intro skipped on
+// restart since the player has already seen it this session). Otherwise INTRO_BLACK.
+//   - introHasPlayed gate (set true once at INTRO_SHATTER end) drives the skipIntro arg.
+//   - highScore + highScoreInitials PERSIST (already saved to localStorage at game-over moment
+//     and on initials submit; this function never touches them).
+//   - Refreshing the browser resets introHasPlayed to false so a fresh page load always plays
+//     the intro at least once.
+function restartLevel(skipIntro) {
   player.lives = 3;
   player.invulnT = 0;
   player.platformsReached = new Set([0]);
@@ -1067,10 +1207,196 @@ function restartFromGameOver() {
   // J — clear any in-flight death reaction state defensively.
   deathReactionT     = 0;
   deathPhase         = 'phase1';
-  deathBurstFlashT   = 0;
-  deathDebris.length = 0;
-  state = 'INTRO_BLACK';
-  stateT = 0;
+  ragdollBurstFlashT = 0;
+  ragdollDebris.length = 0;
+  // K — initials entry sub-state cleared.
+  initialsEntryActive    = false;
+  initialsConfirmedT     = 0;
+  initialsLetters[0]     = 'A';
+  initialsLetters[1]     = 'A';
+  initialsLetters[2]     = 'A';
+  initialsCursor         = 0;
+  // K — Secret Service reset.
+  ss.active = false; ss.fadeAlpha = 0; ss.fadeOutTimer = 0;
+  for (const u of ss.units) { u.state = 'IDLE'; u.stateT = 0; u.targetAntifa = null; }
+  if (skipIntro) {
+    // Re-init gameplay session state that the INTRO_SHATTER → GAMEPLAY transition normally
+    // sets. Keep parity so a skipped-intro restart starts identical to a fresh-intro restart.
+    dtjAnimState = 'IDLE';
+    dtjAnimT     = 0;
+    dtjAnimX     = DTJ_GAMEPLAY_X;
+    levelStartTime = totalT;
+    spawnFirstPickup();
+    state  = 'GAMEPLAY';
+    stateT = 0;
+  } else {
+    state  = 'INTRO_BLACK';
+    stateT = 0;
+  }
+}
+
+// J — wraps restartLevel with the introHasPlayed flag. Kept as a named entry point because
+// input handlers reference it by name; routing through one helper keeps GAME_OVER and BETWEEN
+// tap behavior identical.
+function restartFromGameOver() {
+  restartLevel(introHasPlayed);
+}
+
+// K — initials entry input helpers. Used by both keyboard handler (in window.keydown) and the
+// touch-zone handler in pointerdown.
+function cycleInitialsLetter(delta) {
+  if (!initialsEntryActive) return;
+  const code = initialsLetters[initialsCursor].charCodeAt(0) - 65;       // 0..25
+  const next = ((code + delta) % 26 + 26) % 26;
+  initialsLetters[initialsCursor] = String.fromCharCode(65 + next);
+}
+function setInitialsLetter(ch) {
+  if (!initialsEntryActive) return;
+  if (!/^[A-Z]$/.test(ch)) return;
+  initialsLetters[initialsCursor] = ch;
+  if (initialsCursor < 2) initialsCursor++;
+  else submitInitialsEntry();                                            // typing on slot 3 auto-submits
+}
+function confirmInitialsLetter() {
+  if (!initialsEntryActive) return;
+  if (initialsCursor < 2) initialsCursor++;
+  else submitInitialsEntry();
+}
+function backspaceInitials() {
+  if (!initialsEntryActive) return;
+  if (initialsCursor > 0) initialsCursor--;
+}
+function submitInitialsEntry() {
+  if (!initialsEntryActive) return;
+  const built = initialsLetters.join('');
+  highScoreInitials = built;
+  saveHighScoreInitials(built);
+  saveHighScore(highScore);                                              // re-save belt-and-suspenders
+  initialsEntryActive = false;
+  initialsConfirmedT  = INITIALS_CONFIRM_DURATION;                       // 1.0s "INITIALS SAVED" display
+}
+
+// K — initials entry touch layout (canvas-space coords). Slot row centered horizontally; cycle
+// buttons (▲ ▼) follow the active slot vertically; OK button parked to the right of slot 3.
+const INI_SLOT_W       = 46;
+const INI_SLOT_H       = 60;
+const INI_SLOT_GAP     = 12;
+const INI_SLOT_Y       = 700;                                            // slot row vertical center
+// Slot center x positions: derived once (W/2 ± offsets).
+const INI_SLOT_CX = [
+  240 - INI_SLOT_W - INI_SLOT_GAP,                                       // = 182
+  240,                                                                    // = 240
+  240 + INI_SLOT_W + INI_SLOT_GAP,                                       // = 298
+];
+const INI_BTN_HALF     = 24;                                             // tap-zone half-extent
+const INI_OK_BOX       = { x: 350, y: 675, w: 70, h: 50 };
+
+function pointInBox(tx, ty, x, y, w, h) {
+  return tx >= x && tx <= x + w && ty >= y && ty <= y + h;
+}
+
+// K — initials entry UI render. Drawn ON TOP of the GAME_OVER breakdown. Header line + 3 slot
+// boxes + cursor blink under the active slot + ▲/▼ tap zones flanking the active slot + OK
+// button to the right. Touch-friendly: tap zones are large (50x50) and visibly outlined.
+function drawInitialsEntryUI() {
+  ctx.save();
+  // Header
+  ctx.fillStyle = '#ffcc00';
+  ctx.font = 'bold 16px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText("NEW HIGH SCORE!  ENTER INITIALS:", W/2, 660);
+
+  // Slot boxes
+  const slotTop = INI_SLOT_Y - INI_SLOT_H/2;
+  for (let i = 0; i < 3; i++) {
+    const cx = INI_SLOT_CX[i];
+    // Slot bg
+    ctx.fillStyle = (i === initialsCursor) ? 'rgba(255,204,0,0.18)' : 'rgba(255,255,255,0.08)';
+    ctx.fillRect(cx - INI_SLOT_W/2, slotTop, INI_SLOT_W, INI_SLOT_H);
+    // Slot outline
+    ctx.strokeStyle = (i === initialsCursor) ? '#ffcc00' : 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(cx - INI_SLOT_W/2, slotTop, INI_SLOT_W, INI_SLOT_H);
+    // Letter
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 36px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(initialsLetters[i], cx, INI_SLOT_Y);
+    // Cursor blink under active slot (2Hz)
+    if (i === initialsCursor && Math.floor(stateT * 4) % 2 === 0) {
+      ctx.fillStyle = '#ffcc00';
+      ctx.fillRect(cx - INI_SLOT_W/2 + 6, slotTop + INI_SLOT_H - 4, INI_SLOT_W - 12, 3);
+    }
+  }
+  ctx.textBaseline = 'alphabetic';
+
+  // ▲ button (above active slot)
+  const cur     = initialsCursor;
+  const slotCx  = INI_SLOT_CX[cur];
+  ctx.font = 'bold 22px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  ctx.fillRect(slotCx - 24, slotTop - 50, 48, 40);
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(slotCx - 24, slotTop - 50, 48, 40);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('▲', slotCx, slotTop - 22);                          // ▲
+
+  // ▼ button (below active slot)
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  ctx.fillRect(slotCx - 24, slotTop + INI_SLOT_H + 10, 48, 40);
+  ctx.strokeRect(slotCx - 24, slotTop + INI_SLOT_H + 10, 48, 40);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('▼', slotCx, slotTop + INI_SLOT_H + 38);             // ▼
+
+  // OK button (right of slots)
+  ctx.fillStyle = 'rgba(170,255,170,0.18)';
+  ctx.fillRect(INI_OK_BOX.x, INI_OK_BOX.y, INI_OK_BOX.w, INI_OK_BOX.h);
+  ctx.strokeStyle = '#aaffaa';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(INI_OK_BOX.x, INI_OK_BOX.y, INI_OK_BOX.w, INI_OK_BOX.h);
+  ctx.fillStyle = '#aaffaa';
+  ctx.font = 'bold 18px monospace';
+  ctx.fillText('OK', INI_OK_BOX.x + INI_OK_BOX.w/2, INI_OK_BOX.y + INI_OK_BOX.h/2 + 6);
+
+  ctx.restore();
+}
+
+// Returns true if the tap was consumed by initials-entry UI. Caller eats the tap so it doesn't
+// fall through to "TAP TO RESTART".
+function handleInitialsTap(tx, ty) {
+  if (!initialsEntryActive) return false;
+  const cur     = initialsCursor;
+  const slotCx  = INI_SLOT_CX[cur];
+  const slotTop = INI_SLOT_Y - INI_SLOT_H / 2;
+  const slotBot = INI_SLOT_Y + INI_SLOT_H / 2;
+  // ▲ button (above active slot)
+  if (tx >= slotCx - INI_BTN_HALF && tx <= slotCx + INI_BTN_HALF &&
+      ty >= slotTop - 50 && ty <= slotTop - 5) {
+    cycleInitialsLetter(+1); return true;
+  }
+  // ▼ button (below active slot)
+  if (tx >= slotCx - INI_BTN_HALF && tx <= slotCx + INI_BTN_HALF &&
+      ty >= slotBot + 5 && ty <= slotBot + 50) {
+    cycleInitialsLetter(-1); return true;
+  }
+  // OK button
+  if (pointInBox(tx, ty, INI_OK_BOX.x, INI_OK_BOX.y, INI_OK_BOX.w, INI_OK_BOX.h)) {
+    confirmInitialsLetter(); return true;
+  }
+  // Slot taps: any slot moves cursor to it (touch backspace).
+  for (let i = 0; i < 3; i++) {
+    const cx = INI_SLOT_CX[i];
+    if (tx >= cx - INI_SLOT_W / 2 && tx <= cx + INI_SLOT_W / 2 &&
+        ty >= slotTop && ty <= slotBot) {
+      initialsCursor = i;
+      return true;
+    }
+  }
+  // Eat any other tap during initials entry so it doesn't fall through to TAP TO RESTART.
+  return true;
 }
 
 function drawCapsules() {
@@ -1351,6 +1677,47 @@ function updateHelpers(dt) {
     if (h.lifeTimer <= 0) { helpers.splice(i, 1); continue; }
 
     if (h.type === 'ANTIFA') {
+      // K — Antifa RAGDOLL state: thrown by Secret Service. Mirrors player DEATH_REACTION
+      // physics. h.ragdollPhase: 'phase1' (spin) | 'phase2' (burst, ~0.4s, debris IS visual).
+      if (h.state === 'RAGDOLL') {
+        h.ragdollT += dt;
+        if (h.ragdollPhase === 'phase1') {
+          // Track surface for landed-on-platform detection (any platform crossing flips phase2).
+          const prevY = h.y;
+          h.x += h.deathVx * dt;
+          h.y += h.deathVy * dt;
+          h.deathVy += GRAVITY * dt;
+          h.deathRotation += 720 * dt;
+          // Did we cross any platform surface this frame? Only count if traveling downward —
+          // upward arc shouldn't trigger landing.
+          let landed = false;
+          if (h.deathVy > 0) {
+            for (const plat of platforms) {
+              if (h.x < plat.x - 4 || h.x > plat.x + plat.w + 4) continue;
+              const surfaceY = getPlatY(plat, h.x);
+              if (prevY <= surfaceY && h.y >= surfaceY) { landed = true; break; }
+            }
+          }
+          const fellThrough = h.y > FLOOR.y + DEATH_BURST_FALL_TRIGGER;
+          const cappedOut   = h.ragdollT >= DEATH_PHASE1_MAX_DURATION;
+          if (landed || fellThrough || cappedOut) {
+            h.ragdollPhase = 'phase2';
+            h.ragdollPhaseT = 0;
+            spawnRagdollBurst(h.x, h.y - h.h * 0.5, DEATH_DEBRIS_COUNT);
+          }
+        } else {
+          // phase2 — Antifa sprite suppressed in drawHelpers; debris IS the visual. After
+          // RAGDOLL_DEBRIS_LIFE seconds, the entity itself despawns (debris drains in main loop).
+          h.ragdollPhaseT += dt;
+          if (h.ragdollPhaseT >= RAGDOLL_DEBRIS_LIFE) {
+            helpers.splice(i, 1);
+            continue;
+          }
+        }
+        continue;                                        // skip normal AI + capsule overlap below
+      }
+      // K — Antifa being held by SS in GRAB phase: SS controls position; skip AI.
+      if (h.grabbed) continue;
       // G5 — walk current platform toward nearest up-ladder, climb it, repeat.
       if (h.state === 'WALK') {
         // Refresh target ladder if we don't have one or our platform changed under us.
@@ -1409,7 +1776,7 @@ function updateHelpers(dt) {
 
     // Helper vs capsule: destroy capsule on overlap. Zombie dies in the encounter; Antifa survives.
     // J — skip carried capsules so helpers can't yank a capsule out of Pelosi's hand mid-walk.
-    // The defensive carriedAlive check in CARRY_TO_ANCHOR is the second line of defense.
+    // K — ragdolling/grabbed Antifa skip the loop above (continue), so they don't reach this block.
     const halfW = h.w / 2;
     let helperKilled = false;
     for (let ci = capsules.length - 1; ci >= 0; ci--) {
@@ -1432,8 +1799,137 @@ function updateHelpers(dt) {
 
 function drawHelpers() {
   for (const h of helpers) {
+    // K — Antifa RAGDOLL render path:
+    //   phase1: rotated sprite about body center (deathRotation accumulates at 720°/s)
+    //   phase2: suppressed entirely (debris IS the visual; rendered globally elsewhere)
+    if (h.type === 'ANTIFA' && h.state === 'RAGDOLL') {
+      if (h.ragdollPhase === 'phase2') continue;
+      ctx.save();
+      ctx.translate(h.x, h.y - h.h * 0.5);
+      ctx.rotate(h.deathRotation * Math.PI / 180);
+      drawSprite(h.sprite, 0, h.h * 0.5, h.h, false, 1.0);
+      ctx.restore();
+      continue;
+    }
     drawSprite(h.sprite, h.x, h.y, h.h, h.vx < 0, 1.0);
   }
+}
+
+// K — Secret Service activate/update/draw. Spawns 3 stationary units when an Antifa starts
+// climbing ladder[5]. Grab-and-throw any Antifa exiting onto TOP near ladder[5]. Fade out 0.5s
+// after the last Antifa entity despawns. ZERO interaction with player or capsules — never appears
+// in any AABB check against either. ZERO score awarded for throws (decorative gag only).
+function activateSS() {
+  const lad5 = ladders[SS_TARGET_LADDER_IX];
+  ss.active = true;
+  ss.fadeAlpha = 1;
+  ss.fadeOutTimer = 0;
+  ss.units[0].x = DTJ_GAMEPLAY_X + 60;                   // bodyguard next to DTJ
+  ss.units[0].y = TOP.y;
+  ss.units[1].x = lad5.x - 30;                           // left flank
+  ss.units[1].y = TOP.y;
+  ss.units[2].x = lad5.x + LADDER_W + 30;                // right flank
+  ss.units[2].y = TOP.y;
+  for (const u of ss.units) { u.state = 'IDLE'; u.stateT = 0; u.targetAntifa = null; }
+  if (typeof console !== 'undefined') console.log('SS ACTIVATED at t=' + totalT.toFixed(2));
+}
+
+function updateSS(dt) {
+  // Activation scan: any Antifa currently climbing ladder[5] AND ss not yet active.
+  if (!ss.active) {
+    const lad5 = ladders[SS_TARGET_LADDER_IX];
+    for (const h of helpers) {
+      if (h.type === 'ANTIFA' && h.state === 'CLIMB' && h.currentLad === lad5) {
+        activateSS();
+        break;
+      }
+    }
+  }
+  if (!ss.active && ss.fadeAlpha <= 0) return;
+
+  // Throw-trigger scan: any ungrabbed non-ragdoll Antifa whose plat is TOP and whose x is within
+  // SS_GRAB_X_RANGE of ladder[5] cx → assign to nearest IDLE flank unit, transition to GRAB.
+  if (ss.active) {
+    const lad5    = ladders[SS_TARGET_LADDER_IX];
+    const lad5Cx  = lad5.x + LADDER_W / 2;
+    const ssLeft  = ss.units[1];
+    const ssRight = ss.units[2];
+    for (const h of helpers) {
+      if (h.type !== 'ANTIFA') continue;
+      if (h.state !== 'WALK') continue;
+      if (h.grabbed) continue;
+      if (h.plat !== TOP) continue;
+      if (Math.abs(h.x - lad5Cx) > SS_GRAB_X_RANGE) continue;
+      // Pick nearest IDLE flank.
+      const leftIdle  = ssLeft.state  === 'IDLE';
+      const rightIdle = ssRight.state === 'IDLE';
+      if (!leftIdle && !rightIdle) continue;
+      let chosen;
+      if      (!leftIdle)  chosen = ssRight;
+      else if (!rightIdle) chosen = ssLeft;
+      else chosen = (Math.abs(ssLeft.x - h.x) <= Math.abs(ssRight.x - h.x)) ? ssLeft : ssRight;
+      chosen.state = 'GRAB';
+      chosen.stateT = 0;
+      chosen.targetAntifa = h;
+      h.grabbed = true;
+    }
+  }
+
+  // Per-unit tick.
+  for (const u of ss.units) {
+    if (u.state === 'GRAB') {
+      u.stateT += dt;
+      if (u.targetAntifa) {
+        u.targetAntifa.x = u.x;
+        u.targetAntifa.y = u.y - SS_HEIGHT * 0.5;        // pin to hand
+      }
+      if (u.stateT >= SS_GRAB_DURATION) {
+        // THROW — launch antifa into RAGDOLL state. ZERO score per spec (decorative only).
+        const a = u.targetAntifa;
+        if (a) {
+          a.state          = 'RAGDOLL';
+          a.ragdollPhase   = 'phase1';
+          a.ragdollT       = 0;
+          a.ragdollPhaseT  = 0;
+          a.deathVx        = (Math.random() < 0.5 ? -1 : 1) * SS_THROW_VX_MAG;
+          a.deathVy        = SS_THROW_VY;
+          a.deathRotation  = 0;
+          a.grabbed        = false;
+        }
+        u.state = 'IDLE';
+        u.stateT = 0;
+        u.targetAntifa = null;
+      }
+    }
+  }
+
+  // Deactivation: count active Antifa entities (including ragdolling ones — they still occupy
+  // helpers[]). When the last one is gone, start the 0.5s fade.
+  let antifaCount = 0;
+  for (const h of helpers) if (h.type === 'ANTIFA') antifaCount++;
+  if (ss.active && antifaCount === 0 && ss.fadeOutTimer === 0) {
+    ss.fadeOutTimer = SS_FADE_DURATION;
+  }
+  if (ss.fadeOutTimer > 0) {
+    ss.fadeOutTimer -= dt;
+    ss.fadeAlpha = Math.max(0, ss.fadeOutTimer / SS_FADE_DURATION);
+    if (ss.fadeOutTimer <= 0) {
+      ss.active       = false;
+      ss.fadeAlpha    = 0;
+      ss.fadeOutTimer = 0;
+      for (const u of ss.units) { u.state = 'IDLE'; u.stateT = 0; u.targetAntifa = null; }
+    }
+  }
+}
+
+function drawSS() {
+  if (!ss.active && ss.fadeAlpha <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = ss.fadeAlpha;
+  for (const u of ss.units) {
+    drawSprite('secret_service', u.x, u.y, SS_HEIGHT, false, 1.0);
+  }
+  ctx.restore();
 }
 
 // Block E — populated. Random pick: Antifa wave or Zombie Voter wave on each briefcase collect.
@@ -2605,8 +3101,15 @@ canvas.addEventListener('pointerdown', e => {
   e.preventDefault();
   // I1 — cutscene tap routes through cutsceneAdvance (per-state advance rules).
   // WIN_FREEZE / CUTSCENE_FADE_IN eat input; intro states skipToGame; GAMEPLAY = normal.
-  // J — DEATH_FREEZE eats input. GAME_OVER tap = restartFromGameOver (full reset to intro).
+  // J — DEATH_REACTION eats input. GAME_OVER tap = restartFromGameOver (full reset).
+  // K — INITIALS_ENTRY routes tap through handleInitialsTap before any restart logic.
   if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_REACTION') return;
+  if (state === 'GAME_OVER' && initialsEntryActive) {
+    const r2=canvas.getBoundingClientRect();
+    const tx2=(e.clientX-r2.left)/scale, ty2=(e.clientY-r2.top)/scale;
+    handleInitialsTap(tx2, ty2);
+    return;
+  }
   if (state === 'GAME_OVER') { restartFromGameOver(); return; }
   if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
   if (state !== 'GAMEPLAY') { skipToGame(); return; }
@@ -2637,8 +3140,15 @@ canvas.addEventListener('touchstart', e=>{
   e.preventDefault();
   // I1 — cutscene tap routes through cutsceneAdvance (per-state advance rules).
   // WIN_FREEZE / CUTSCENE_FADE_IN eat input; intro states skipToGame; GAMEPLAY = normal.
-  // J — DEATH_FREEZE eats input. GAME_OVER tap = restartFromGameOver (full reset to intro).
+  // J — DEATH_REACTION eats input. GAME_OVER tap = restartFromGameOver (full reset).
+  // K — INITIALS_ENTRY routes tap through handleInitialsTap.
   if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_REACTION') return;
+  if (state === 'GAME_OVER' && initialsEntryActive) {
+    const r3=canvas.getBoundingClientRect();
+    const t0=e.changedTouches[0];
+    if (t0) handleInitialsTap((t0.clientX-r3.left)/scale, (t0.clientY-r3.top)/scale);
+    return;
+  }
   if (state === 'GAME_OVER') { restartFromGameOver(); return; }
   if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
   if (state !== 'GAMEPLAY') { skipToGame(); return; }
@@ -2916,12 +3426,14 @@ function drawScoreBreakdown(opts) {
     }
   }
 
-  // Pulsing prompt
-  const pulse = 0.5 + 0.5 * Math.sin(opts.pulseT * 4);
-  ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulse).toFixed(3) + ')';
-  ctx.font = 'bold 16px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText(opts.prompt, W/2, 780);
+  // Pulsing prompt. K — empty-string opt-out (used while INITIALS_ENTRY UI overlays the prompt).
+  if (opts.prompt) {
+    const pulse = 0.5 + 0.5 * Math.sin(opts.pulseT * 4);
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulse).toFixed(3) + ')';
+    ctx.font = 'bold 16px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(opts.prompt, W/2, 780);
+  }
 
   // J — creator credit (GAME_OVER only). Subtle gray, smaller font, very bottom of overlay.
   if (opts.showCredit) {
@@ -2953,10 +3465,14 @@ function drawHUD() {
   // HUD typography matches the existing 13px monospace SCORE style without crowding the title.
   ctx.fillStyle='#ffcc00'; ctx.font='bold 13px monospace'; ctx.textAlign='right';
   ctx.fillText('SCORE ' + Math.floor(playerScore), W-8, HUD_Y + 11);
-  // J — HIGH SCORE display rule: blank dashes when the player has never set a score (or
-  // localStorage was empty / parse failed). Once highScore > 0, show the integer normally.
+  // J — HIGH SCORE display rule: blank dashes when the player has never set a score.
+  // K — show 'HI INI 5678' (initials + score) when both set; 'HI ---' when either missing
+  // (highScore == 0 OR initials not yet entered / malformed in storage). Match HUD typography.
   ctx.fillStyle='#aaccff'; ctx.font='bold 11px monospace';
-  ctx.fillText('HI ' + (highScore > 0 ? Math.floor(highScore) : '---'), W-8, HUD_Y + 22);
+  let hiText;
+  if (highScore <= 0 || !highScoreInitials) hiText = 'HI ---';
+  else                                       hiText = 'HI ' + highScoreInitials + ' ' + Math.floor(highScore);
+  ctx.fillText(hiText, W-8, HUD_Y + 22);
 
   // Block D — multiplier badge. E2 corrected — badge placed flush BELOW the HUD bar (in the
   // gameplay area) so it stays visible while boosted regardless of bar order.
@@ -3186,6 +3702,10 @@ function drawGameplay(shake) {
   drawPickup();
   drawHelpers();
   drawPelosi();
+  // K — Secret Service rendered BEHIND DTJ (z-order: helpers → SS → DTJ → DNC). The 3 SS units
+  // are stationary on TOP, fade in when Antifa start climbing ladder[5], fade out 0.5s after the
+  // last Antifa dies. Decorative-only — never participates in any AABB check.
+  drawSS();
 
   // D.T.J. — C3 / D1 state-driven render. dtj_throw is fired ONLY at BARREL_X (twice per throw,
   // once with no flip for COCK and once mirrored for RELEASE). dtj_idle is fired ONLY at
@@ -3249,6 +3769,11 @@ function drawGameplay(shake) {
 
   ctx.restore();
 
+  // K — ragdoll debris + one-frame burst flash render on TOP of the gameplay world (under HUD).
+  // Used by both player DEATH_REACTION and Antifa RAGDOLL bursts. Drains naturally as items
+  // expire (life=0.4s); shared global pool, no per-entity tracking.
+  renderRagdollDebrisAndFlash();
+
   drawHUD();
   drawTicker();
   drawDpad();
@@ -3278,6 +3803,14 @@ function loop(ts) {
     p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=260*dt; p.life-=p.decay*dt;
   });
   particles=particles.filter(p=>p.life>0);
+
+  // K — ragdoll debris ticks every frame regardless of state so items drain naturally even if
+  // state changes mid-burst (e.g. player wins to cutscene with Antifa debris still in flight).
+  tickRagdollDebris(dt);
+
+  // K — initials-entry "INITIALS SAVED" confirmation timer ticks here so the 1.0s display
+  // shows even if the GAME_OVER case re-renders from scratch each frame.
+  if (initialsConfirmedT > 0) initialsConfirmedT = Math.max(0, initialsConfirmedT - dt);
 
   // Shake decay
   if (shakeAmt>0) shakeAmt=Math.max(0,shakeAmt-18*dt);
@@ -3405,7 +3938,7 @@ function loop(ts) {
       // Shake on first hit
       if(shatterT>0.5&&shatterT<0.55){ shakeAmt=10; boom(W/2,500,28,true); }
       if(shatterT>1.2&&shatterT<1.25){ shakeAmt=8; }
-      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjAnimState='IDLE'; dtjAnimT=0; dtjAnimX=DTJ_GAMEPLAY_X; helpers.length=0; player.lives=3; player.invulnT=0; player.platformsReached=new Set([0]); playerScore=0; multiplier=MULT_BASE; multiplierT=0; levelStartTime=totalT; scoreFloats.length=0; resetStats(); pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); pelosi.active=false; pelosi.phase='IDLE'; pelosi.phaseT=0; pelosi.timer=PELOSI_INTERVAL_MIN+Math.random()*(PELOSI_INTERVAL_MAX-PELOSI_INTERVAL_MIN); pelosi.facing=-1; pelosi.targetCapsule=null; pelosiFlash.active=false; tornPieces.length=0; }
+      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjAnimState='IDLE'; dtjAnimT=0; dtjAnimX=DTJ_GAMEPLAY_X; helpers.length=0; player.lives=3; player.invulnT=0; player.platformsReached=new Set([0]); playerScore=0; multiplier=MULT_BASE; multiplierT=0; levelStartTime=totalT; scoreFloats.length=0; resetStats(); pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); pelosi.active=false; pelosi.phase='IDLE'; pelosi.phaseT=0; pelosi.timer=PELOSI_INTERVAL_MIN+Math.random()*(PELOSI_INTERVAL_MAX-PELOSI_INTERVAL_MIN); pelosi.facing=-1; pelosi.targetCapsule=null; pelosiFlash.active=false; tornPieces.length=0; introHasPlayed=true; /* K — single set-site for skip-intro gate */ }
       break;
   }
 
@@ -3642,6 +4175,7 @@ function loop(ts) {
       updatePickup(dt);
       updateHelpers(dt);
       updatePelosi(dt);
+      updateSS(dt);
       drawGameplay(shakeAmt>0);
       // Particles leftover
       particles.forEach(p=>{
@@ -3674,6 +4208,7 @@ function loop(ts) {
       updatePickup(dt);
       updateHelpers(dt);
       updatePelosi(dt);
+      updateSS(dt);
       drawGameplay(false);
       particles.forEach(p=>{
         ctx.globalAlpha=Math.max(p.life,0);
@@ -3701,6 +4236,7 @@ function loop(ts) {
       updatePickup(dt);
       updateHelpers(dt);
       updatePelosi(dt);
+      updateSS(dt);
 
       if (deathPhase === 'phase1') {
         // Ragdoll physics — separate from updatePlayer so platform collision is bypassed (player
@@ -3714,39 +4250,15 @@ function loop(ts) {
         const cappedOut   = deathReactionT >= DEATH_PHASE1_MAX_DURATION;
         if (fellThrough || cappedOut) {
           deathPhase = 'phase2';
-          deathBurstFlashT = 1;                            // 1 frame of full-bright white flash
-          // Spawn DEATH_DEBRIS_COUNT little rotating rects at the player's last position.
-          for (let i = 0; i < DEATH_DEBRIS_COUNT; i++) {
-            deathDebris.push({
-              x:    player.x,
-              y:    player.y - 24,                         // approx body center
-              vx:   -150 + Math.random() * 300,            // [-150, 150]
-              vy:   -300 + Math.random() * 200,            // [-300, -100]
-              size: 4 + Math.random() * 2,                 // 4-6 px square
-              rot:  Math.random() * Math.PI * 2,
-              rotV: -8 + Math.random() * 16,               // rad/sec
-              life: 0.4,                                   // alpha fades over 0.4s
-              t:    0,
-              color: ['#ffffff', '#aaccff', '#ff88aa', '#ffcc66'][Math.floor(Math.random() * 4)],
-            });
-          }
+          // K — burst spawn delegated to shared spawnRagdollBurst (also used by Antifa splat).
+          spawnRagdollBurst(player.x, player.y - 24, DEATH_DEBRIS_COUNT);
         }
-      } else {
-        // phase2 — debris physics. Player sprite suppressed in drawGameplay.
-        for (let i = deathDebris.length - 1; i >= 0; i--) {
-          const d = deathDebris[i];
-          d.t  += dt;
-          d.x  += d.vx * dt;
-          d.y  += d.vy * dt;
-          d.vy += GRAVITY * dt;
-          d.rot += d.rotV * dt;
-          if (d.t >= d.life) deathDebris.splice(i, 1);
-        }
-        if (deathBurstFlashT > 0) deathBurstFlashT = 0;    // flash is one-frame; cleared after first phase2 render
       }
+      // K — debris physics ticks every frame in the main loop's tickRagdollDebris(); local
+      // tick removed. Render still happens after drawGameplay so debris draws on top.
 
       drawGameplay(false);                                  // renders world; player handled per state inside
-      // Existing particles trail (not death debris — death debris drawn below)
+      // Existing particles trail
       particles.forEach(p=>{
         ctx.globalAlpha=Math.max(p.life,0);
         ctx.fillStyle=p.color;
@@ -3754,44 +4266,33 @@ function loop(ts) {
       });
       ctx.globalAlpha=1;
 
-      // Death debris (phase2 only — drawn on top of everything)
-      if (deathPhase === 'phase2') {
-        for (const d of deathDebris) {
-          const a = Math.max(0, 1 - d.t / d.life);
-          ctx.save();
-          ctx.globalAlpha = a;
-          ctx.translate(d.x, d.y);
-          ctx.rotate(d.rot);
-          ctx.fillStyle = d.color;
-          ctx.fillRect(-d.size / 2, -d.size / 2, d.size, d.size);
-          ctx.restore();
-        }
-        // One-frame white burst flash on the first phase2 render
-        if (deathBurstFlashT > 0) {
-          ctx.save();
-          ctx.globalAlpha = 0.6;
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, W, H);
-          ctx.restore();
-        }
-      }
-
       // End-of-reaction transition (lives decrement + branch).
       if (deathReactionT >= DEATH_REACTION_DURATION) {
         player.lives -= 1;
         deathReactionT = 0;
         deathPhase = 'phase1';
-        deathDebris.length = 0;
-        deathBurstFlashT = 0;
         if (player.lives <= 0) {
           // Capture final score + commit any new high score to localStorage before transitioning.
           gameOverFinalScore = playerScore;
-          if (playerScore > highScore) {
+          // K — capture state BEFORE updating highScore so the trigger logic uses the prior value.
+          const wasNewHigh   = playerScore > highScore;
+          const wasFirstScore = (highScore === 0 && playerScore > 0);
+          if (wasNewHigh) {
             highScore    = Math.floor(playerScore);
             highScoreNew = true;
             saveHighScore(highScore);
           } else {
             highScoreNew = false;
+          }
+          // K — initials entry triggers if (new high) OR (first score ever, even if score
+          // matches the 0 baseline). Empty-signature guard: skip if final score is 0.
+          if (playerScore > 0 && (wasNewHigh || wasFirstScore)) {
+            initialsEntryActive = true;
+            initialsCursor      = 0;
+            initialsLetters[0]  = 'A';
+            initialsLetters[1]  = 'A';
+            initialsLetters[2]  = 'A';
+            initialsConfirmedT  = 0;
           }
           state = 'GAME_OVER';
           stateT = 0;
@@ -3807,19 +4308,34 @@ function loop(ts) {
     }
 
     // J — GAME_OVER: breakdown overlay reuses CUTSCENE_SCORE layout via drawScoreBreakdown.
-    // Tap to fully reset (handled in input handlers via restartFromGameOver). highScore was
-    // already persisted to localStorage at DEATH_FREEZE→GAME_OVER transition.
+    // K — when initialsEntryActive: hide the TAP TO RESTART prompt (gated via passing empty
+    // prompt) and overlay the initials UI on top of the breakdown. Submitting the 3rd letter
+    // sets initialsEntryActive=false and starts the 1.0s "INITIALS SAVED" confirmation, after
+    // which the prompt re-appears.
     case 'GAME_OVER': {
+      const showRestartPrompt = !initialsEntryActive && initialsConfirmedT <= 0;
       drawScoreBreakdown({
         header:        'GAME OVER',
         total:         gameOverFinalScore,
-        prompt:        'TAP TO RESTART',
+        prompt:        showRestartPrompt ? 'TAP TO RESTART' : '',
         pulseT:        stateT,
         showHighScore: true,
         highScore:     highScore,
         isNewHigh:     highScoreNew,
         showCredit:    true,                              // J — creator credit at very bottom
       });
+      // K — initials entry UI overlays the breakdown when active. After submit, the
+      // INITIALS SAVED confirmation displays for 1.0s before TAP TO RESTART re-appears.
+      if (initialsEntryActive) {
+        drawInitialsEntryUI();
+      } else if (initialsConfirmedT > 0) {
+        ctx.save();
+        ctx.fillStyle = '#aaffaa';
+        ctx.font = 'bold 18px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('INITIALS SAVED', W/2, 730);
+        ctx.restore();
+      }
       break;
     }
 
