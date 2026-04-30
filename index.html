@@ -217,7 +217,7 @@ let state = 'INTRO_BLACK', stateT = 0, totalT = 0;
 let skipDone = false;
 
 function skipToGame() {
-  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjThrowT = 0; briefcases.length = 0; helpers.length = 0; player.lives = 3; player.invulnT = 0; playerScore = 0; multiplier = 1.0; multiplierT = 0; pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; pelosi.timer = PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN); pelosi.targetCapsule = null; pelosi.shrug = false; pelosiFlash.active = false; }
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjThrowT = 0; briefcases.length = 0; helpers.length = 0; player.lives = 3; player.invulnT = 0; playerScore = 0; multiplier = 1.0; multiplierT = 0; pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; pelosi.timer = PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN); pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; }
 }
 
 // ─────────────────────────────────────────────
@@ -981,60 +981,96 @@ function triggerHelperSpawn(reason) {
 }
 
 // ─────────────────────────────────────────────
-//  F7 — NANCY PELOSI CAMEO (per Notion spec, Block 7c)
+//  G2 — NANCY PELOSI CAMEO (FLOOR walker, per April 30 2026 Notion revision)
 // ─────────────────────────────────────────────
-// Independent 30–45s timer, separate from briefcase + helper systems.
-// Pops up from behind a random middle platform, grabs a rolling capsule, tears it (pelosi_idle → pelosi_tear),
-// awards PELOSI_BONUS (500), descends. If no capsule on the chosen platform: shrug and descend (no grab).
-// No collision with player. Phase machine: IDLE → RISING → GRABBING → TEARING → DESCENDING.
+// Independent 30–45s timer. On fire: spawn at right screen edge on FLOOR, walk LEFT at 50 px/s.
+// If she walks within ~30px of a capsule on FLOOR → GRAB → SLAM (glass shatter particles) →
+// TEAR (pelosi_idle → pelosi_tear; two paper pieces fly off in arcs) → award PELOSI_BONUS (+500)
+// → turn around, walk back RIGHT, despawn off the right edge. If she reaches x≈60 (left limit)
+// without grabbing: SHRUG (0.4s, no sprite swap, small arm-up bounce via y-bob) → walk back right,
+// no points. No collision with player at any phase.
+//
+// Phase machine: IDLE → WALKING_LEFT → (GRAB → SLAM → TEAR | SHRUG) → WALKING_RIGHT → IDLE
 const PELOSI_HEIGHT           = 80;
-const PELOSI_RISE_DURATION    = 0.8;
-const PELOSI_GRAB_DURATION    = 0.5;
-const PELOSI_TEAR_DURATION    = 0.8;
-const PELOSI_DESCEND_DURATION = 0.7;
+const PELOSI_WALK_SPD         = 50;
+const PELOSI_GRAB_RANGE_X     = 30;
+const PELOSI_GRAB_DURATION    = 0.4;
+const PELOSI_SLAM_DURATION    = 0.3;
+const PELOSI_TEAR_DURATION    = 0.6;
+const PELOSI_SHRUG_DURATION   = 0.4;
+const PELOSI_LEFT_LIMIT       = 60;
 const PELOSI_INTERVAL_MIN     = 30.0;
 const PELOSI_INTERVAL_MAX     = 45.0;
 const PELOSI_BONUS            = 500;
 const PELOSI_FLASH_LIFETIME   = 1.5;
+const PELOSI_TORN_LIFETIME    = 1.0;
 
 const pelosi = {
   active: false,
   phase: 'IDLE',
   phaseT: 0,
   timer: PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN),
-  x: 0, y: 0, baseY: 0,
+  x: 0, y: 0,
+  facing: -1,                                                     // -1 = facing left, +1 = facing right
   targetCapsule: null,
-  shrug: false,
 };
 const pelosiFlash = { active: false, t: 0, x: 0, y: 0 };
+const tornPieces = [];                                            // paper shards flying off after a tear
 
-function findCapsuleOnPlatform(plat) {
+function findFloorCapsuleNearPelosi() {
+  // Capsule must be on FLOOR AND within PELOSI_GRAB_RANGE_X of pelosi.x.
   for (const c of capsules) {
-    if (c.onPlat === plat) return c;
+    if (c.onPlat !== FLOOR) continue;
+    if (Math.abs(c.x - pelosi.x) < PELOSI_GRAB_RANGE_X) return c;
   }
   return null;
 }
 
+function spawnPelosiGlassShatter(x, y) {
+  // White-blue glass shard burst — reuses the existing particles[] system.
+  const cols = ['#ddffff', '#aaeeff', '#ffffff', '#88ccff', '#ccccff'];
+  for (let i = 0; i < 14; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const spd = 80 + Math.random() * 110;
+    particles.push({
+      x: x, y: y,
+      vx: Math.cos(a) * spd,
+      vy: Math.sin(a) * spd - 60,                                 // slight upward bias
+      life: 1,
+      decay: 1.1 + Math.random() * 0.5,
+      r: 2 + Math.random() * 3,
+      color: cols[Math.floor(Math.random() * cols.length)],
+    });
+  }
+}
+
 function spawnPelosi() {
-  const idx = MIDDLE_PLATFORM_INDICES[Math.floor(Math.random() * MIDDLE_PLATFORM_INDICES.length)];
-  const plat = platforms[idx];
-  const cap = findCapsuleOnPlatform(plat);
-  const sx = cap ? cap.x : plat.x + plat.w / 2;
   pelosi.active = true;
-  pelosi.phase = 'RISING';
+  pelosi.phase = 'WALKING_LEFT';
   pelosi.phaseT = 0;
-  pelosi.x = sx;
-  pelosi.baseY = getPlatY(plat, sx);
-  pelosi.y = pelosi.baseY + PELOSI_HEIGHT;        // start with foot below platform surface (fully hidden)
-  pelosi.targetCapsule = cap;
-  pelosi.shrug = !cap;
+  pelosi.x = W + 20;                                              // start just off-screen right
+  pelosi.y = FLOOR.y;                                             // foot at floor surface
+  pelosi.facing = -1;
+  pelosi.targetCapsule = null;
 }
 
 function updatePelosi(dt) {
-  // Tick bonus flash always (independent of pelosi.active)
+  // Bonus flash + torn pieces tick regardless of pelosi.active so they finish their animation
+  // even if Pelosi has already despawned.
   if (pelosiFlash.active) {
     pelosiFlash.t += dt;
     if (pelosiFlash.t >= PELOSI_FLASH_LIFETIME) pelosiFlash.active = false;
+  }
+  for (let i = tornPieces.length - 1; i >= 0; i--) {
+    const t = tornPieces[i];
+    t.t   += dt;
+    t.x   += t.vx * dt;
+    t.y   += t.vy * dt;
+    t.vy  += 240 * dt;                                            // gravity
+    t.rot += t.rotV * dt;
+    if (t.t > PELOSI_TORN_LIFETIME || t.x < -50 || t.x > W + 50 || t.y > H + 50) {
+      tornPieces.splice(i, 1);
+    }
   }
 
   if (!pelosi.active) {
@@ -1047,57 +1083,114 @@ function updatePelosi(dt) {
   }
 
   pelosi.phaseT += dt;
-  if (pelosi.phase === 'RISING') {
-    const t = Math.min(pelosi.phaseT / PELOSI_RISE_DURATION, 1);
-    pelosi.y = pelosi.baseY + PELOSI_HEIGHT * (1 - t);
-    if (t >= 1) {
-      pelosi.y = pelosi.baseY;
-      pelosi.phase = pelosi.shrug ? 'DESCENDING' : 'GRABBING';
-      pelosi.phaseT = 0;
-    }
-  } else if (pelosi.phase === 'GRABBING') {
-    if (pelosi.phaseT >= PELOSI_GRAB_DURATION) {
-      if (pelosi.targetCapsule) {
-        const ci = capsules.indexOf(pelosi.targetCapsule);
-        if (ci >= 0) capsules.splice(ci, 1);
+  switch (pelosi.phase) {
+    case 'WALKING_LEFT': {
+      pelosi.x -= PELOSI_WALK_SPD * dt;
+      pelosi.facing = -1;
+      const cap = findFloorCapsuleNearPelosi();
+      if (cap) {
+        pelosi.targetCapsule = cap;
+        pelosi.phase = 'GRAB';
+        pelosi.phaseT = 0;
+      } else if (pelosi.x <= PELOSI_LEFT_LIMIT) {
+        pelosi.x = PELOSI_LEFT_LIMIT;
+        pelosi.phase = 'SHRUG';
+        pelosi.phaseT = 0;
       }
-      pelosi.phase = 'TEARING';
-      pelosi.phaseT = 0;
+      break;
     }
-  } else if (pelosi.phase === 'TEARING') {
-    if (pelosi.phaseT >= PELOSI_TEAR_DURATION) {
-      playerScore += PELOSI_BONUS;
-      pelosiFlash.active = true;
-      pelosiFlash.t = 0;
-      pelosiFlash.x = pelosi.x;
-      pelosiFlash.y = pelosi.baseY - PELOSI_HEIGHT - 8;
-      pelosi.phase = 'DESCENDING';
-      pelosi.phaseT = 0;
+    case 'GRAB': {
+      if (pelosi.phaseT >= PELOSI_GRAB_DURATION) {
+        // Mid-flight despawn permitted by capsule travel rule for Pelosi only.
+        if (pelosi.targetCapsule) {
+          const ci = capsules.indexOf(pelosi.targetCapsule);
+          if (ci >= 0) capsules.splice(ci, 1);
+        }
+        spawnPelosiGlassShatter(pelosi.x, pelosi.y - PELOSI_HEIGHT * 0.55);
+        pelosi.phase = 'SLAM';
+        pelosi.phaseT = 0;
+      }
+      break;
     }
-  } else if (pelosi.phase === 'DESCENDING') {
-    const t = Math.min(pelosi.phaseT / PELOSI_DESCEND_DURATION, 1);
-    pelosi.y = pelosi.baseY + PELOSI_HEIGHT * t;
-    if (t >= 1) {
-      pelosi.active = false;
-      pelosi.phase = 'IDLE';
-      pelosi.phaseT = 0;
-      pelosi.targetCapsule = null;
+    case 'SLAM': {
+      if (pelosi.phaseT >= PELOSI_SLAM_DURATION) {
+        pelosi.phase = 'TEAR';
+        pelosi.phaseT = 0;
+      }
+      break;
+    }
+    case 'TEAR': {
+      if (pelosi.phaseT >= PELOSI_TEAR_DURATION) {
+        // Spawn two paper pieces flying off in opposite arcs (one upper-left, one upper-right).
+        const baseY = pelosi.y - PELOSI_HEIGHT * 0.55;
+        tornPieces.push({ x: pelosi.x - 6, y: baseY, vx: -180, vy: -240, rot: 0, rotV:  6, t: 0 });
+        tornPieces.push({ x: pelosi.x + 6, y: baseY, vx:  180, vy: -260, rot: 0, rotV: -6, t: 0 });
+        playerScore += PELOSI_BONUS;
+        pelosiFlash.active = true;
+        pelosiFlash.t = 0;
+        pelosiFlash.x = pelosi.x;
+        pelosiFlash.y = pelosi.y - PELOSI_HEIGHT - 10;
+        pelosi.phase = 'WALKING_RIGHT';
+        pelosi.phaseT = 0;
+        pelosi.facing = 1;
+      }
+      break;
+    }
+    case 'SHRUG': {
+      // Small arm-up bounce — cosmetic y-bob during shrug since we don't have a separate shrug sprite.
+      if (pelosi.phaseT >= PELOSI_SHRUG_DURATION) {
+        pelosi.phase = 'WALKING_RIGHT';
+        pelosi.phaseT = 0;
+        pelosi.facing = 1;
+      }
+      break;
+    }
+    case 'WALKING_RIGHT': {
+      pelosi.x += PELOSI_WALK_SPD * dt;
+      pelosi.facing = 1;
+      if (pelosi.x > W + 20) {
+        pelosi.active = false;
+        pelosi.phase = 'IDLE';
+        pelosi.phaseT = 0;
+        pelosi.targetCapsule = null;
+      }
+      break;
     }
   }
 }
 
 function drawPelosi() {
   if (pelosi.active) {
-    const sprite = pelosi.phase === 'TEARING' ? 'pelosi_tear' : 'pelosi_idle';
-    // Clip so only the portion above the platform surface (baseY) is visible — gives the
-    // "rising from behind the platform" effect specified in the Notion spec.
+    const sprite = (pelosi.phase === 'TEAR') ? 'pelosi_tear' : 'pelosi_idle';
+    // Cosmetic shrug-bounce: small upward bob during SHRUG phase (no sprite swap available).
+    let y = pelosi.y;
+    if (pelosi.phase === 'SHRUG') {
+      const t = pelosi.phaseT / PELOSI_SHRUG_DURATION;
+      y -= Math.sin(t * Math.PI) * 6;                             // half-sine bob, peak ~6px up
+    }
+    // facing < 0 (walking left) → flip=true so the right-facing default sprite mirrors to face left.
+    drawSprite(sprite, pelosi.x, y, PELOSI_HEIGHT, pelosi.facing < 0, 1.0);
+  }
+  // Torn paper pieces
+  for (const t of tornPieces) {
+    const a = Math.max(0, 1 - t.t / PELOSI_TORN_LIFETIME);
     ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, 0, W, pelosi.baseY);
-    ctx.clip();
-    drawSprite(sprite, pelosi.x, pelosi.y, PELOSI_HEIGHT, false, 1.0);
+    ctx.globalAlpha = a;
+    ctx.translate(t.x, t.y);
+    ctx.rotate(t.rot);
+    ctx.fillStyle = '#f8f4d8';
+    ctx.fillRect(-7, -10, 14, 20);
+    ctx.strokeStyle = '#888';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(-7, -10, 14, 20);
+    // ink lines
+    ctx.fillStyle = '#222';
+    ctx.fillRect(-5, -7, 10, 1);
+    ctx.fillRect(-5, -3, 10, 1);
+    ctx.fillRect(-5,  1, 10, 1);
     ctx.restore();
   }
+  // Bonus flash floats up
   if (pelosiFlash.active) {
     const a = 1 - (pelosiFlash.t / PELOSI_FLASH_LIFETIME);
     ctx.save();
@@ -2358,7 +2451,7 @@ function loop(ts) {
       // Shake on first hit
       if(shatterT>0.5&&shatterT<0.55){ shakeAmt=10; boom(W/2,500,28,true); }
       if(shatterT>1.2&&shatterT<1.25){ shakeAmt=8; }
-      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjThrowT=0; briefcases.length=0; helpers.length=0; player.lives=3; player.invulnT=0; playerScore=0; multiplier=1.0; multiplierT=0; pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); pelosi.active=false; pelosi.phase='IDLE'; pelosi.phaseT=0; pelosi.timer=PELOSI_INTERVAL_MIN+Math.random()*(PELOSI_INTERVAL_MAX-PELOSI_INTERVAL_MIN); pelosi.targetCapsule=null; pelosi.shrug=false; pelosiFlash.active=false; }
+      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjThrowT=0; briefcases.length=0; helpers.length=0; player.lives=3; player.invulnT=0; playerScore=0; multiplier=1.0; multiplierT=0; pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); pelosi.active=false; pelosi.phase='IDLE'; pelosi.phaseT=0; pelosi.timer=PELOSI_INTERVAL_MIN+Math.random()*(PELOSI_INTERVAL_MAX-PELOSI_INTERVAL_MIN); pelosi.facing=-1; pelosi.targetCapsule=null; pelosiFlash.active=false; tornPieces.length=0; }
       break;
   }
 
