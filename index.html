@@ -263,6 +263,10 @@ function cutsceneAdvance() {
       // I-CORR-3 — skipping past the dialogue phases drops any still-queued captions so they
       // don't carry into SCORE. The SCORE breakdown is read silently.
       clearCaptions();
+      // I-CORR-4 — if user skipped before grab-completion, carriedActive is still false. If
+      // they skipped during ascent it's true. Either way, SCORE renders 0 DTJ — but we keep
+      // carriedActive intact so a possible BETWEEN re-entry still has the eagle carrying him.
+      // (Skip during PHASE1 → PHASE3 was never started → carriedActive stays false.)
       state = 'CUTSCENE_SCORE';
       stateT = 0;
     }
@@ -271,6 +275,9 @@ function cutsceneAdvance() {
   if (state === 'CUTSCENE_SCORE') {
     // I-CORR-3 — any leftover SCORE caption tail is cleared before BETWEEN seeds its rotation.
     clearCaptions();
+    // I-CORR-4 — guarantee BETWEEN has the eagle carrying DTJ even if the user skipped past
+    // PHASE3 ascent (where carriedActive normally gets set on grab-completion).
+    carriedActive = true;
     state = 'CUTSCENE_BETWEEN';
     stateT = 0;
     seedCutsceneClouds();                                 // I2 — fresh cloud layout each visit
@@ -284,6 +291,9 @@ function cutsceneAdvance() {
   if (state === 'CUTSCENE_BETWEEN') {
     // I-CORR-3 — drop any tail before returning to the intro loop.
     clearCaptions();
+    // I-CORR-4 — cutscene cycle done; release carry-state so the next gameplay/intro round starts
+    // clean (gameplay state never reads carriedActive, but this keeps the variable honest).
+    carriedActive = false;
     state = 'INTRO_BLACK';
     stateT = 0;
     scoreFloats.length = 0;
@@ -700,6 +710,11 @@ function triggerWin() {
   // I-CORR-3 — make sure no stale caption lingers from a prior win cycle. The PHASE1 captions are
   // pushed on FADE_IN→PHASE1 entry, so the queue should be empty at WIN_FREEZE start.
   clearCaptions();
+  // I-CORR-4 — defensive reset of carry-state at every win trigger. carriedActive is set true
+  // only when the eagle's grab-pause completes in PHASE3.
+  carriedActive = false;
+  dtjScale = 1.0;
+  dtjScaleTarget = 1.0;
 }
 
 // C3 / D1 — DTJ throw animation state machine. On capsule spawn timer fire (and only if IDLE):
@@ -2571,6 +2586,21 @@ function drawRncStage() {
   ctx.drawImage(cached, 0, STAGE_CANVAS_TOP, W, stageH);
 }
 
+// I-CORR-4 — draws DTJ rotated -45° (counterclockwise) centered at (cx, cy). Used in PHASE3
+// ascent + BETWEEN to render DTJ as if being swept up by the eagle's talons (head up-left, body
+// trailing down-right). Bypasses drawSprite's foot-anchor convention so we can rotate cleanly.
+function drawDtjCarried(cx, cy, h) {
+  const cached = spriteCache['dtj_idle'];
+  if (!cached) return;
+  const aspect = cached.width / cached.height;
+  const w = h * aspect;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(-Math.PI / 4);                               // -45° = counterclockwise lean-back
+  ctx.drawImage(cached, -w / 2, -h / 2, w, h);
+  ctx.restore();
+}
+
 // Procedural sky for CUTSCENE_BETWEEN. Vertical gradient + 3–5 drifting cloud blobs.
 // Cloud state initialized lazily on first draw and re-seeded any time the cutscene re-enters.
 const CUTSCENE_CLOUDS = [];
@@ -2654,10 +2684,10 @@ function drawBubble(x, y, text, alpha) {
   ctx.restore();
 }
 
-// I-CORR-3 — top-of-canvas caption system. Replaces the per-character speech bubbles for ALL
-// cutscene dialogue. ONE caption visible at a time. Sub-states FADE_IN → HOLD → FADE_OUT.
-// Renders a strip directly under the ticker bar with a color-coded speaker label and centered
-// dialogue text (auto-wrapped, max 3 lines, ellipsis if longer).
+// I-CORR-3 — caption system replaces per-character speech bubbles for ALL cutscene dialogue.
+// I-CORR-4 — strip is now bottom-aligned to STAGE_CANVAS_TOP (=292) so it sits flush above the
+// stage scene with no black gap. Same alignment in SCORE/BETWEEN states.
+// ONE caption visible at a time. Sub-states FADE_IN → HOLD → FADE_OUT.
 const captionQueue = [];
 let captionCurrent = null;          // { speaker, text, holdSec }
 let captionPhase = 'idle';          // 'idle' | 'fadein' | 'hold' | 'fadeout'
@@ -2665,6 +2695,18 @@ let captionPhaseT = 0;
 const CAPTION_FADE_IN     = 0.2;
 const CAPTION_FADE_OUT    = 0.3;
 const CAPTION_DEFAULT_HOLD = 1.5;
+
+// I-CORR-4 — carriedActive is true from the moment the eagle's grab-pause completes (in
+// CUTSCENE_PHASE3) through CUTSCENE_BETWEEN. Gates: only carried-DTJ renders, not stage-DTJ.
+let carriedActive = false;
+
+// I-CORR-4 — dtjScale grows DTJ on stage when the "WITCH HUNT!" caption is held, easing back
+// when the caption fades out. Applied to the on-stage DTJ render in PHASE1 only.
+let dtjScale = 1.0;
+let dtjScaleTarget = 1.0;
+const DTJ_SCALE_HOLD     = 1.6;
+const DTJ_SCALE_EASE_DUR = 0.15;
+const DTJ_SCALE_RATE     = (DTJ_SCALE_HOLD - 1.0) / DTJ_SCALE_EASE_DUR;       // = 4.0/sec
 
 function pushCaption(speaker, text, holdSec) {
   captionQueue.push({ speaker: speaker, text: text, holdSec: (holdSec != null ? holdSec : CAPTION_DEFAULT_HOLD) });
@@ -2675,6 +2717,14 @@ function clearCaptions() {
   captionCurrent = null;
   captionPhase = 'idle';
   captionPhaseT = 0;
+  // I-CORR-4 — drop any zoom-in-progress; stage DTJ snaps back to 1.0x next frame.
+  dtjScaleTarget = 1.0;
+}
+
+// I-CORR-4 — true if the currently-held caption is the DJT "WITCH HUNT!" punchline. Used to gate
+// the on-stage DTJ zoom-in.
+function captionIsWitchHunt(cap) {
+  return cap && cap.speaker === 'DJT' && cap.text === 'WITCH HUNT!';
 }
 
 function tickCaptions(dt) {
@@ -2684,20 +2734,30 @@ function tickCaptions(dt) {
       captionPhase = 'fadein';
       captionPhaseT = 0;
     }
-    return;
+    // I-CORR-4 — out of caption: ensure DTJ shrinks back.
+    dtjScaleTarget = 1.0;
+  } else {
+    captionPhaseT += dt;
+    if (captionPhase === 'fadein' && captionPhaseT >= CAPTION_FADE_IN) {
+      captionPhase = 'hold';
+      captionPhaseT = 0;
+      // I-CORR-4 — entering HOLD on "WITCH HUNT!" → grow DTJ.
+      if (captionIsWitchHunt(captionCurrent)) dtjScaleTarget = DTJ_SCALE_HOLD;
+    } else if (captionPhase === 'hold' && captionPhaseT >= captionCurrent.holdSec) {
+      captionPhase = 'fadeout';
+      captionPhaseT = 0;
+      // I-CORR-4 — leaving HOLD on "WITCH HUNT!" → shrink DTJ back.
+      if (captionIsWitchHunt(captionCurrent)) dtjScaleTarget = 1.0;
+    } else if (captionPhase === 'fadeout' && captionPhaseT >= CAPTION_FADE_OUT) {
+      captionPhase = 'idle';
+      captionCurrent = null;
+      captionPhaseT = 0;
+    }
   }
-  captionPhaseT += dt;
-  if (captionPhase === 'fadein' && captionPhaseT >= CAPTION_FADE_IN) {
-    captionPhase = 'hold';
-    captionPhaseT = 0;
-  } else if (captionPhase === 'hold' && captionPhaseT >= captionCurrent.holdSec) {
-    captionPhase = 'fadeout';
-    captionPhaseT = 0;
-  } else if (captionPhase === 'fadeout' && captionPhaseT >= CAPTION_FADE_OUT) {
-    captionPhase = 'idle';
-    captionCurrent = null;
-    captionPhaseT = 0;
-  }
+
+  // I-CORR-4 — ease dtjScale toward target every frame (linear @ DTJ_SCALE_RATE).
+  if (dtjScale < dtjScaleTarget) dtjScale = Math.min(dtjScaleTarget, dtjScale + DTJ_SCALE_RATE * dt);
+  else if (dtjScale > dtjScaleTarget) dtjScale = Math.max(dtjScaleTarget, dtjScale - DTJ_SCALE_RATE * dt);
 }
 
 function renderCutsceneCaption() {
@@ -2707,7 +2767,6 @@ function renderCutsceneCaption() {
   if      (captionPhase === 'fadein')  alpha = Math.min(1, captionPhaseT / CAPTION_FADE_IN);
   else if (captionPhase === 'fadeout') alpha = Math.max(0, 1 - captionPhaseT / CAPTION_FADE_OUT);
 
-  const STRIP_TOP_Y     = TICKER_Y + TICKER_HEIGHT + 4;     // = 22 + 4 = ~22px under ticker
   const PAD_X           = 16;
   const PAD_Y           = 8;
   const SPEAKER_FONT_PX = 12;
@@ -2737,6 +2796,10 @@ function renderCutsceneCaption() {
   }
 
   const stripH = PAD_Y + SPEAKER_FONT_PX + 4 + lines.length * LINE_HEIGHT + PAD_Y;
+  // I-CORR-4 — bottom-align the strip to the top edge of the cutscene scene background
+  // (STAGE_CANVAS_TOP=292 per Block I I2). This puts the caption flush against the top of
+  // the stage with no black gap. Same y for SCORE/BETWEEN — positions consistently across phases.
+  const STRIP_TOP_Y = STAGE_CANVAS_TOP - stripH;
 
   ctx.globalAlpha = alpha;
   // Strip background — semi-transparent black, full canvas width
@@ -3351,8 +3414,12 @@ function loop(ts) {
       drawDonkey(dncX, STAGE_FLOOR_Y, 1.0, false, dncWalking, stateT);
 
       // DTJ idle in front of the podium (right side of stage). 80px tall per spec.
+      // I-CORR-4 — height multiplied by dtjScale so DTJ pops to 1.6x during the "WITCH HUNT!"
+      // caption hold (and shrinks back during fadeout). Feet stay pinned at STAGE_FLOOR_Y because
+      // drawSprite footFrac=1.0 anchors the bottom of the sprite at y. Faces LEFT (toward DNC,
+      // his accuser) — no flip.
       const dtjX = 320;
-      drawSprite('dtj_idle', dtjX, STAGE_FLOOR_Y, 80, false, 1.0);
+      drawSprite('dtj_idle', dtjX, STAGE_FLOOR_Y, 80 * dtjScale, false, 1.0);
 
       // I-CORR-3 — captions render in the top strip (pushed on FADE_IN→PHASE1 entry).
       renderCutsceneCaption();
@@ -3387,17 +3454,22 @@ function loop(ts) {
       if (eagle.mode === 'descend') {
         eagle.y += 200 * dt;
         if (eagle.y >= DTJ_GRAB_Y) { eagle.y = DTJ_GRAB_Y; eagle.mode = 'grab'; eagle.timer = 0; }
-        // DTJ still on stage
-        drawSprite('dtj_idle', 320, STAGE_FLOOR_Y, 80, false, 1.0);
+        // I-CORR-4 — DTJ on stage now MIRRORED (flip=true) so he faces RIGHT, signaling
+        // "looking at the rescue arriving" as the eagle descends. Was facing left in PHASE1.
+        drawSprite('dtj_idle', 320, STAGE_FLOOR_Y, 80, true, 1.0);
         drawSprite('eagle_fly', eagle.x, eagle.y, 80, false, 1.0);
       } else if (eagle.mode === 'grab') {
         eagle.timer += dt;
-        drawSprite('dtj_idle', 320, STAGE_FLOOR_Y, 80, false, 1.0);
+        // I-CORR-4 — still mirrored during grab pause (consistent with descent).
+        drawSprite('dtj_idle', 320, STAGE_FLOOR_Y, 80, true, 1.0);
         drawSprite('eagle_carry', eagle.x, eagle.y, 80, false, 1.0);
         if (eagle.timer >= CUTSCENE_PHASE3_GRAB_DELAY) {
           eagle.mode = 'ascend';
           eagle.timer = 0;
           eagle.ascentStart = stateT;
+          // I-CORR-4 — grab-pause complete: DTJ is now in the eagle's talons. Stage-DTJ render
+          // is bypassed from here on (Fix B). Carried-DTJ render path takes over (Fix C).
+          carriedActive = true;
           // I-CORR-3 — push the ascent caption when the grab completes. Hold 2.0s, then fade-out.
           pushCaption('DJT', 'THANK YOU PATRIOTS!', 2.0);
         }
@@ -3405,9 +3477,12 @@ function loop(ts) {
         eagle.timer += dt;
         eagle.y -= 250 * dt;
         eagle.x -=  30 * dt;
-        const dtjX = eagle.x;
-        const dtjY = eagle.y + 60;                      // DTJ pinned below eagle
-        drawSprite('dtj_idle',    dtjX, dtjY, 80, false, 1.0);
+        // I-CORR-4 — single carried-DTJ render only. Stage-DTJ at (320, STAGE_FLOOR_Y) is NOT
+        // drawn this frame (Fix B). DTJ is rotated -45° centered just below the eagle (Fix C).
+        // The 60px offset matches the prior pin convention — eagle.y + 60 is the DTJ center.
+        if (carriedActive) {
+          drawDtjCarried(eagle.x, eagle.y + 40, 80);
+        }
         drawSprite('eagle_carry', eagle.x, eagle.y, 80, false, 1.0);
         if (eagle.y < -100) {
           state = 'CUTSCENE_SCORE';
@@ -3497,9 +3572,13 @@ function loop(ts) {
       if (eagle.mode === 'between' && stateT < 4.5) {
         eagle.x += 80 * dt;
       }
-      const dtjX = eagle.x;
-      const dtjY = eagle.y + 60;
-      drawSprite('dtj_idle',    dtjX, dtjY, 80, false, 1.0);
+      // I-CORR-4 — single carried-DTJ render via rotated path (Fix B+C). carriedActive stays
+      // true from PHASE3 grab-completion through SCORE through BETWEEN, so this branch always
+      // fires here — but the conditional matches PHASE3's structure for safety on cold-load
+      // edge cases (e.g. dev hot-reload mid-cutscene).
+      if (carriedActive) {
+        drawDtjCarried(eagle.x, eagle.y + 40, 80);
+      }
       drawSprite('eagle_carry', eagle.x, eagle.y, 80, false, 1.0);
 
       // I-CORR-3 — DTJ caption rotation now lives in the top-of-canvas strip; the 3 lines were
