@@ -55,23 +55,6 @@ const spriteCache = {};                                       // name -> HTMLCan
 let spritesLoaded = 0;
 const spritesTotal = Object.keys(spriteData).length;
 
-// G1.A2 — per-sprite background-color overrides. If a sprite's top-left corner doesn't match its
-// actual JPG background color (e.g. antifa where the JPG corner is a non-white grey), set the
-// real bg color here. The strict R>240 white pass is SKIPPED for override sprites since their
-// background isn't white; the corner-match + flood passes use the override as the seed instead.
-const SPRITE_BG_OVERRIDE = {
-  antifa: [186, 186, 186],                   // grey JPG background, not white
-};
-
-// G1.A2 — reusable Int32Array for the BFS flood queue (allocated once, reused across sprites).
-let _floodQueue = null;
-function _getFloodQueue(maxSize) {
-  if (!_floodQueue || _floodQueue.length < maxSize) {
-    _floodQueue = new Int32Array(maxSize);
-  }
-  return _floodQueue;
-}
-
 function processSprite(name, img) {
   const w = img.naturalWidth, h = img.naturalHeight;
   if (!w || !h) {
@@ -85,90 +68,32 @@ function processSprite(name, img) {
   const id = ictx.getImageData(0, 0, w, h);
   const d = id.data;
 
-  // G1.A2 — pick background color: per-sprite override if listed, else top-left corner pixel.
-  const override   = SPRITE_BG_OVERRIDE[name];
-  const cornerR    = d[0], cornerG = d[1], cornerB = d[2];
-  const bgR        = override ? override[0] : cornerR;
-  const bgG        = override ? override[1] : cornerG;
-  const bgB        = override ? override[2] : cornerB;
-  const bgIsLight  = (bgR + bgG + bgB) > 600;           // avg channel > 200 → looks like a bg
-  const COLOR_TOL  = 80;                                // G1.A2 — bumped from 30 to catch JPG noise
+  // G1 — sample background color from the top-left corner. JPG backgrounds aren't always pure
+  // white (R=240+); they're often off-white (R~225–240) and the strict 240-threshold misses them.
+  // We treat any pixel whose channels are all close to the corner color (Manhattan distance) as
+  // background AND keep the strict near-white catch as a safety net.
+  const bgR = d[0], bgG = d[1], bgB = d[2];
+  const cornerSum = bgR + bgG + bgB;
+  const cornerIsLight = cornerSum > 600;     // avg channel > 200 → corner looks like background
+  const COLOR_TOL = 30;                      // Manhattan tolerance for "same as background"
 
-  let strictKilled = 0;       // R>240 strict white pass
-  let cornerKilled = 0;       // global Manhattan match to bg color
-  let floodKilled  = 0;       // BFS flood from each corner
-
-  // ── Pass 1 — strict R>240 white (skipped for override sprites since their bg isn't white) ──
-  if (!override) {
-    for (let i = 0; i < d.length; i += 4) {
-      if (d[i+3] === 0) continue;
-      if (d[i] > 240 && d[i+1] > 240 && d[i+2] > 240) {
-        d[i+3] = 0;
-        strictKilled++;
-      }
-    }
-  }
-
-  // ── Pass 2 — global corner/override-color match within Manhattan tolerance ──
-  if (bgIsLight || override) {
-    for (let i = 0; i < d.length; i += 4) {
-      if (d[i+3] === 0) continue;
-      const dist = Math.abs(d[i] - bgR) + Math.abs(d[i+1] - bgG) + Math.abs(d[i+2] - bgB);
-      if (dist < COLOR_TOL) {
-        d[i+3] = 0;
-        cornerKilled++;
-      }
-    }
-  }
-
-  // ── Pass 3 — BFS flood from each of the 4 corners, seed = bg color, tol to SEED only ──
-  // Catches connected background regions. Preserves character pixels that happen to be light
-  // but live inside the character (e.g. DTJ's white shirt) — they aren't reachable from a corner
-  // via close-color path. Stops at any pixel whose Manhattan distance to the SEED exceeds tol.
-  if (bgIsLight || override) {
-    const total = w * h;
-    const queue = _getFloodQueue(total * 4);
-
-    function flood(startX, startY) {
-      const startIdx = startY * w + startX;
-      const startDi  = startIdx * 4;
-      if (d[startDi+3] === 0) return 0;          // already keyed by an earlier pass
-      const seedDist = Math.abs(d[startDi] - bgR) + Math.abs(d[startDi+1] - bgG) + Math.abs(d[startDi+2] - bgB);
-      if (seedDist >= COLOR_TOL) return 0;       // corner color isn't actually bg — skip this flood
-      let head = 0, tail = 0;
-      queue[tail++] = startIdx;
-      let count = 0;
-      while (head < tail) {
-        const idx = queue[head++];
-        const di  = idx * 4;
-        if (d[di+3] === 0) continue;
-        const dist = Math.abs(d[di] - bgR) + Math.abs(d[di+1] - bgG) + Math.abs(d[di+2] - bgB);
-        if (dist >= COLOR_TOL) continue;
-        d[di+3] = 0;
-        count++;
-        const x = idx % w;
-        const y = (idx - x) / w;
-        if (x + 1 < w) queue[tail++] = idx + 1;
-        if (x - 1 >= 0) queue[tail++] = idx - 1;
-        if (y + 1 < h) queue[tail++] = idx + w;
-        if (y - 1 >= 0) queue[tail++] = idx - w;
-      }
-      return count;
-    }
-
-    floodKilled += flood(0,     0);
-    floodKilled += flood(w - 1, 0);
-    floodKilled += flood(0,     h - 1);
-    floodKilled += flood(w - 1, h - 1);
-  }
-
-  // ── Bbox + final transparent count ──
   let transparentPixels = 0;
+  let cornerKilled = 0;                      // pixels removed by corner-color match (diagnostic)
+  let strictKilled = 0;                      // pixels removed by strict R>240 white check
+  // F5 — track tight bounding box of opaque pixels while alpha-keying.
   let minX = w, maxX = -1, minY = h, maxY = -1;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
-      if (d[i+3] === 0) {
+      const r = d[i], g = d[i+1], b = d[i+2];
+      let keyOut = false;
+      if (r > 240 && g > 240 && b > 240) { keyOut = true; strictKilled++; }
+      else if (cornerIsLight &&
+               Math.abs(r - bgR) + Math.abs(g - bgG) + Math.abs(b - bgB) < COLOR_TOL) {
+        keyOut = true; cornerKilled++;
+      }
+      if (keyOut) {
+        d[i+3] = 0;
         transparentPixels++;
       } else {
         if (x < minX) minX = x;
@@ -180,16 +105,16 @@ function processSprite(name, img) {
   }
   ictx.putImageData(id, 0, 0);
 
-  // ── Sanity check ──
-  if ((bgIsLight || override) && transparentPixels === 0) {
-    console.error('G1.A2 — sprite ' + name + ' has bg target (' + bgR + ',' + bgG + ',' + bgB +
-                  ') but ZERO transparent pixels removed.');
+  // G1 — runtime assertion: light corner but zero removed = something is wrong with this asset.
+  if (cornerIsLight && transparentPixels === 0) {
+    console.error('G1 — sprite ' + name + ' has light corner (' + bgR + ',' + bgG + ',' + bgB +
+                  ') but ZERO transparent pixels removed. JPG background may be unusual.');
   }
 
-  // ── F5 trim ──
+  // F5 — trim cached canvas to tight bounding box of non-transparent pixels.
   if (maxX < 0 || maxY < 0) {
     spriteCache[name] = off;
-    console.warn('G1.A2 — sprite ' + name + ' fully transparent after alpha-key');
+    console.warn('G1 — sprite ' + name + ' fully transparent after alpha-key');
     return;
   }
   const tw = maxX - minX + 1;
@@ -203,13 +128,12 @@ function processSprite(name, img) {
     tctx.drawImage(off, minX, minY, tw, th, 0, 0, tw, th);
     spriteCache[name] = trimmed;
   }
-  console.log('G1.A2 — sprite loaded:', name,
+  console.log('G1 — sprite loaded:', name,
               'native=' + w + 'x' + h,
               'trimmed=' + spriteCache[name].width + 'x' + spriteCache[name].height,
-              'corner=(' + cornerR + ',' + cornerG + ',' + cornerB + ')',
-              'bgOverride=' + (override ? '(' + override.join(',') + ')' : 'none'),
+              'corner=(' + bgR + ',' + bgG + ',' + bgB + ')',
               'transparentPixels=' + transparentPixels,
-              '(strict=' + strictKilled + ' corner=' + cornerKilled + ' flood=' + floodKilled + ')');
+              '(strict=' + strictKilled + ' corner=' + cornerKilled + ')');
 }
 
 for (const [name, src] of Object.entries(spriteData)) {
