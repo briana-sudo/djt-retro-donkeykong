@@ -2017,7 +2017,8 @@ function drawGameplay(shake) {
   // Drawn AFTER platforms but BEFORE DTJ so DTJ overlaps it visually if they cross.
   // Decorative only — no entity, no collision. Capsules spawn FROM this position (TOP.x+50).
   // y arg is the foot/bottom edge sitting on TOP surface; footFrac=1.0 anchors the bottom there.
-  drawSprite('barrel_upright', BARREL_X, TOP.y, CAPSULE_R * 2, false, 1.0);
+  // F3 — static barrel renders at 2x (CAPSULE_R*4). Rolling capsule (barrel_endview) size unchanged.
+  drawSprite('barrel_upright', BARREL_X, TOP.y, CAPSULE_R * 4, false, 1.0);
 
   // Capsules + briefcases + pickup + helpers (rendered behind characters so DNC/DTJ overlap looks right)
   drawCapsules();
