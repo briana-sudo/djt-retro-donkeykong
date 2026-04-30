@@ -749,26 +749,34 @@ let pickupRespawnDelay = 0;
 // Middle platforms (excludes TOP at index 5 and FLOOR at index 0)
 const MIDDLE_PLATFORM_INDICES = [1, 2, 3, 4];
 
-function spawnPickupOnPlatform(plat) {
-  // Centered-ish x with some randomness, kept inside platform with margin
+function spawnPickupOnPlatform(plat, fixedX) {
+  // C4 — pickup floats just below the underside of the NEXT platform up. Top of briefcase sits
+  // 4px below platAbove.y + PLAT_H. baseY is the foot position (footFrac=1.0), so baseY equals
+  // platAbove.y + PLAT_H + 4 + PICKUP_SIZE. Player must make a maximum jump from the host
+  // platform to reach the bottom of the bob. platforms[idx+1] is the platform above idx.
   const margin = 28;
-  const px = plat.x + margin + Math.random() * (plat.w - 2 * margin);
+  const px = (typeof fixedX === 'number')
+    ? fixedX
+    : plat.x + margin + Math.random() * (plat.w - 2 * margin);
   pickup.x = px;
-  pickup.baseY = getPlatY(plat, px) - PICKUP_HOVER_PX;
+  const idx = platforms.indexOf(plat);
+  const platAbove = (idx >= 0 && idx + 1 < platforms.length) ? platforms[idx + 1] : null;
+  if (platAbove) {
+    pickup.baseY = platAbove.y + PLAT_H + 4 + PICKUP_SIZE;
+  } else {
+    // Defensive fallback (no platform above) — shouldn't trigger for MIDDLE_PLATFORM_INDICES.
+    pickup.baseY = getPlatY(plat, px) - PICKUP_HOVER_PX;
+  }
   pickup.y = pickup.baseY;
   pickup.bobPhase = 0;
   pickup.active = true;
 }
 
 function spawnFirstPickup() {
-  // Always P4 (one level under TOP), centered above platform surface
+  // First pickup always above P4 (one level under TOP), centered. Reuses spawnPickupOnPlatform
+  // so the platform-above lookup logic (TOP) lives in one place.
   const p4 = platforms[4];
-  const px = p4.x + p4.w / 2;
-  pickup.x = px;
-  pickup.baseY = getPlatY(p4, px) - PICKUP_HOVER_PX;
-  pickup.y = pickup.baseY;
-  pickup.bobPhase = 0;
-  pickup.active = true;
+  spawnPickupOnPlatform(p4, p4.x + p4.w / 2);
 }
 
 function updatePickup(dt) {
@@ -788,13 +796,15 @@ function updatePickup(dt) {
     return;
   }
 
-  // Bob
+  // Bob — C4: oscillate from baseY (closest to platform above, no overlap) to baseY+8 (lower).
+  // Always >= baseY so the bob never pushes the briefcase INTO the platform above.
   pickup.bobPhase += dt * 2;
-  pickup.y = pickup.baseY + Math.sin(pickup.bobPhase) * 4;
+  pickup.y = pickup.baseY + (Math.sin(pickup.bobPhase) * 0.5 + 0.5) * 8;
 
   // AABB collision with player. Hitbox derived from PICKUP_SIZE so it scales with the sprite (G6).
   // Pickup body: x ± (PICKUP_SIZE*0.25), y in [py-PICKUP_SIZE, py] (footFrac=1.0).
-  // Player body: x±10, y in [py-32, py-4]. Player must jump up to clear the 40px hover gap.
+  // Player body: x±10, y in [py-32, py-4]. C4: pickup is now at platAbove-underside+4 — requires
+  // a maximum jump from the host platform to reach the bottom of the bob.
   const halfW = PICKUP_SIZE * 0.25;
   const overlapX = (pickup.x + halfW > player.x - 10) && (pickup.x - halfW < player.x + 10);
   const overlapY = (pickup.y > player.y - 32) && (pickup.y - PICKUP_SIZE < player.y - 4);
