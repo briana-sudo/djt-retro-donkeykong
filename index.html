@@ -250,7 +250,7 @@ let state = 'INTRO_BLACK', stateT = 0, totalT = 0;
 let skipDone = false;
 
 function skipToGame() {
-  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; playerScore = 0; multiplier = 1.0; multiplierT = 0; pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; pelosi.timer = PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN); pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; }
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; pelosi.timer = PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN); pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; }
 }
 
 // ─────────────────────────────────────────────
@@ -292,6 +292,7 @@ const player = {
   lives: 3,               // Block 3 — decremented by hit(), reset on GAMEPLAY entry
   invulnT: 0,             // Block 3 — invulnerability timer (s); blink while >0
   lastGroundedPlat: FLOOR,// D3 — last platform the player stood on (used for above-platform kill block)
+  platformsReached: new Set([0]), // H2 — platform indices visited this life (FLOOR=0 already counted as spawn; no bonus)
 };
 
 // ─────────────────────────────────────────────
@@ -427,7 +428,15 @@ function updatePlayer(dt) {
         player.vy = 0;
         player.onLadder = false;
         player.onGround = true;
-        if (snapPlat) player.lastGroundedPlat = snapPlat; // D3
+        if (snapPlat) {
+          player.lastGroundedPlat = snapPlat;             // D3
+          // H2 — first time on this platform this life → +500 × multiplier
+          const idx = platforms.indexOf(snapPlat);
+          if (idx >= 0 && !player.platformsReached.has(idx)) {
+            player.platformsReached.add(idx);
+            addScore(PLATFORM_REACH_BONUS, true, player.x, player.y - 40, '#88ddff');
+          }
+        }
         // H1 — top of ladder[5] (P4 → TOP) is the win trigger. Fires on the same tick the player
         // snaps onto TOP. After triggerWin() the state is no longer GAMEPLAY so subsequent capsule
         // collisions are suppressed via the state guard added in capsule update.
@@ -454,7 +463,15 @@ function updatePlayer(dt) {
         player.vy = 0;
         player.onLadder = false;
         player.onGround = true;
-        if (snapPlat) player.lastGroundedPlat = snapPlat; // D3
+        if (snapPlat) {
+          player.lastGroundedPlat = snapPlat;             // D3
+          // H2 — bottom-exit landing also counts as "platform reached"
+          const idx = platforms.indexOf(snapPlat);
+          if (idx >= 0 && !player.platformsReached.has(idx)) {
+            player.platformsReached.add(idx);
+            addScore(PLATFORM_REACH_BONUS, true, player.x, player.y - 40, '#88ddff');
+          }
+        }
         player.ladderCooldown = 0.2;
         return;
       }
@@ -540,6 +557,14 @@ function updatePlayer(dt) {
     player.vy = 0;
     player.onGround = true;
     player.lastGroundedPlat = plat;                       // D3 — track for above-platform kill block
+    // H2 — first time on this platform this life → +500 × multiplier
+    {
+      const idx = platforms.indexOf(plat);
+      if (idx >= 0 && !player.platformsReached.has(idx)) {
+        player.platformsReached.add(idx);
+        addScore(PLATFORM_REACH_BONUS, true, player.x, player.y - 40, '#88ddff');
+      }
+    }
     break;
   }
 
@@ -597,7 +622,13 @@ let   winFinalScore       = 0;
 
 function triggerWin() {
   if (state !== 'GAMEPLAY') return;
-  playerScore += WIN_BONUS;            // flat +2000, no multiplier (per Notion + H1 spec)
+  // H1 — flat WIN_BONUS (no multiplier).
+  playerScore += WIN_BONUS;
+  // H2 — time bonus: completing under TARGET_TIME awards remaining seconds × TIME_BONUS_PER_SECOND.
+  // No multiplier per spec.
+  const levelTime = totalT - levelStartTime;
+  const timeBonus = Math.max(0, Math.round((TARGET_TIME - levelTime) * TIME_BONUS_PER_SECOND));
+  playerScore += timeBonus;
   state = 'WIN_FREEZE';
   stateT = 0;
   winFreezeT = 0;
@@ -772,17 +803,32 @@ function updateCapsules(dt) {
     // landing — walk-state collision, ladder top/bottom exit, and respawn).
     const playerPlat = player.lastGroundedPlat || FLOOR;
     const capsuleOnAbove = c.onPlat && c.onPlat.y < playerPlat.y;
+    // H2 — track capsule's previous x so we can detect x-crossing past the player ("jumped over").
+    const overlapX = c.x + CAPSULE_R > player.x - 10 && c.x - CAPSULE_R < player.x + 10;
+    const overlapY = c.y + CAPSULE_R > player.y - 32 && c.y - CAPSULE_R < player.y - 4;
+    const playerOverlap = overlapX && overlapY;
     // H1 — capsule kills suppressed during WIN_FREEZE / WIN_SEQUENCE so a stray capsule on TOP
     // doesn't cost a life after the win trigger has fired.
-    if (state === 'GAMEPLAY' &&
-        !capsuleOnAbove &&
-        c.x + CAPSULE_R > player.x - 10 &&
-        c.x - CAPSULE_R < player.x + 10 &&
-        c.y + CAPSULE_R > player.y - 32 &&
-        c.y - CAPSULE_R < player.y - 4
-    ) {
+    if (state === 'GAMEPLAY' && !capsuleOnAbove && playerOverlap) {
+      c.collided = true;
       hit('capsule');                                     // decrement lives + i-frames; no splice
     }
+    // H2 — "jumped over" bonus: capsule's x crossed the player's x without ever colliding.
+    // Same-platform OR fallen-below-player AND not-yet-counted. Award once per capsule.
+    if (state === 'GAMEPLAY' && !c.cleared && !c.collided) {
+      const lastX = (typeof c.lastX === 'number') ? c.lastX : c.x;
+      const crossed = (lastX < player.x && c.x >= player.x) || (lastX > player.x && c.x <= player.x);
+      if (crossed) {
+        const sameLevel  = c.onPlat === playerPlat;
+        const lowerLevel = c.onPlat && c.onPlat.y > playerPlat.y;
+        const nearMidair = !c.onPlat && Math.abs(c.y - player.y) < 80;
+        if (sameLevel || lowerLevel || nearMidair) {
+          c.cleared = true;
+          addScore(CAPSULE_CLEAR_SCORE, true, c.x, c.y - 30, '#aaffaa');
+        }
+      }
+    }
+    c.lastX = c.x;                                        // for next frame's crossing test
   }
 }
 
@@ -807,6 +853,9 @@ function hit(source) {
   player.ladderCooldown = 0;
   player.ladderEntryY = 0;
   player.lastGroundedPlat = FLOOR;                        // D3
+  // H2 — platforms-reached set resets on each life so the +500 bonus is re-earnable per life.
+  // FLOOR (idx 0) is pre-seeded as "already counted" since the player respawns here.
+  player.platformsReached = new Set([0]);
 }
 
 function drawCapsules() {
@@ -831,19 +880,44 @@ function drawCapsules() {
 // Max 1 visible. Renders briefcase.JPG at 3x the patrol-briefcase size.
 const PICKUP_SIZE          = 36;          // G6 — 1.5x base sprite size (was 72 in Block D, halved in G6)
 const PICKUP_HOVER_PX      = 40;          // height above platform surface
-const BRIEFCASE_SCORE      = 250;
+// H2 — full scoring constants per Notion locked table.
+const SCORE_PER_SECOND      = 10;         // survival, multiplied by multiplier
+const CAPSULE_CLEAR_SCORE   = 100;        // capsule passes player x without colliding ("jumped over")
+const HELPER_KILL_SCORE     = 150;        // Antifa or Zombie destroys a capsule
+const BRIEFCASE_SCORE       = 250;        // briefcase pickup collected
+const PLATFORM_REACH_BONUS  = 500;        // first time per life on each platform (excluding spawn FLOOR)
+const TIME_BONUS_PER_SECOND = 10;         // win-time-bonus = max(0, TARGET_TIME - levelTime) * this
+const TARGET_TIME           = 120;        // seconds; tune later
 const BRIEFCASE_RESPAWN_MIN = 8.0;
 const BRIEFCASE_RESPAWN_MAX = 12.0;
+const MULT_BASE            = 1.0;
 const MULT_ADD             = 0.6;
 const MULT_MAX             = 3.0;
 const MULT_DURATION        = 5.0;
-// Player score + multiplier state (Block 9 will extend with per-second + capsule-clear bonuses).
+const MULT_DECAY_RATE      = 0.6;         // per second after timer expires
+// Player score + multiplier state.
 let playerScore = 0;
-let multiplier = 1.0;
-let multiplierT = 0;       // seconds remaining at current boosted multiplier; 0 → multiplier resets to 1.0
+let multiplier = MULT_BASE;
+let multiplierT = 0;       // seconds remaining at current boosted multiplier; 0 → multiplier decays
+let levelStartTime = 0;    // totalT when GAMEPLAY entered; used for time-bonus on win
 const pickup = { active: false, x: 0, baseY: 0, y: 0, bobPhase: 0 };
 let pickupSpawnTimer = 0;  // counts up while !active; spawns next when >= pickupRespawnDelay
 let pickupRespawnDelay = 0;
+// H2 — score-float entities. Small "+N" text that floats up and fades out near each scoring event.
+const scoreFloats = [];
+const SCORE_FLOAT_LIFETIME = 0.7;
+function addScoreFloat(x, y, text, color) {
+  scoreFloats.push({ x: x, y: y, text: text, color: color || '#ffeb70', t: 0 });
+}
+// H2 — helper that bumps score, optionally with multiplier, and spawns a score-float.
+function addScore(amount, useMult, x, y, color) {
+  const pts = useMult ? Math.round(amount * multiplier) : Math.round(amount);
+  playerScore += pts;
+  if (typeof x === 'number' && typeof y === 'number') {
+    addScoreFloat(x, y, '+' + pts, color);
+  }
+  return pts;
+}
 
 // Middle platforms (excludes TOP at index 5 and FLOOR at index 0)
 const MIDDLE_PLATFORM_INDICES = [1, 2, 3, 4];
@@ -879,10 +953,14 @@ function spawnFirstPickup() {
 }
 
 function updatePickup(dt) {
-  // Multiplier decay
+  // Multiplier decay — H2: smooth ramp instead of snap.
+  // While timer > 0: multiplier holds at boosted value.
+  // After timer expires: multiplier eases back to MULT_BASE at MULT_DECAY_RATE per second
+  // (e.g. from 3.0 → 1.0 takes ~3.3s).
   if (multiplierT > 0) {
     multiplierT = Math.max(0, multiplierT - dt);
-    if (multiplierT === 0) multiplier = 1.0;
+  } else if (multiplier > MULT_BASE) {
+    multiplier = Math.max(MULT_BASE, multiplier - MULT_DECAY_RATE * dt);
   }
 
   if (!pickup.active) {
@@ -908,8 +986,8 @@ function updatePickup(dt) {
   const overlapX = (pickup.x + halfW > player.x - 10) && (pickup.x - halfW < player.x + 10);
   const overlapY = (pickup.y > player.y - 32) && (pickup.y - PICKUP_SIZE < player.y - 4);
   if (overlapX && overlapY) {
-    // Collect
-    playerScore += BRIEFCASE_SCORE;
+    // Collect — H2: BRIEFCASE_SCORE × current multiplier, then bump multiplier and reset its timer.
+    addScore(BRIEFCASE_SCORE, true, pickup.x, pickup.y - 20, '#88ff88');
     multiplier = Math.min(multiplier + MULT_ADD, MULT_MAX);
     multiplierT = MULT_DURATION;
     triggerHelperSpawn('briefcase');
@@ -1097,6 +1175,8 @@ function updateHelpers(dt) {
       const overlapX = (c.x + CAPSULE_R > h.x - halfW) && (c.x - CAPSULE_R < h.x + halfW);
       const overlapY = (c.y + CAPSULE_R > h.y - h.h) && (c.y - CAPSULE_R < h.y);
       if (overlapX && overlapY) {
+        // H2 — helper destroys capsule → +150 × multiplier
+        addScore(HELPER_KILL_SCORE, true, c.x, c.y - 20, '#ff88ff');
         capsules.splice(ci, 1);
         if (h.type === 'ZOMBIE') { helperKilled = true; break; }
       }
@@ -1262,7 +1342,8 @@ function updatePelosi(dt) {
         const baseY = pelosi.y - PELOSI_HEIGHT * 0.55;
         tornPieces.push({ x: pelosi.x - 6, y: baseY, vx: -180, vy: -240, rot: 0, rotV:  6, t: 0 });
         tornPieces.push({ x: pelosi.x + 6, y: baseY, vx:  180, vy: -260, rot: 0, rotV: -6, t: 0 });
-        playerScore += PELOSI_BONUS;
+        // H2 — Pelosi tear → +500 × multiplier (was flat 500). pelosiFlash overlay still shown.
+        addScore(PELOSI_BONUS, true, pelosi.x, pelosi.y - PELOSI_HEIGHT, '#ffcc00');
         pelosiFlash.active = true;
         pelosiFlash.t = 0;
         pelosiFlash.x = pelosi.x;
@@ -2380,7 +2461,7 @@ function drawHUD() {
   ctx.fillStyle='#ffcc00'; ctx.textAlign='right';
   // Block D — real score + multiplier badge. E2 corrected — badge placed flush BELOW the HUD
   // bar (in the gameplay area) so it stays visible while boosted regardless of bar order.
-  ctx.fillText('SCORE: ' + playerScore, W-8, HUD_Y + 17);
+  ctx.fillText('SCORE: ' + Math.floor(playerScore), W-8, HUD_Y + 17);
   if (multiplier > 1.0) {
     const badgeY = HUD_Y + HUD_HEIGHT;           // sits flush under the HUD bar
     ctx.fillStyle = 'rgba(0,30,15,0.85)';
@@ -2491,6 +2572,22 @@ function drawGameplay(shake) {
 
   // Block 2.5 — green $ box decorations removed (Block 4 will replace with real briefcase pickups)
 
+  // H2 — score-float "+N" text near each scoring event. Drawn inside the gameplay zoom transform
+  // so the floats stay anchored to the world position they spawned at (not the HUD).
+  for (const sf of scoreFloats) {
+    const a = Math.max(0, 1 - sf.t / SCORE_FLOAT_LIFETIME);
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.fillStyle = sf.color;
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctx.lineWidth = 2;
+    ctx.font = 'bold 12px monospace';
+    ctx.textAlign = 'center';
+    ctx.strokeText(sf.text, sf.x, sf.y);
+    ctx.fillText(sf.text, sf.x, sf.y);
+    ctx.restore();
+  }
+
   ctx.restore();
 
   drawHUD();
@@ -2525,6 +2622,14 @@ function loop(ts) {
 
   // Shake decay
   if (shakeAmt>0) shakeAmt=Math.max(0,shakeAmt-18*dt);
+
+  // H2 — score floats tick: ride upward and fade. Despawn when life expires or off-screen.
+  for (let i = scoreFloats.length - 1; i >= 0; i--) {
+    const sf = scoreFloats[i];
+    sf.t += dt;
+    sf.y -= 30 * dt;
+    if (sf.t >= SCORE_FLOAT_LIFETIME) scoreFloats.splice(i, 1);
+  }
 
   // State transitions
   switch(state) {
@@ -2630,7 +2735,7 @@ function loop(ts) {
       // Shake on first hit
       if(shatterT>0.5&&shatterT<0.55){ shakeAmt=10; boom(W/2,500,28,true); }
       if(shatterT>1.2&&shatterT<1.25){ shakeAmt=8; }
-      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjAnimState='IDLE'; dtjAnimT=0; dtjAnimX=DTJ_GAMEPLAY_X; helpers.length=0; player.lives=3; player.invulnT=0; playerScore=0; multiplier=1.0; multiplierT=0; pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); pelosi.active=false; pelosi.phase='IDLE'; pelosi.phaseT=0; pelosi.timer=PELOSI_INTERVAL_MIN+Math.random()*(PELOSI_INTERVAL_MAX-PELOSI_INTERVAL_MIN); pelosi.facing=-1; pelosi.targetCapsule=null; pelosiFlash.active=false; tornPieces.length=0; }
+      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjAnimState='IDLE'; dtjAnimT=0; dtjAnimX=DTJ_GAMEPLAY_X; helpers.length=0; player.lives=3; player.invulnT=0; player.platformsReached=new Set([0]); playerScore=0; multiplier=MULT_BASE; multiplierT=0; levelStartTime=totalT; scoreFloats.length=0; pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); pelosi.active=false; pelosi.phase='IDLE'; pelosi.phaseT=0; pelosi.timer=PELOSI_INTERVAL_MIN+Math.random()*(PELOSI_INTERVAL_MAX-PELOSI_INTERVAL_MIN); pelosi.facing=-1; pelosi.targetCapsule=null; pelosiFlash.active=false; tornPieces.length=0; }
       break;
   }
 
@@ -2854,6 +2959,9 @@ function loop(ts) {
     }
 
     case 'GAMEPLAY': {
+      // H2 — survival score: +SCORE_PER_SECOND × multiplier per second (no float spawns; HUD score
+      // ticks visibly at +10/s base, +30/s while ×3 boost is active).
+      playerScore += SCORE_PER_SECOND * dt * multiplier;
       updatePlayer(dt);
       updateCapsules(dt);
       updatePickup(dt);
@@ -2924,7 +3032,7 @@ function loop(ts) {
       ctx.fillText('WIN!', W/2, H/2 - 10);
       ctx.fillStyle = '#fff';
       ctx.font = 'bold 16px monospace';
-      ctx.fillText('SCORE: ' + winFinalScore, W/2, H/2 + 24);
+      ctx.fillText('SCORE: ' + Math.floor(winFinalScore), W/2, H/2 + 24);
       break;
     }
   }
