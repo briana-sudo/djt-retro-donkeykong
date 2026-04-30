@@ -791,7 +791,7 @@ function drawBriefcases() {
 // On collect: +250 score, multiplier +0.6 (cap 3.0, 5s), trigger helper, respawn after 8–12s
 // on a random middle platform (P1–P4, never TOP or FLOOR).
 // Max 1 visible. Renders briefcase.JPG at 3x the patrol-briefcase size.
-const PICKUP_SIZE          = 72;          // 3x of BRIEFCASE_H (24)
+const PICKUP_SIZE          = 36;          // G6 — 1.5x of BRIEFCASE_H (24); halved from 72
 const PICKUP_HOVER_PX      = 40;          // height above platform surface
 const BRIEFCASE_SCORE      = 250;
 const BRIEFCASE_RESPAWN_MIN = 8.0;
@@ -853,9 +853,10 @@ function updatePickup(dt) {
   pickup.bobPhase += dt * 2;
   pickup.y = pickup.baseY + Math.sin(pickup.bobPhase) * 4;
 
-  // AABB collision with player. Pickup body: x±18, y in [py-72, py] (footFrac=1.0).
-  // Player body: x±10, y in [py-32, py-4]. Player must jump up to overlap (40px hover gap).
-  const halfW = 18;
+  // AABB collision with player. Hitbox derived from PICKUP_SIZE so it scales with the sprite (G6).
+  // Pickup body: x ± (PICKUP_SIZE*0.25), y in [py-PICKUP_SIZE, py] (footFrac=1.0).
+  // Player body: x±10, y in [py-32, py-4]. Player must jump up to clear the 40px hover gap.
+  const halfW = PICKUP_SIZE * 0.25;
   const overlapX = (pickup.x + halfW > player.x - 10) && (pickup.x - halfW < player.x + 10);
   const overlapY = (pickup.y > player.y - 32) && (pickup.y - PICKUP_SIZE < player.y - 4);
   if (overlapX && overlapY) {
