@@ -530,7 +530,9 @@ const player = {
   invulnT: 0,             // Block 3 — invulnerability timer (s); blink while >0
   lastGroundedPlat: FLOOR,// D3 — last platform the player stood on (used for above-platform kill block)
   platformsReached: new Set([0]), // H2 — platform indices visited this life (FLOOR=0 already counted as spawn; no bonus)
+  shakeT: 0,              // K addendum — player-sprite jitter timer (s); set by ejectPlayerFromLadder5
 };
+const PLAYER_SHAKE_AMPLITUDE = 4;        // K addendum — px horizontal jitter while shakeT > 0
 
 // ─────────────────────────────────────────────
 //  PHYSICS HELPERS
@@ -570,6 +572,22 @@ function ladderAtBase(px, py) {
     }
   }
   return null;
+}
+
+// K addendum — eject the player off ladder[5] when SS is active and they reach the top.
+// Visual cue: player.shakeT armed for 0.2s of horizontal jitter (drawGameplay applies).
+// Physics: horizontal kick in player.facing direction + small upward pop. Gravity does the
+// rest — player arcs back down to P4 (or wherever facing direction lands them).
+// Ladder state released cleanly + ladderCooldown=0.5 prevents immediate re-grab.
+// Only ladder[5] gates this — ladders 0-4 are unaffected.
+function ejectPlayerFromLadder5() {
+  player.shakeT          = 0.2;                          // 200ms shake
+  player.vx              = player.facing * 200;          // horizontal kick (facing direction)
+  player.vy              = -120;                         // small upward pop, ~30px arc
+  player.onLadder        = false;
+  player.ladderEntryY    = 0;
+  player.ladderCooldown  = 0.5;                          // prevent immediate re-grab
+  // Player is now in WALK state (onLadder=false). Gravity in updatePlayer below pulls them down.
 }
 
 // Is player currently within a ladder's climbable range?
@@ -615,6 +633,8 @@ function updatePlayer(dt) {
 
   // Tick cooldown
   if (player.ladderCooldown > 0) player.ladderCooldown -= dt;
+  // K addendum — tick shake timer (set by ejectPlayerFromLadder5).
+  if (player.shakeT > 0) player.shakeT = Math.max(0, player.shakeT - dt);
   // Block 3 — tick invulnerability timer, floored at 0
   if (player.invulnT > 0) player.invulnT = Math.max(0, player.invulnT - dt);
 
@@ -650,6 +670,12 @@ function updatePlayer(dt) {
       // ── TOP EXIT: only when player actually ascended to top ──
       // entryY check prevents immediate exit on grab from top platform
       if (player.y <= lad.y + 4 && player.y < player.ladderEntryY - 8) {
+        // K addendum — ladder[5] gate: while SS is guarding TOP, the player gets ejected
+        // before the normal exit code runs. Other ladders pass through unchanged.
+        if (lad === ladders[5] && ss.active) {
+          ejectPlayerFromLadder5();
+          return;
+        }
         // Find destination platform — generous x margin so edge ladders find their platform
         let snapY = lad.y;
         let snapPlat = null;                              // D3 — track for lastGroundedPlat
@@ -745,6 +771,10 @@ function updatePlayer(dt) {
   if (climbD && player.ladderCooldown <= 0) {
     const lad = ladderAtTop(player.x, player.y);
     if (lad) {
+      // K addendum — ladder[5] gate: SS is guarding both ENTRY and EXIT at TOP. Top-grab is
+      // also blocked while ss.active, so a player who somehow ended up on TOP during an SS
+      // window can't climb DOWN through ladder[5] either. They must wait for SS to fade.
+      if (lad === ladders[5] && ss.active) return;
       player.onLadder = true;
       player.ladderEntryY = player.y;
       player.x = lad.x + LADDER_W / 2;
@@ -3744,8 +3774,10 @@ function drawGameplay(shake) {
     // Block 3 — blink during invulnerability: toggle alpha every 0.1s (5 flashes/s).
     // Method: Math.floor(invulnT * 10) % 2 chooses dim/bright frame.
     const blinkDim = player.invulnT > 0 && Math.floor(player.invulnT * 10) % 2 === 0;
+    // K addendum — horizontal jitter while shakeT > 0 (set by ejectPlayerFromLadder5).
+    const shakeDx = player.shakeT > 0 ? (Math.random() - 0.5) * 2 * PLAYER_SHAKE_AMPLITUDE : 0;
     if (blinkDim) { ctx.save(); ctx.globalAlpha = 0.4; }
-    drawDonkey(player.x, player.y, 0.65, player.facing < 0, walking, player.walkT);
+    drawDonkey(player.x + shakeDx, player.y, 0.65, player.facing < 0, walking, player.walkT);
     if (blinkDim) ctx.restore();
   }
 
