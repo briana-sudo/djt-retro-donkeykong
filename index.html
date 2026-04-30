@@ -2245,10 +2245,13 @@ function drawDpad() {
   ];
   for (const {b,icon,big} of defs) {
     const active=Object.values(activeTouches).some(t=>t.box===b);
-    ctx.fillStyle=active?'rgba(255,255,255,0.28)':'rgba(255,255,255,0.10)';
+    // F2 — button rectangles barely visible by default. Idle fill 0.10→0.08, idle stroke 0.2→0.15.
+    // Active state still ~2× idle so a tap still gives a visible feedback flash.
+    ctx.fillStyle=active?'rgba(255,255,255,0.18)':'rgba(255,255,255,0.08)';
     ctx.beginPath(); ctx.roundRect(b.x+2,b.y+2,b.w-4,b.h-4,10); ctx.fill();
-    ctx.strokeStyle=active?'rgba(255,255,255,0.5)':'rgba(255,255,255,0.2)';
+    ctx.strokeStyle=active?'rgba(255,255,255,0.30)':'rgba(255,255,255,0.15)';
     ctx.lineWidth=1.5; ctx.stroke();
+    // F2 — icon labels unchanged per spec (text colors and font kept exactly as before).
     ctx.fillStyle=active?'#fff':'rgba(255,255,255,0.55)';
     ctx.font=big?'bold 28px monospace':'bold 16px monospace';
     ctx.textAlign='center';
