@@ -527,6 +527,10 @@ const CAPSULE_R = 18;                              // Block 2.5 — bumped from 
 const CAPSULE_ROLL_SPD = 75;
 const CAPSULE_GRAV = 1100;
 const CAPSULE_LADDER_DROP_CHANCE = 0.65;           // Block 2.5 — bumped from 0.5
+// C2 — full TOP→P4→P3→P2→P1→FLOOR cascade takes ~27s. Old 4s lifeTimer expired the capsule on
+// P4, ~1.2s after landing. New value comfortably exceeds full cascade time so capsules normally
+// despawn via off-screen exit (rule c). lifeTimer (rule d) remains a backstop for stuck cases.
+const CAPSULE_LIFE = 30.0;
 // G4 — initial throw direction. -1 = leftward (current Level 1), +1 = rightward.
 // Used to derive (a) capsule spawn vx sign and (b) the dtj_throw render flip — keeping them
 // in lockstep so changing one constant flips both. After spawn, capsule vx still snaps to platform
@@ -544,7 +548,7 @@ function spawnCapsule() {
     rolling: true,
     onPlat: TOP,
     rot: 0,
-    lifeTimer: 4.0,                // Block 2 — capsule breaks at 0
+    lifeTimer: CAPSULE_LIFE,       // C2 — long enough for full cascade to FLOOR + off-screen exit
   });
   dtjThrowT = 0.5;
   // Block 2.5 — random spawn interval preserved (2.5–4.5s)
