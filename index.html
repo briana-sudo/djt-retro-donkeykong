@@ -538,16 +538,20 @@ const MAX_CAPSULES = 8;
 // tilt while rolling; this only controls the initial throw and the render mirror.
 const CAPSULE_THROW_DIR = -1;
 
-// C3 — DTJ throw animation state machine. On capsule spawn timer fire (and only if IDLE),
-// DTJ walks RIGHT to BARREL_X (0.4s, dtj_walk/dtj_walk2 cycle), throws (0.3s, dtj_throw mirrored),
-// walks back LEFT to DTJ_GAMEPLAY_X (0.3s, walk-cycle mirrored), returns to IDLE. Capsule spawns
-// at the START of the THROW phase so its origin is BARREL_X. Static barrel decoration never moves.
-// If the spawn timer fires during anim, the new throw kicks off as soon as state returns to IDLE
-// (condition gate below handles this naturally — no separate queue var needed).
-const DTJ_WALK_TO_DURATION   = 0.4;
-const DTJ_THROW_DURATION     = 0.3;
-const DTJ_WALK_BACK_DURATION = 0.3;
-let dtjAnimState = 'IDLE';                  // 'IDLE' | 'WALK_TO_BARREL' | 'THROW' | 'WALK_BACK'
+// C3 / D1 — DTJ throw animation state machine. On capsule spawn timer fire (and only if IDLE):
+//   WALK_TO_BARREL (0.4s, dtj_walk/dtj_walk2 cycle, no flip)
+//     → THROW_COCK (0.15s, dtj_throw NORMAL — wind-up, arm pulled back to the right)
+//     → THROW_RELEASE (0.15s, dtj_throw MIRRORED — follow-through, arm extended left)
+//        → at the END of THROW_RELEASE, the capsule (barrel_endview entity) is spawned at BARREL_X
+//     → WALK_BACK (0.3s, dtj_walk/dtj_walk2 cycle, mirrored) → IDLE
+// Both throw frames render the SAME dtj_throw asset; only the horizontal flip differs. Static
+// barrel never moves. If spawn timer fires during anim, the new throw kicks off when state
+// returns to IDLE (the gate below handles it naturally — no queue var needed).
+const DTJ_WALK_TO_DURATION    = 0.4;
+const DTJ_COCK_DURATION       = 0.15;       // D1 — wind-up frame (dtj_throw, no flip)
+const DTJ_RELEASE_DURATION    = 0.15;       // D1 — follow-through frame (dtj_throw, mirrored); capsule spawns at end
+const DTJ_WALK_BACK_DURATION  = 0.3;
+let dtjAnimState = 'IDLE';                  // 'IDLE' | 'WALK_TO_BARREL' | 'THROW_COCK' | 'THROW_RELEASE' | 'WALK_BACK'
 let dtjAnimT     = 0;
 let dtjAnimX     = DTJ_GAMEPLAY_X;          // current x during the animation
 
@@ -584,12 +588,17 @@ function updateCapsules(dt) {
       dtjAnimX = DTJ_GAMEPLAY_X + (BARREL_X - DTJ_GAMEPLAY_X) * t;
       if (t >= 1) {
         dtjAnimX = BARREL_X;
-        dtjAnimState = 'THROW';
+        dtjAnimState = 'THROW_COCK';                          // D1 — wind-up frame, no capsule yet
         dtjAnimT = 0;
-        spawnCapsule();                                       // capsule pops out at start of THROW
       }
-    } else if (dtjAnimState === 'THROW') {
-      if (dtjAnimT >= DTJ_THROW_DURATION) {
+    } else if (dtjAnimState === 'THROW_COCK') {
+      if (dtjAnimT >= DTJ_COCK_DURATION) {
+        dtjAnimState = 'THROW_RELEASE';                       // D1 — follow-through frame
+        dtjAnimT = 0;
+      }
+    } else if (dtjAnimState === 'THROW_RELEASE') {
+      if (dtjAnimT >= DTJ_RELEASE_DURATION) {
+        spawnCapsule();                                       // D1 — capsule pops out at the END of release
         dtjAnimState = 'WALK_BACK';
         dtjAnimT = 0;
       }
@@ -2330,16 +2339,20 @@ function drawGameplay(shake) {
   drawHelpers();
   drawPelosi();
 
-  // D.T.J. — C3 state-driven render.
-  //   IDLE:           dtj_idle at DTJ_GAMEPLAY_X (no flip)
-  //   WALK_TO_BARREL: dtj_walk/dtj_walk2 alternating, x interpolates DTJ_GAMEPLAY_X → BARREL_X (no flip)
-  //   THROW:          dtj_throw at BARREL_X, flip = CAPSULE_THROW_DIR < 0 (mirrors for leftward throw)
-  //   WALK_BACK:      dtj_walk/dtj_walk2 alternating, x interpolates BARREL_X → DTJ_GAMEPLAY_X (flip=true)
-  // dtj_throw is fired ONLY at BARREL_X. dtj_idle is fired ONLY at DTJ_GAMEPLAY_X.
+  // D.T.J. — C3 / D1 state-driven render. dtj_throw is fired ONLY at BARREL_X (twice per throw,
+  // once with no flip for COCK and once mirrored for RELEASE). dtj_idle is fired ONLY at
+  // DTJ_GAMEPLAY_X. Walk frames cycle dtj_walk/dtj_walk2 every 0.1s during the two walk phases.
+  //   IDLE:          dtj_idle at DTJ_GAMEPLAY_X (no flip)
+  //   WALK_TO_BARREL: dtj_walk(2) cycle, x interpolates DTJ_GAMEPLAY_X → BARREL_X (no flip)
+  //   THROW_COCK:    dtj_throw at BARREL_X, flip=false   (wind-up, arm pulled right)
+  //   THROW_RELEASE: dtj_throw at BARREL_X, flip=true    (follow-through, arm extended left)
+  //   WALK_BACK:     dtj_walk(2) cycle, x interpolates BARREL_X → DTJ_GAMEPLAY_X (flip=true)
   if (dtjAnimState === 'IDLE') {
     drawSprite('dtj_idle', DTJ_GAMEPLAY_X, TOP.y, 110, false, 1.0);
-  } else if (dtjAnimState === 'THROW') {
-    drawSprite('dtj_throw', dtjAnimX, TOP.y, 110, CAPSULE_THROW_DIR < 0, 1.0);
+  } else if (dtjAnimState === 'THROW_COCK') {
+    drawSprite('dtj_throw', dtjAnimX, TOP.y, 110, false, 1.0);
+  } else if (dtjAnimState === 'THROW_RELEASE') {
+    drawSprite('dtj_throw', dtjAnimX, TOP.y, 110, true, 1.0);
   } else {
     // WALK_TO_BARREL or WALK_BACK — alternate walk frames every 0.1s
     const walkSprite = (Math.floor(dtjAnimT * 10) % 2 === 0) ? 'dtj_walk' : 'dtj_walk2';
