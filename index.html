@@ -619,9 +619,11 @@ function updateCapsules(dt) {
     const c = capsules[i];
 
     if (c.rolling && c.onPlat) {
-      // Snap to downhill direction (DK rule). Flat platforms keep momentum.
-      if (c.onPlat.tilt >  0.1) c.vx =  CAPSULE_ROLL_SPD;
-      else if (c.onPlat.tilt < -0.1) c.vx = -CAPSULE_ROLL_SPD;
+      // D2 — FLOOR is the only flat platform where direction is forced (rightward, toward Pelosi).
+      // Tilted platforms snap vx to downhill direction. TOP (flat) keeps the spawn-set vx (left).
+      if (c.onPlat === FLOOR)             c.vx =  CAPSULE_ROLL_SPD;     // always RIGHT on FLOOR
+      else if (c.onPlat.tilt >  0.1)      c.vx =  CAPSULE_ROLL_SPD;     // right-tilted = right downhill
+      else if (c.onPlat.tilt < -0.1)      c.vx = -CAPSULE_ROLL_SPD;     // left-tilted  = left downhill
 
       const prevX = c.x;
       c.x += c.vx * dt;
@@ -670,16 +672,24 @@ function updateCapsules(dt) {
         c.vy = 0;
         c.rolling = true;
         c.onPlat = plat;
-        if (plat.tilt >  0.1) c.vx =  CAPSULE_ROLL_SPD;
-        else if (plat.tilt < -0.1) c.vx = -CAPSULE_ROLL_SPD;
-        else c.vx = c.vx >= 0 ? CAPSULE_ROLL_SPD : -CAPSULE_ROLL_SPD;
+        // D2 — FLOOR landing always sets vx rightward toward Pelosi. Tilted plats snap to downhill.
+        // Other flat plats (TOP only, in practice) keep momentum sign.
+        if (plat === FLOOR)            c.vx =  CAPSULE_ROLL_SPD;
+        else if (plat.tilt >  0.1)     c.vx =  CAPSULE_ROLL_SPD;
+        else if (plat.tilt < -0.1)     c.vx = -CAPSULE_ROLL_SPD;
+        else                           c.vx = c.vx >= 0 ? CAPSULE_ROLL_SPD : -CAPSULE_ROLL_SPD;
         break;
       }
     }
 
-    // C2 v2 — only off-screen-left exit + off-bottom backstop destroy a capsule. Lifetime / Burning
-    // Briefcase spawn-on-expire are deleted. Helper kill + Pelosi grab handle their own splice.
-    if (c.x < -CAPSULE_R * 2 || c.y > H + 30) { capsules.splice(i, 1); continue; }
+    // C2 v2 / D2 — off-screen exit (left or right) + off-bottom backstop destroy a capsule.
+    // FLOOR capsules now roll RIGHT toward Pelosi, so off-screen-RIGHT is the new normal exit.
+    // Off-screen-LEFT survives as the cascade exit if a capsule somehow reaches it.
+    // Helper kill + Pelosi grab handle their own splice elsewhere.
+    if (c.x < -CAPSULE_R * 2 || c.x > W + CAPSULE_R * 2 || c.y > H + 30) {
+      capsules.splice(i, 1);
+      continue;
+    }
 
     // AABB collision with DNC (player.y is the foot).
     // G3 — capsule travel rule: hitting the player decrements lives/grants i-frames but does NOT
