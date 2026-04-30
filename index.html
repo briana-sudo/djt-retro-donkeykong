@@ -1396,7 +1396,21 @@ const ZOOM_S_END    = 1.506,  ZOOM_OX_END   = -121,  ZOOM_OY_END   = -342;
 // ─────────────────────────────────────────────
 //  TICKER
 // ─────────────────────────────────────────────
-const TICKER = 'FAKE NEWS!   TOTAL WITCH HUNT   GREATEST ECONOMY EVER   VERY STABLE GENIUS   PERFECT PHONE CALL   DEEP STATE EXPOSED   BELIEVE ME   NOBODY KNOWS MORE THAN ME   ★   ';
+// E3 — ticker headlines updated from DTJ-quote pool to news-anchor pool (breathless,
+// sensationalist media voice). 10 strings concatenated with ★ separators. Yellow BREAKING badge
+// on the left is unchanged and still reads "BREAKING".
+const TICKER = [
+  'BOMBSHELL: SOURCES SAY HE DID IT AGAIN',
+  'ANONYMOUS OFFICIALS WARN OF GRAVE THREAT',
+  'EXPERTS BAFFLED BY LATEST DEVELOPMENT',
+  'BREAKING: NEW INVESTIGATION LAUNCHED',
+  'INSIDERS REVEAL SHOCKING NEW DETAILS',
+  'DEMOCRACY ON THE BRINK, ANALYSTS SAY',
+  'LEAKED DOCUMENTS RAISE FRESH CONCERNS',
+  'CRISIS DEEPENS AS QUESTIONS MOUNT',
+  'THIS CHANGES EVERYTHING, EXPERTS CLAIM',
+  'UNNAMED SOURCES CONFIRM WORST FEARS',
+].join('   ★   ') + '   ★   ';
 let tickX = W;
 
 // ─────────────────────────────────────────────
