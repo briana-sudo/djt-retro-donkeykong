@@ -261,7 +261,9 @@ const GAME_KEYS = new Set(['ArrowLeft','ArrowRight','Space','KeyA','KeyZ']);
 window.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (GAME_KEYS.has(e.code)) e.preventDefault();
-  if (state !== 'GAMEPLAY') skipToGame();
+  // H1 — keys during WIN_FREEZE / WIN_SEQUENCE are ignored here (H3 will wire restart-on-tap).
+  // Only intro states bounce back to GAMEPLAY via skipToGame.
+  if (state !== 'GAMEPLAY' && state !== 'WIN_FREEZE' && state !== 'WIN_SEQUENCE') skipToGame();
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
 
@@ -426,6 +428,13 @@ function updatePlayer(dt) {
         player.onLadder = false;
         player.onGround = true;
         if (snapPlat) player.lastGroundedPlat = snapPlat; // D3
+        // H1 — top of ladder[5] (P4 → TOP) is the win trigger. Fires on the same tick the player
+        // snaps onto TOP. After triggerWin() the state is no longer GAMEPLAY so subsequent capsule
+        // collisions are suppressed via the state guard added in capsule update.
+        if (lad === ladders[5]) {
+          triggerWin();
+          return;
+        }
         player.ladderCooldown = 0.5;
         return;
       }
@@ -577,6 +586,24 @@ const MAX_CAPSULES = 8;
 // in lockstep so changing one constant flips both. After spawn, capsule vx still snaps to platform
 // tilt while rolling; this only controls the initial throw and the render mirror.
 const CAPSULE_THROW_DIR = -1;
+
+// H1 — Win trigger. Fires when player completes the top exit of ladder[5] (P4 → TOP). State
+// machine extends to GAMEPLAY → WIN_FREEZE (0.6s player-frozen pause, capsule kills suppressed,
+// other entities keep animating) → WIN_SEQUENCE (overlay; H3 wires tap-to-restart).
+const WIN_FREEZE_DURATION = 0.6;
+const WIN_BONUS           = 2000;
+let   winFreezeT          = 0;
+let   winFinalScore       = 0;
+
+function triggerWin() {
+  if (state !== 'GAMEPLAY') return;
+  playerScore += WIN_BONUS;            // flat +2000, no multiplier (per Notion + H1 spec)
+  state = 'WIN_FREEZE';
+  stateT = 0;
+  winFreezeT = 0;
+  player.vx = 0;
+  player.vy = 0;
+}
 
 // C3 / D1 — DTJ throw animation state machine. On capsule spawn timer fire (and only if IDLE):
 //   WALK_TO_BARREL (0.4s, dtj_walk/dtj_walk2 cycle, no flip)
@@ -745,7 +772,10 @@ function updateCapsules(dt) {
     // landing — walk-state collision, ladder top/bottom exit, and respawn).
     const playerPlat = player.lastGroundedPlat || FLOOR;
     const capsuleOnAbove = c.onPlat && c.onPlat.y < playerPlat.y;
-    if (!capsuleOnAbove &&
+    // H1 — capsule kills suppressed during WIN_FREEZE / WIN_SEQUENCE so a stray capsule on TOP
+    // doesn't cost a life after the win trigger has fired.
+    if (state === 'GAMEPLAY' &&
+        !capsuleOnAbove &&
         c.x + CAPSULE_R > player.x - 10 &&
         c.x - CAPSULE_R < player.x + 10 &&
         c.y + CAPSULE_R > player.y - 32 &&
@@ -2197,7 +2227,8 @@ function applyTouchState() {
 
 canvas.addEventListener('pointerdown', e => {
   e.preventDefault();
-  if (state !== 'GAMEPLAY') { skipToGame(); return; }
+  if (state !== 'GAMEPLAY' && state !== 'WIN_FREEZE' && state !== 'WIN_SEQUENCE') { skipToGame(); return; }
+  if (state !== 'GAMEPLAY') return;                       // H1 — ignore touch during WIN states
   canvas.setPointerCapture(e.pointerId);
   const r=canvas.getBoundingClientRect();
   const tx=(e.clientX-r.left)/scale, ty=(e.clientY-r.top)/scale;
@@ -2223,7 +2254,8 @@ canvas.addEventListener('pointercancel', e=>{delete activeTouches[e.pointerId]; 
 // iOS Safari fallback — touch events in case pointer events don't fire
 canvas.addEventListener('touchstart', e=>{
   e.preventDefault();
-  if (state !== 'GAMEPLAY') { skipToGame(); return; }
+  if (state !== 'GAMEPLAY' && state !== 'WIN_FREEZE' && state !== 'WIN_SEQUENCE') { skipToGame(); return; }
+  if (state !== 'GAMEPLAY') return;                       // H1 — ignore touch during WIN states
   for (const t of e.changedTouches) {
     const r=canvas.getBoundingClientRect();
     const tx=(t.clientX-r.left)/scale, ty=(t.clientY-r.top)/scale;
@@ -2846,6 +2878,53 @@ function loop(ts) {
           ctx.fillText('← → MOVE   SPACE JUMP   A=UP  Z=DOWN',W/2,H/2+14);
         }
       }
+      break;
+    }
+
+    // H1 — 0.6s pause after the win trigger. Player is frozen (updatePlayer NOT called).
+    // Capsules / helpers / Pelosi / pickup keep animating so the world doesn't visibly stall.
+    // Capsule-kill is suppressed via the state guard inside updateCapsules.
+    case 'WIN_FREEZE': {
+      winFreezeT += dt;
+      updateCapsules(dt);
+      updatePickup(dt);
+      updateHelpers(dt);
+      updatePelosi(dt);
+      drawGameplay(false);
+      particles.forEach(p=>{
+        ctx.globalAlpha=Math.max(p.life,0);
+        ctx.fillStyle=p.color;
+        ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
+      });
+      ctx.globalAlpha=1;
+      if (winFreezeT >= WIN_FREEZE_DURATION) {
+        state = 'WIN_SEQUENCE';
+        stateT = 0;
+        winFinalScore = playerScore;
+      }
+      break;
+    }
+
+    // H1 placeholder — H3 will replace with full LEVEL 1 COMPLETE overlay + tap-to-restart.
+    // For now: render the frozen gameplay + a basic centered "WIN!" panel so the trigger is
+    // visible end-to-end during H1 field test.
+    case 'WIN_SEQUENCE': {
+      drawGameplay(false);
+      particles.forEach(p=>{
+        ctx.globalAlpha=Math.max(p.life,0);
+        ctx.fillStyle=p.color;
+        ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
+      });
+      ctx.globalAlpha=1;
+      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#ffcc00';
+      ctx.font = 'bold 36px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('WIN!', W/2, H/2 - 10);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 16px monospace';
+      ctx.fillText('SCORE: ' + winFinalScore, W/2, H/2 + 24);
       break;
     }
   }
