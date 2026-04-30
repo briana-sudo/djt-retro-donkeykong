@@ -6,12 +6,19 @@
 <title>DNC vs DJT</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  /* E1 — body sits flush at top-left of the visible viewport. 100dvh adapts to iOS URL-bar
-     collapsing so the body never extends past the visible area. Horizontal centering only —
-     canvas anchors to top, so y=0 is always at the viewport top edge. */
-  html, body { background: #000; height: 100dvh; overflow: hidden; }
-  body { display: flex; justify-content: center; }
-  canvas { display: block; image-rendering: pixelated; }
+  /* E1.A2 — canvas pinned to visual viewport top via position:fixed + top:0. Horizontal
+     centering via left:50% + translateX(-50%). Bypasses the flex/dvh chain entirely so the
+     canvas top is ALWAYS at viewport y=0 regardless of body height, flex behavior, or dvh
+     support. The body is just a black backdrop now. */
+  html, body { background: #000; overflow: hidden; height: 100%; width: 100%; }
+  canvas {
+    display: block;
+    image-rendering: pixelated;
+    position: fixed;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+  }
 </style>
 </head>
 <body>
@@ -185,6 +192,21 @@ resize();
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', resize);                // mobile rotation
 if (window.visualViewport) window.visualViewport.addEventListener('resize', resize); // iOS URL-bar shrink
+
+// E1.A2 — one-shot startup diagnostic. If the top of the canvas appears cropped on a real
+// device, open devtools console, find this line, and paste it back. The values name the actual
+// offender immediately (e.g. canvasTop=-44 → canvas IS positioned above viewport; or scale=1.5
+// + canvasH=1281 → canvas is sized too tall; etc).
+{
+  const r = canvas.getBoundingClientRect();
+  console.log('VIEWPORT_DIAG',
+    'innerH=' + window.innerHeight,
+    'clientH=' + document.documentElement.clientHeight,
+    'visualH=' + (window.visualViewport ? window.visualViewport.height : 'N/A'),
+    'canvasTop=' + r.top,
+    'canvasH=' + r.height,
+    'scale=' + scale);
+}
 
 // ─────────────────────────────────────────────
 //  GAME LAYOUT DATA
