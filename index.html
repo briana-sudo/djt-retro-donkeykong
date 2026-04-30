@@ -209,7 +209,7 @@ let state = 'INTRO_BLACK', stateT = 0, totalT = 0;
 let skipDone = false;
 
 function skipToGame() {
-  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjThrowT = 0; briefcases.length = 0; helpers.length = 0; player.lives = 3; player.invulnT = 0; playerScore = 0; multiplier = 1.0; multiplierT = 0; pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); }
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjThrowT = 0; briefcases.length = 0; helpers.length = 0; player.lives = 3; player.invulnT = 0; playerScore = 0; multiplier = 1.0; multiplierT = 0; pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; pelosi.timer = PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN); pelosi.targetCapsule = null; pelosi.shrug = false; pelosiFlash.active = false; }
 }
 
 // ─────────────────────────────────────────────
@@ -970,6 +970,136 @@ function drawHelpers() {
 function triggerHelperSpawn(reason) {
   if (Math.random() < 0.5) spawnAntifaWave();
   else                     spawnZombieWave();
+}
+
+// ─────────────────────────────────────────────
+//  F7 — NANCY PELOSI CAMEO (per Notion spec, Block 7c)
+// ─────────────────────────────────────────────
+// Independent 30–45s timer, separate from briefcase + helper systems.
+// Pops up from behind a random middle platform, grabs a rolling capsule, tears it (pelosi_idle → pelosi_tear),
+// awards PELOSI_BONUS (500), descends. If no capsule on the chosen platform: shrug and descend (no grab).
+// No collision with player. Phase machine: IDLE → RISING → GRABBING → TEARING → DESCENDING.
+const PELOSI_HEIGHT           = 80;
+const PELOSI_RISE_DURATION    = 0.8;
+const PELOSI_GRAB_DURATION    = 0.5;
+const PELOSI_TEAR_DURATION    = 0.8;
+const PELOSI_DESCEND_DURATION = 0.7;
+const PELOSI_INTERVAL_MIN     = 30.0;
+const PELOSI_INTERVAL_MAX     = 45.0;
+const PELOSI_BONUS            = 500;
+const PELOSI_FLASH_LIFETIME   = 1.5;
+
+const pelosi = {
+  active: false,
+  phase: 'IDLE',
+  phaseT: 0,
+  timer: PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN),
+  x: 0, y: 0, baseY: 0,
+  targetCapsule: null,
+  shrug: false,
+};
+const pelosiFlash = { active: false, t: 0, x: 0, y: 0 };
+
+function findCapsuleOnPlatform(plat) {
+  for (const c of capsules) {
+    if (c.onPlat === plat) return c;
+  }
+  return null;
+}
+
+function spawnPelosi() {
+  const idx = MIDDLE_PLATFORM_INDICES[Math.floor(Math.random() * MIDDLE_PLATFORM_INDICES.length)];
+  const plat = platforms[idx];
+  const cap = findCapsuleOnPlatform(plat);
+  const sx = cap ? cap.x : plat.x + plat.w / 2;
+  pelosi.active = true;
+  pelosi.phase = 'RISING';
+  pelosi.phaseT = 0;
+  pelosi.x = sx;
+  pelosi.baseY = getPlatY(plat, sx);
+  pelosi.y = pelosi.baseY + PELOSI_HEIGHT;        // start with foot below platform surface (fully hidden)
+  pelosi.targetCapsule = cap;
+  pelosi.shrug = !cap;
+}
+
+function updatePelosi(dt) {
+  // Tick bonus flash always (independent of pelosi.active)
+  if (pelosiFlash.active) {
+    pelosiFlash.t += dt;
+    if (pelosiFlash.t >= PELOSI_FLASH_LIFETIME) pelosiFlash.active = false;
+  }
+
+  if (!pelosi.active) {
+    pelosi.timer -= dt;
+    if (pelosi.timer <= 0) {
+      spawnPelosi();
+      pelosi.timer = PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN);
+    }
+    return;
+  }
+
+  pelosi.phaseT += dt;
+  if (pelosi.phase === 'RISING') {
+    const t = Math.min(pelosi.phaseT / PELOSI_RISE_DURATION, 1);
+    pelosi.y = pelosi.baseY + PELOSI_HEIGHT * (1 - t);
+    if (t >= 1) {
+      pelosi.y = pelosi.baseY;
+      pelosi.phase = pelosi.shrug ? 'DESCENDING' : 'GRABBING';
+      pelosi.phaseT = 0;
+    }
+  } else if (pelosi.phase === 'GRABBING') {
+    if (pelosi.phaseT >= PELOSI_GRAB_DURATION) {
+      if (pelosi.targetCapsule) {
+        const ci = capsules.indexOf(pelosi.targetCapsule);
+        if (ci >= 0) capsules.splice(ci, 1);
+      }
+      pelosi.phase = 'TEARING';
+      pelosi.phaseT = 0;
+    }
+  } else if (pelosi.phase === 'TEARING') {
+    if (pelosi.phaseT >= PELOSI_TEAR_DURATION) {
+      playerScore += PELOSI_BONUS;
+      pelosiFlash.active = true;
+      pelosiFlash.t = 0;
+      pelosiFlash.x = pelosi.x;
+      pelosiFlash.y = pelosi.baseY - PELOSI_HEIGHT - 8;
+      pelosi.phase = 'DESCENDING';
+      pelosi.phaseT = 0;
+    }
+  } else if (pelosi.phase === 'DESCENDING') {
+    const t = Math.min(pelosi.phaseT / PELOSI_DESCEND_DURATION, 1);
+    pelosi.y = pelosi.baseY + PELOSI_HEIGHT * t;
+    if (t >= 1) {
+      pelosi.active = false;
+      pelosi.phase = 'IDLE';
+      pelosi.phaseT = 0;
+      pelosi.targetCapsule = null;
+    }
+  }
+}
+
+function drawPelosi() {
+  if (pelosi.active) {
+    const sprite = pelosi.phase === 'TEARING' ? 'pelosi_tear' : 'pelosi_idle';
+    // Clip so only the portion above the platform surface (baseY) is visible — gives the
+    // "rising from behind the platform" effect specified in the Notion spec.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, W, pelosi.baseY);
+    ctx.clip();
+    drawSprite(sprite, pelosi.x, pelosi.y, PELOSI_HEIGHT, false, 1.0);
+    ctx.restore();
+  }
+  if (pelosiFlash.active) {
+    const a = 1 - (pelosiFlash.t / PELOSI_FLASH_LIFETIME);
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.fillStyle = '#ffcc00';
+    ctx.font = 'bold 14px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('+' + PELOSI_BONUS, pelosiFlash.x, pelosiFlash.y - pelosiFlash.t * 30);
+    ctx.restore();
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -2054,11 +2184,12 @@ function drawGameplay(shake) {
   // F3 — static barrel renders at 2x (CAPSULE_R*4). Rolling capsule (barrel_endview) size unchanged.
   drawSprite('barrel_upright', BARREL_X, TOP.y, CAPSULE_R * 4, false, 1.0);
 
-  // Capsules + briefcases + pickup + helpers (rendered behind characters so DNC/DTJ overlap looks right)
+  // Capsules + briefcases + pickup + helpers + Pelosi (rendered behind DNC/DTJ)
   drawCapsules();
   drawBriefcases();
   drawPickup();
   drawHelpers();
+  drawPelosi();
 
   // D.T.J. at top center — swap to throw sprite during throw window.
   // F4 — Level 1 throws are now LEFTWARD, so dtj_throw flip=true (mirrors so throwing arm faces screen-left toward the spawn arc).
@@ -2219,7 +2350,7 @@ function loop(ts) {
       // Shake on first hit
       if(shatterT>0.5&&shatterT<0.55){ shakeAmt=10; boom(W/2,500,28,true); }
       if(shatterT>1.2&&shatterT<1.25){ shakeAmt=8; }
-      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjThrowT=0; briefcases.length=0; helpers.length=0; player.lives=3; player.invulnT=0; playerScore=0; multiplier=1.0; multiplierT=0; pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); }
+      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjThrowT=0; briefcases.length=0; helpers.length=0; player.lives=3; player.invulnT=0; playerScore=0; multiplier=1.0; multiplierT=0; pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); pelosi.active=false; pelosi.phase='IDLE'; pelosi.phaseT=0; pelosi.timer=PELOSI_INTERVAL_MIN+Math.random()*(PELOSI_INTERVAL_MAX-PELOSI_INTERVAL_MIN); pelosi.targetCapsule=null; pelosi.shrug=false; pelosiFlash.active=false; }
       break;
   }
 
@@ -2448,6 +2579,7 @@ function loop(ts) {
       updateBriefcases(dt);
       updatePickup(dt);
       updateHelpers(dt);
+      updatePelosi(dt);
       drawGameplay(shakeAmt>0);
       // Particles leftover
       particles.forEach(p=>{
