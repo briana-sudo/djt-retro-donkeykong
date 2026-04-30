@@ -2257,12 +2257,12 @@ function drawDpad() {
   ctx.restore();
 }
 
-// E2 — top-bar layout (top to bottom): HUD then ticker. Named constants pin both stripes
-// against the top edge of the canvas so a future swap or resize lives in one place.
-const HUD_Y         = 0;
-const HUD_HEIGHT    = 24;
-const TICKER_Y      = HUD_Y + HUD_HEIGHT;       // = 24, directly below HUD
+// E2 corrected — top-bar layout (top to bottom): TICKER then HUD. Named constants pin both
+// stripes against the top edge of the canvas so a future swap or resize lives in one place.
+const TICKER_Y      = 0;                        // E2 — ticker pinned at very top of canvas
 const TICKER_HEIGHT = 18;
+const HUD_Y         = TICKER_Y + TICKER_HEIGHT; // = 18, directly below the ticker
+const HUD_HEIGHT    = 24;
 
 function drawTicker() {
   const ty = TICKER_Y;
@@ -2321,11 +2321,11 @@ function drawHUD() {
   ctx.fillStyle='#ffffff'; ctx.font='bold 13px monospace'; ctx.textAlign='center';
   ctx.fillText('DNC vs DJT', W/2, HUD_Y + 17);
   ctx.fillStyle='#ffcc00'; ctx.textAlign='right';
-  // Block D — real score + multiplier badge. E2 — badge pulled out of the HUD bar and placed
-  // below the ticker so it stays visible (was hidden by ticker overlay in the old layout).
+  // Block D — real score + multiplier badge. E2 corrected — badge placed flush BELOW the HUD
+  // bar (in the gameplay area) so it stays visible while boosted regardless of bar order.
   ctx.fillText('SCORE: ' + playerScore, W-8, HUD_Y + 17);
   if (multiplier > 1.0) {
-    const badgeY = TICKER_Y + TICKER_HEIGHT;     // sits flush under the ticker
+    const badgeY = HUD_Y + HUD_HEIGHT;           // sits flush under the HUD bar
     ctx.fillStyle = 'rgba(0,30,15,0.85)';
     ctx.fillRect(W-58, badgeY, 58, 16);
     ctx.fillStyle = '#44ff88';
