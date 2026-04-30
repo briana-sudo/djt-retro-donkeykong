@@ -36,6 +36,8 @@ const spriteData = {
   dtj_walk: 'sprites/dtj_walk.png',
   dtj_walk2: 'sprites/dtj_walk2.png',
   dtj_throw: 'sprites/dtj_throw.png',
+  // I-EAGLE-REWRITE — added for the PHASE3 4-step pose sequence (turn → surprised → cut to combo).
+  dtj_surprised: 'sprites/dtj_surprised.png',
   djt1: 'sprites/djt1.png',
   djt2: 'sprites/djt2.png',
   djt3: 'sprites/djt3.png',
@@ -263,10 +265,10 @@ function cutsceneAdvance() {
       // I-CORR-3 — skipping past the dialogue phases drops any still-queued captions so they
       // don't carry into SCORE. The SCORE breakdown is read silently.
       clearCaptions();
-      // I-CORR-4 — if user skipped before grab-completion, carriedActive is still false. If
-      // they skipped during ascent it's true. Either way, SCORE renders 0 DTJ — but we keep
-      // carriedActive intact so a possible BETWEEN re-entry still has the eagle carrying him.
-      // (Skip during PHASE1 → PHASE3 was never started → carriedActive stays false.)
+      // I-EAGLE-REWRITE — SCORE has no DTJ render at all. comboActive cleared so the BETWEEN
+      // re-init path below sets up combo cleanly.
+      dtjStageMode = 'NONE';
+      comboActive  = false;
       state = 'CUTSCENE_SCORE';
       stateT = 0;
     }
@@ -275,9 +277,12 @@ function cutsceneAdvance() {
   if (state === 'CUTSCENE_SCORE') {
     // I-CORR-3 — any leftover SCORE caption tail is cleared before BETWEEN seeds its rotation.
     clearCaptions();
-    // I-CORR-4 — guarantee BETWEEN has the eagle carrying DTJ even if the user skipped past
-    // PHASE3 ascent (where carriedActive normally gets set on grab-completion).
-    carriedActive = true;
+    // I-EAGLE-REWRITE — initialize combo for BETWEEN entry: spawn off-screen left, mid-canvas
+    // vertically (foot-anchor convention so combo body sits ~mid-canvas with eagle on top).
+    comboActive  = true;
+    dtjStageMode = 'NONE';
+    combo.x = -COMBO_H;
+    combo.y = H * 0.4 + COMBO_H * 0.5;
     state = 'CUTSCENE_BETWEEN';
     stateT = 0;
     seedCutsceneClouds();                                 // I2 — fresh cloud layout each visit
@@ -291,9 +296,9 @@ function cutsceneAdvance() {
   if (state === 'CUTSCENE_BETWEEN') {
     // I-CORR-3 — drop any tail before returning to the intro loop.
     clearCaptions();
-    // I-CORR-4 — cutscene cycle done; release carry-state so the next gameplay/intro round starts
-    // clean (gameplay state never reads carriedActive, but this keeps the variable honest).
-    carriedActive = false;
+    // I-EAGLE-REWRITE — cutscene cycle done; release combo for clean intro replay.
+    comboActive  = false;
+    dtjStageMode = 'NONE';
     state = 'INTRO_BLACK';
     stateT = 0;
     scoreFloats.length = 0;
@@ -680,7 +685,8 @@ const CAPSULE_THROW_DIR = -1;
 const WIN_FREEZE_DURATION    = 0.6;
 const CUTSCENE_FADE_DURATION = 0.5;
 const CUTSCENE_PHASE1_DURATION = 3.0;
-const CUTSCENE_PHASE3_GRAB_DELAY = 0.3;       // pause after eagle reaches DTJ before ascent
+// I-EAGLE-REWRITE — CUTSCENE_PHASE3_GRAB_DELAY removed. PHASE3 is now a 4-step pose sequence
+// with a hard cut to the eagle_carry combo at t=2.0s — no grab-pause beat.
 const CUTSCENE_SKIP_THRESHOLD = 10.0;         // input during PHASE1/PHASE3 after this skips to SCORE
 const WIN_BONUS              = 2000;
 let   winFreezeT             = 0;
@@ -710,10 +716,11 @@ function triggerWin() {
   // I-CORR-3 — make sure no stale caption lingers from a prior win cycle. The PHASE1 captions are
   // pushed on FADE_IN→PHASE1 entry, so the queue should be empty at WIN_FREEZE start.
   clearCaptions();
-  // I-CORR-4 — defensive reset of carry-state at every win trigger. carriedActive is set true
-  // only when the eagle's grab-pause completes in PHASE3.
-  carriedActive = false;
-  dtjScale = 1.0;
+  // I-EAGLE-REWRITE — defensive cutscene state reset at every win trigger. The PHASE3 step
+  // machine + cutsceneAdvance handle the rest from a known-clean baseline.
+  dtjStageMode  = 'NONE';
+  comboActive   = false;
+  dtjScale      = 1.0;
   dtjScaleTarget = 1.0;
 }
 
@@ -2586,29 +2593,29 @@ function drawRncStage() {
   ctx.drawImage(cached, 0, STAGE_CANVAS_TOP, W, stageH);
 }
 
-// I-CORR-4 — draws DTJ rotated -45° (counterclockwise) centered at (cx, cy). Used in PHASE3
-// ascent + BETWEEN to render DTJ as if being swept up by the eagle's talons (head up-left, body
-// trailing down-right). Bypasses drawSprite's foot-anchor convention so we can rotate cleanly.
-function drawDtjCarried(cx, cy, h) {
-  const cached = spriteCache['dtj_idle'];
-  if (!cached) return;
-  const aspect = cached.width / cached.height;
-  const w = h * aspect;
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(-Math.PI / 4);                               // -45° = counterclockwise lean-back
-  ctx.drawImage(cached, -w / 2, -h / 2, w, h);
-  ctx.restore();
-}
+// I-EAGLE-REWRITE — drawDtjCarried (rotated -45° runtime composite) removed. The carry now uses
+// a pre-composed eagle_carry.png drawn via plain drawSprite — no rotation, no per-frame compose.
 
 // Procedural sky for CUTSCENE_BETWEEN. Vertical gradient + 3–5 drifting cloud blobs.
 // Cloud state initialized lazily on first draw and re-seeded any time the cutscene re-enters.
 const CUTSCENE_CLOUDS = [];
 
-// I4 — eagle entity for the cutscene. mode: 'idle' (not active) | 'descend' | 'grab' | 'ascend'.
-// Lazy-initialized at first frame of CUTSCENE_PHASE3 (when mode==='idle'); reset to 'idle' when
-// PHASE3 transitions to SCORE so a re-entry initializes fresh.
-const cutsceneEagle = { x: 0, y: 0, mode: 'idle', timer: 0, ascentStart: 0 };
+// I-EAGLE-REWRITE — replaces I4's cutsceneEagle + I-CORR-4's carriedActive/drawDtjCarried.
+// PHASE3 is now a 4-step DTJ pose sequence ending in a HARD CUT to a pre-composed eagle_carry
+// PNG (eagle gripping DTJ as one sprite). No runtime compositing, no rotation, no fade.
+// dtjStageMode  : which individual DTJ sprite renders on stage (mutually exclusive with comboActive)
+//   'IDLE'      — dtj_idle, faces forward (PHASE1 + PHASE3 step1)
+//   'WALK'      — dtj_walk, side-profile facing left (PHASE3 step2 — turn)
+//   'SURPRISED' — dtj_surprised, mouth open looking up (PHASE3 step3)
+//   'NONE'      — no individual DTJ sprite at all (PHASE3 step4 + BETWEEN + SCORE)
+// comboActive  : when true, render the combined eagle_carry PNG at (combo.x, combo.y).
+// combo        : { x, y } — foot-anchored position of the combined sprite (drawSprite footFrac=1.0).
+// CONTRACT: comboActive==true MUST imply dtjStageMode==='NONE'. Never render two DTJ-class
+//           sprites in the same frame.
+let dtjStageMode = 'NONE';
+let comboActive  = false;
+const combo = { x: 0, y: 0 };
+const COMBO_H = 160;                                  // combined eagle_carry render height (px)
 function seedCutsceneClouds() {
   CUTSCENE_CLOUDS.length = 0;
   const N = 4 + Math.floor(Math.random() * 2);            // 4 or 5 clouds
@@ -2696,9 +2703,8 @@ const CAPTION_FADE_IN     = 0.2;
 const CAPTION_FADE_OUT    = 0.3;
 const CAPTION_DEFAULT_HOLD = 1.5;
 
-// I-CORR-4 — carriedActive is true from the moment the eagle's grab-pause completes (in
-// CUTSCENE_PHASE3) through CUTSCENE_BETWEEN. Gates: only carried-DTJ renders, not stage-DTJ.
-let carriedActive = false;
+// I-EAGLE-REWRITE — carriedActive removed. Replaced by dtjStageMode + comboActive (declared
+// above near the cutscene state vars). Gating moved into the PHASE3 step machine.
 
 // I-CORR-4 — dtjScale grows DTJ on stage when the "WITCH HUNT!" caption is held, easing back
 // when the caption fades out. Applied to the on-stage DTJ render in PHASE1 only.
@@ -3435,62 +3441,58 @@ function loop(ts) {
       cutsceneT += dt;
       drawRncStage();
 
-      // I4 — DNC stays at x=200 idle, watching upward. (No bubble in Phase 3.)
+      // DNC stays at her PHASE1 ending position, idle, watching.
       drawDonkey(200, STAGE_FLOOR_Y, 1.0, false, false, 0);
 
-      // I4 — eagle state machine. Descend at 200 px/s from y=-100 to grab y=DTJ.y-60=480, then
-      // 0.3s grab pause, then ascend at 250 px/s with -30 px/s horizontal drift, DTJ pinned 60px
-      // below eagle. Phase exits when eagle.y < -100 (off top of canvas).
-      const eagle = cutsceneEagle;
-      if (eagle.mode === 'idle') {
-        eagle.x = 320;                                  // = DTJ x from Phase 1
-        eagle.y = -100;
-        eagle.mode = 'descend';
-        eagle.timer = 0;
-        eagle.ascentStart = -1;
-      }
-      const DTJ_GRAB_Y = STAGE_FLOOR_Y - 60;            // = 480
+      // I-EAGLE-REWRITE — 4-step DTJ pose sequence ending in a HARD CUT to a pre-composed
+      // eagle_carry sprite. No runtime compositing, no rotation, no fade. Mutual exclusion:
+      // dtjStageMode === 'NONE' iff comboActive === true (verified below by render gate).
+      //
+      //   STEP1 IDLE       0.0–0.8s   dtj_idle facing forward (no flip)
+      //   STEP2 TURN       0.8–1.4s   dtj_walk side-profile facing left
+      //   STEP3 SURPRISED  1.4–2.0s   dtj_surprised mouth-open looking up
+      //   STEP4 CARRIED    2.0–exit   eagle_carry combined sprite ascending + drifting left
+      //
+      // DTJ x stays at DTJ_STAGE_X across all steps (he turns/reacts in place). At t=2.0 the
+      // hard cut places the combo at the exact same x with foot at STAGE_FLOOR_Y so the cut
+      // reads in-place. Combo then ascends at 220 px/s with -30 px/s drift.
+      const DTJ_STAGE_X = 320;
 
-      if (eagle.mode === 'descend') {
-        eagle.y += 200 * dt;
-        if (eagle.y >= DTJ_GRAB_Y) { eagle.y = DTJ_GRAB_Y; eagle.mode = 'grab'; eagle.timer = 0; }
-        // I-CORR-4 — DTJ on stage now MIRRORED (flip=true) so he faces RIGHT, signaling
-        // "looking at the rescue arriving" as the eagle descends. Was facing left in PHASE1.
-        drawSprite('dtj_idle', 320, STAGE_FLOOR_Y, 80, true, 1.0);
-        drawSprite('eagle_fly', eagle.x, eagle.y, 80, false, 1.0);
-      } else if (eagle.mode === 'grab') {
-        eagle.timer += dt;
-        // I-CORR-4 — still mirrored during grab pause (consistent with descent).
-        drawSprite('dtj_idle', 320, STAGE_FLOOR_Y, 80, true, 1.0);
-        drawSprite('eagle_carry', eagle.x, eagle.y, 80, false, 1.0);
-        if (eagle.timer >= CUTSCENE_PHASE3_GRAB_DELAY) {
-          eagle.mode = 'ascend';
-          eagle.timer = 0;
-          eagle.ascentStart = stateT;
-          // I-CORR-4 — grab-pause complete: DTJ is now in the eagle's talons. Stage-DTJ render
-          // is bypassed from here on (Fix B). Carried-DTJ render path takes over (Fix C).
-          carriedActive = true;
-          // I-CORR-3 — push the ascent caption when the grab completes. Hold 2.0s, then fade-out.
+      if (stateT < 0.8) {
+        dtjStageMode = 'IDLE';      comboActive = false;
+      } else if (stateT < 1.4) {
+        dtjStageMode = 'WALK';      comboActive = false;
+      } else if (stateT < 2.0) {
+        dtjStageMode = 'SURPRISED'; comboActive = false;
+      } else {
+        // First frame of STEP4: hard cut. Lazy-init combo position + push the THANK YOU caption.
+        if (!comboActive) {
+          combo.x = DTJ_STAGE_X;
+          combo.y = STAGE_FLOOR_Y;                       // foot anchor — combo bottom == DTJ bottom
           pushCaption('DJT', 'THANK YOU PATRIOTS!', 2.0);
         }
-      } else if (eagle.mode === 'ascend') {
-        eagle.timer += dt;
-        eagle.y -= 250 * dt;
-        eagle.x -=  30 * dt;
-        // I-CORR-4 — single carried-DTJ render only. Stage-DTJ at (320, STAGE_FLOOR_Y) is NOT
-        // drawn this frame (Fix B). DTJ is rotated -45° centered just below the eagle (Fix C).
-        // The 60px offset matches the prior pin convention — eagle.y + 60 is the DTJ center.
-        if (carriedActive) {
-          drawDtjCarried(eagle.x, eagle.y + 40, 80);
-        }
-        drawSprite('eagle_carry', eagle.x, eagle.y, 80, false, 1.0);
-        if (eagle.y < -100) {
-          state = 'CUTSCENE_SCORE';
-          stateT = 0;
-          eagle.mode = 'idle';                          // reset for next cutscene run
-        }
+        dtjStageMode = 'NONE';
+        comboActive  = true;
+        combo.y -= 220 * dt;                              // ascend
+        combo.x -=  30 * dt;                              // slight leftward drift
       }
-      // I-CORR-3 — caption strip renders on top of stage in all eagle modes.
+
+      // RENDER GATE — mutually exclusive. Stage DTJ XOR combo, never both in one frame.
+      if      (dtjStageMode === 'IDLE')      drawSprite('dtj_idle',      DTJ_STAGE_X, STAGE_FLOOR_Y, 80, false, 1.0);
+      else if (dtjStageMode === 'WALK')      drawSprite('dtj_walk',      DTJ_STAGE_X, STAGE_FLOOR_Y, 80, false, 1.0);
+      else if (dtjStageMode === 'SURPRISED') drawSprite('dtj_surprised', DTJ_STAGE_X, STAGE_FLOOR_Y, 80, false, 1.0);
+      // dtjStageMode === 'NONE' renders no individual DTJ sprite this frame.
+      if (comboActive) drawSprite('eagle_carry', combo.x, combo.y, COMBO_H, false, 1.0);
+
+      // Phase exit: combo foot < 0 means the entire combined sprite is above the canvas top.
+      if (comboActive && combo.y < 0) {
+        state = 'CUTSCENE_SCORE';
+        stateT = 0;
+        comboActive  = false;                             // SCORE has no combo render
+        dtjStageMode = 'NONE';
+      }
+
+      // I-CORR-3 — caption strip renders flush above the cutscene scene background.
       renderCutsceneCaption();
       break;
     }
@@ -3561,31 +3563,23 @@ function loop(ts) {
       cutsceneT += dt;
       drawCutsceneSky(dt);
 
-      // I6 — eagle + DTJ fly across sky. Eagle enters from left (x=-80, y=H/2) at 80 px/s,
-      // stops at stateT >= 4.5s. DTJ pinned 60px below eagle.
-      const eagle = cutsceneEagle;
-      if (eagle.mode === 'idle') {
-        eagle.x = -80;
-        eagle.y = H / 2;
-        eagle.mode = 'between';
+      // I-EAGLE-REWRITE — combined sprite flies right across sky. Initialization happens in
+      // cutsceneAdvance (SCORE→BETWEEN). Cold-entry init below catches dev edge cases (e.g.
+      // hot-reload mid-cutscene where comboActive starts false). Mutually exclusive: never
+      // render an individual DTJ sprite here. dtjStageMode is forced to 'NONE'.
+      if (!comboActive) {
+        comboActive  = true;
+        dtjStageMode = 'NONE';
+        combo.x = -COMBO_H;
+        combo.y = H * 0.4 + COMBO_H * 0.5;
       }
-      if (eagle.mode === 'between' && stateT < 4.5) {
-        eagle.x += 80 * dt;
-      }
-      // I-CORR-4 — single carried-DTJ render via rotated path (Fix B+C). carriedActive stays
-      // true from PHASE3 grab-completion through SCORE through BETWEEN, so this branch always
-      // fires here — but the conditional matches PHASE3's structure for safety on cold-load
-      // edge cases (e.g. dev hot-reload mid-cutscene).
-      if (carriedActive) {
-        drawDtjCarried(eagle.x, eagle.y + 40, 80);
-      }
-      drawSprite('eagle_carry', eagle.x, eagle.y, 80, false, 1.0);
+      if (stateT < 4.5) combo.x += 80 * dt;               // rightward at 80 px/s; hold from t=4.5s
+      drawSprite('eagle_carry', combo.x, combo.y, COMBO_H, false, 1.0);
 
-      // I-CORR-3 — DTJ caption rotation now lives in the top-of-canvas strip; the 3 lines were
-      // pushed to the queue in cutsceneAdvance (SCORE→BETWEEN). renderCutsceneCaption() draws
-      // whichever is current.
+      // I-CORR-3 — DTJ caption rotation lives in the top-of-canvas strip. The 3 lines are
+      // pushed in cutsceneAdvance (SCORE→BETWEEN). renderCutsceneCaption() draws current.
 
-      // I6 — at t=5.0s reveal LEVEL 2 COMING SOON header + TAP TO RESTART prompt
+      // I6 — at t=5.0s reveal LEVEL 2 COMING SOON header + TAP TO RESTART prompt.
       if (stateT >= 5.0) {
         ctx.fillStyle = '#fff';
         ctx.font = 'bold 26px monospace';
@@ -3597,7 +3591,7 @@ function loop(ts) {
         ctx.fillText('TAP TO RESTART', W/2, 260);
       }
 
-      // I-CORR-3 — caption strip on top of sky.
+      // I-CORR-3 — caption strip flush above sky horizon.
       renderCutsceneCaption();
       break;
     }
