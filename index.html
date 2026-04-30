@@ -251,8 +251,37 @@ const DTJ_GAMEPLAY_X  = TOP.x + 100;   // F2: DTJ moved from TOP.x+260 to LEFT o
 // ─────────────────────────────────────────────
 // INTRO_BLACK → INTRO_TITLE → INTRO_ESCALATOR → INTRO_STAIRS
 // → INTRO_TAUNT → INTRO_SHATTER → GAMEPLAY
+// J — added DEATH_FREEZE (mid-gameplay capsule-hit pause) and GAME_OVER (overlay + tap-to-restart).
+//     DEATH_FREEZE → GAMEPLAY (respawn) | GAME_OVER (last life)
+//     GAME_OVER tap → INTRO_BLACK (full reset; the codebase has no separate 'STARTING' state —
+//     INTRO_BLACK is the start of the intro chain that the spec calls "STARTING").
 let state = 'INTRO_BLACK', stateT = 0, totalT = 0;
 let skipDone = false;
+
+// J — lives flow + high-score persistence.
+//   DEATH_FREEZE: 0.5s pause after a capsule hit. Player frozen, capsules continue. At end of
+//     freeze: decrement lives → respawn at FLOOR (lives>0) or transition to GAME_OVER (lives==0).
+//     PLACEHOLDER — Block L replaces the freeze with the YMCA dance.
+//   GAME_OVER: breakdown overlay (reuses CUTSCENE_SCORE layout), shows final + high score, tap
+//     to fully reset and replay intro. highScore persists in localStorage across sessions.
+const DEATH_FREEZE_DURATION = 0.5;
+let   deathFreezeT          = 0;
+let   gameOverFinalScore    = 0;
+let   highScore             = 0;
+let   highScoreNew          = false;       // true on game over if final beat the prior high
+const HIGH_SCORE_KEY        = 'djt_high_score';
+function loadHighScore() {
+  try {
+    const raw = localStorage.getItem(HIGH_SCORE_KEY);
+    if (raw == null) return 0;
+    const n = parseInt(raw, 10);
+    return (isFinite(n) && n >= 0) ? n : 0;
+  } catch (e) { return 0; }                // Safari private mode etc — silently default to 0
+}
+function saveHighScore(score) {
+  try { localStorage.setItem(HIGH_SCORE_KEY, String(Math.floor(score))); } catch (e) {}
+}
+highScore = loadHighScore();
 
 // I1 — cutscene input: route a tap to the next phase based on current state.
 //   CUTSCENE_PHASE1 / CUTSCENE_PHASE3 with cutsceneT >= 10s: skip straight to SCORE
@@ -323,7 +352,10 @@ window.addEventListener('keydown', e => {
   if (GAME_KEYS.has(e.code)) e.preventDefault();
   // I1 — cutscene states route through cutsceneAdvance (which honors per-state rules).
   // WIN_FREEZE eats input (still in pause). Intro states bounce to GAMEPLAY via skipToGame.
-  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN') return;
+  // J — DEATH_FREEZE eats input (placeholder; Block L's YMCA dance handles its own timing).
+  //     GAME_OVER tap routes through restartFromGameOver — full reset, replay intro.
+  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_FREEZE') return;
+  if (state === 'GAME_OVER') { restartFromGameOver(); return; }
   if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
   if (state !== 'GAMEPLAY') skipToGame();
 });
@@ -924,18 +956,28 @@ function updateCapsules(dt) {
   }
 }
 
-// Block 3 — lives / invulnerability / respawn.
-// Block 11 will replace the GAME_OVER console.log with the real state machine.
+// J — capsule contact enters DEATH_FREEZE (0.5s pause). Lives are decremented at END of the
+// freeze, then the state machine branches to GAMEPLAY (respawn) or GAME_OVER. The capsule-
+// overlap check in updateCapsules already guards on `state === 'GAMEPLAY'`, so a capsule cannot
+// re-trigger hit() during DEATH_FREEZE/GAME_OVER. invulnT guard is kept defensively.
+//
+// Kill source contract: hit() is ONLY called from the capsule-contact path in updateCapsules.
+// Helpers / Antifa / Pelosi DO NOT call hit() — confirmed by grep audit.
 function hit(source) {
-  if (player.invulnT > 0) return;          // i-frames active, ignore
-  player.lives -= 1;
-  player.invulnT = 1.0;                    // 1s of invulnerability after a hit
-  if (typeof console !== 'undefined') console.log('HIT by', source, '— lives:', player.lives);
-  if (player.lives <= 0) {
-    if (typeof console !== 'undefined') console.log('GAME OVER');
-    return;                                // Block 11 will trigger state transition
-  }
-  // Respawn on the floor in walk state
+  if (player.invulnT > 0) return;
+  if (state === 'DEATH_FREEZE' || state === 'GAME_OVER') return;
+  if (typeof console !== 'undefined') console.log('HIT by', source, '— lives before decrement:', player.lives);
+  state = 'DEATH_FREEZE';
+  stateT = 0;
+  deathFreezeT = 0;
+  player.vx = 0;
+  player.vy = 0;
+}
+
+// J — respawn the player at the FLOOR start position with i-frames. Score / multiplier /
+// briefcase count / etc. PERSIST across the respawn (only platforms-reached resets so the
+// +500 reach bonus is re-earnable per life, matching pre-J behavior).
+function respawnPlayer() {
   player.x = FLOOR.x + 60;
   player.y = FLOOR.y - 1;
   player.vx = 0;
@@ -945,9 +987,53 @@ function hit(source) {
   player.ladderCooldown = 0;
   player.ladderEntryY = 0;
   player.lastGroundedPlat = FLOOR;                        // D3
-  // H2 — platforms-reached set resets on each life so the +500 bonus is re-earnable per life.
-  // FLOOR (idx 0) is pre-seeded as "already counted" since the player respawns here.
+  player.platformsReached = new Set([0]);                 // H2 — re-earnable per life
+  player.invulnT = 1.0;                                   // i-frames after respawn
+}
+
+// J — full reset on tap from GAME_OVER. Score / lives / multiplier / briefcase count / all
+// entities cleared. highScore PERSISTS (already saved to localStorage at game-over moment).
+// Transitions to INTRO_BLACK so the intro replays from the top — mirrors the BETWEEN→INTRO_BLACK
+// path in cutsceneAdvance for consistency.
+function restartFromGameOver() {
+  player.lives = 3;
+  player.invulnT = 0;
   player.platformsReached = new Set([0]);
+  player.x = FLOOR.x + 60; player.y = FLOOR.y - 1;
+  player.vx = 0; player.vy = 0;
+  player.onGround = true; player.onLadder = false;
+  player.ladderCooldown = 0; player.ladderEntryY = 0;
+  player.lastGroundedPlat = FLOOR;
+  playerScore        = 0;
+  multiplier         = MULT_BASE;
+  multiplierT        = 0;
+  highScoreNew       = false;
+  gameOverFinalScore = 0;
+  capsules.length    = 0;
+  capsuleSpawnT      = 0;
+  capsuleSpawnInterval = 2.5 + Math.random() * 2.0;
+  helpers.length     = 0;
+  particles          = [];
+  bricks             = [];
+  scoreFloats.length = 0;
+  resetStats();
+  pickup.active        = false;
+  pickupSpawnTimer     = 0;
+  pickupRespawnDelay   = 0;
+  pelosi.active        = false;
+  pelosi.phase         = 'IDLE';
+  pelosi.phaseT        = 0;
+  pelosi.timer         = PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN);
+  pelosi.facing        = -1;
+  pelosi.targetCapsule = null;
+  pelosiFlash.active   = false;
+  tornPieces.length    = 0;
+  // Cutscene/caption state cleared so a quick GAME_OVER → restart → win cycle starts clean.
+  comboActive  = false;
+  dtjStageMode = 'NONE';
+  clearCaptions();
+  state = 'INTRO_BLACK';
+  stateT = 0;
 }
 
 function drawCapsules() {
@@ -2430,7 +2516,9 @@ canvas.addEventListener('pointerdown', e => {
   e.preventDefault();
   // I1 — cutscene tap routes through cutsceneAdvance (per-state advance rules).
   // WIN_FREEZE / CUTSCENE_FADE_IN eat input; intro states skipToGame; GAMEPLAY = normal.
-  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN') return;
+  // J — DEATH_FREEZE eats input. GAME_OVER tap = restartFromGameOver (full reset to intro).
+  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_FREEZE') return;
+  if (state === 'GAME_OVER') { restartFromGameOver(); return; }
   if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
   if (state !== 'GAMEPLAY') { skipToGame(); return; }
   canvas.setPointerCapture(e.pointerId);
@@ -2460,7 +2548,9 @@ canvas.addEventListener('touchstart', e=>{
   e.preventDefault();
   // I1 — cutscene tap routes through cutsceneAdvance (per-state advance rules).
   // WIN_FREEZE / CUTSCENE_FADE_IN eat input; intro states skipToGame; GAMEPLAY = normal.
-  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN') return;
+  // J — DEATH_FREEZE eats input. GAME_OVER tap = restartFromGameOver (full reset to intro).
+  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_FREEZE') return;
+  if (state === 'GAME_OVER') { restartFromGameOver(); return; }
   if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
   if (state !== 'GAMEPLAY') { skipToGame(); return; }
   for (const t of e.changedTouches) {
@@ -2653,20 +2743,123 @@ function drawCutsceneSky(dt) {
   }
 }
 
-function drawHUD() {
-  // F1 — HUD background fill REMOVED. Hearts, title, and score render directly over the night
-  // sky. (Was: ctx.fillStyle='rgba(0,0,10,0.88)'; ctx.fillRect(0, HUD_Y, W, HUD_HEIGHT);)
-  // Block 3 — three hearts: filled = remaining, outlined = lost
-  const heartSize = 14, heartGap = 4, startX = 8 + heartSize / 2, heartY = HUD_Y + 12;
-  for (let i = 0; i < 3; i++) {
-    drawHeart(startX + i * (heartSize + heartGap), heartY, heartSize, i < player.lives);
+// J — shared score-breakdown overlay. Reused by CUTSCENE_SCORE (level complete) and GAME_OVER
+// (lives exhausted). Same fonts, same spacing, same row component. Layout-identical except for
+// the header text, the total value, the prompt text, and an optional high-score block at the
+// bottom of the breakdown that GAME_OVER turns on.
+//   opts = {
+//     header,        // header line, e.g. 'LEVEL 1 COMPLETE' or 'GAME OVER'
+//     total,         // numeric total to display (already-final score)
+//     prompt,        // pulsing prompt text, e.g. 'TAP TO CONTINUE' or 'TAP TO RESTART'
+//     pulseT,        // time used for the prompt pulse (CUTSCENE_SCORE uses stateT, GAME_OVER same)
+//     showHighScore, // bool — when true, render a HIGH SCORE row + (optional) NEW HIGH SCORE! flag
+//     highScore,     // numeric high score to render (only used if showHighScore)
+//     isNewHigh,     // bool — when true, render 'NEW HIGH SCORE!' line (only used if showHighScore)
+//   }
+function drawScoreBreakdown(opts) {
+  drawRncStage();
+  ctx.fillStyle = 'rgba(0,0,0,0.85)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Header
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 26px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(opts.header, W/2, 120);
+
+  // Breakdown rows: label-left at x=70, value-right at x=410
+  const labelX = 70, valueX = 410;
+  let y = 200;
+  const ROW = 38;
+  ctx.font = 'bold 13px monospace';
+  ctx.fillStyle = '#fff';
+  function row(label, val, color) {
+    ctx.fillStyle = '#cccccc';
+    ctx.textAlign = 'left';
+    ctx.fillText(label, labelX, y);
+    ctx.fillStyle = color || '#ffeb70';
+    ctx.textAlign = 'right';
+    ctx.fillText('+' + val, valueX, y);
+    y += ROW;
   }
+  row('Survival:',         Math.floor(stats.survivalScore),                     '#aaffaa');
+  row('Capsules cleared:', stats.clearedCount    * CAPSULE_CLEAR_SCORE,         '#aaffaa');
+  row('Helper kills:',     stats.helperKillCount * HELPER_KILL_SCORE,           '#ff88ff');
+  row('Briefcases:',       stats.briefcaseCount  * BRIEFCASE_SCORE,             '#88ff88');
+  row('Platforms:',        stats.platformCount   * PLATFORM_REACH_BONUS,        '#88ddff');
+  row('Pelosi tears:',     stats.pelosiCount     * PELOSI_BONUS,                '#ffcc00');
+  row('Time bonus:',       stats.timeBonus,                                     '#ffaa55');
+  row('WIN BONUS:',        stats.winBonus,                                      '#ffcc00');
+
+  // Divider + total
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(labelX, y - 10); ctx.lineTo(valueX, y - 10); ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('TOTAL:', labelX, y + 18);
+  ctx.fillStyle = '#ffcc00';
+  ctx.font = 'bold 24px monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText(Math.floor(opts.total).toString(), valueX, y + 22);
+  y += ROW;
+
+  // J — high-score block (GAME_OVER only). Renders below the divider+total, above the prompt.
+  // CUTSCENE_SCORE doesn't pass showHighScore so this branch is silently skipped for level-complete.
+  if (opts.showHighScore) {
+    y += 18;
+    ctx.font = 'bold 16px monospace';
+    ctx.fillStyle = '#cccccc';
+    ctx.textAlign = 'left';
+    ctx.fillText('HIGH SCORE:', labelX, y + 18);
+    ctx.fillStyle = opts.isNewHigh ? '#aaffaa' : '#ffcc00';
+    ctx.font = 'bold 18px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(Math.floor(opts.highScore).toString(), valueX, y + 18);
+    if (opts.isNewHigh) {
+      y += ROW;
+      ctx.fillStyle = '#aaffaa';
+      ctx.font = 'bold 16px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('NEW HIGH SCORE!', W/2, y + 12);
+    }
+  }
+
+  // Pulsing prompt
+  const pulse = 0.5 + 0.5 * Math.sin(opts.pulseT * 4);
+  ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulse).toFixed(3) + ')';
+  ctx.font = 'bold 16px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(opts.prompt, W/2, 780);
+}
+
+function drawHUD() {
+  // F1 — HUD background fill REMOVED. Lives, title, and score render directly over the night sky.
+  // J — hearts replaced with mini DNC sprites scaled down (no new asset). Block O polish revisits
+  // if it reads muddy at this size. drawDonkey is foot-anchored; sc=0.3 yields ~22-25px tall.
+  // Lives count is rendered left-to-right; missing lives just don't draw (no outlined slot).
+  const dncSc    = 0.3;
+  const dncStep  = 16;                             // x-spacing between mini-DNCs at this scale
+  const dncStartX = 14;
+  const dncFootY  = HUD_Y + HUD_HEIGHT - 1;        // feet at the very bottom of the HUD bar
+  for (let i = 0; i < player.lives; i++) {
+    drawDonkey(dncStartX + i * dncStep, dncFootY, dncSc, false, false, 0);
+  }
+
+  // Title (centered)
   ctx.fillStyle='#ffffff'; ctx.font='bold 13px monospace'; ctx.textAlign='center';
   ctx.fillText('DNC vs DJT', W/2, HUD_Y + 17);
-  ctx.fillStyle='#ffcc00'; ctx.textAlign='right';
-  // Block D — real score + multiplier badge. E2 corrected — badge placed flush BELOW the HUD
-  // bar (in the gameplay area) so it stays visible while boosted regardless of bar order.
-  ctx.fillText('SCORE: ' + Math.floor(playerScore), W-8, HUD_Y + 17);
+
+  // J — score + high score, right-aligned. SCORE on the upper line, HI on the lower line so the
+  // HUD typography matches the existing 13px monospace SCORE style without crowding the title.
+  ctx.fillStyle='#ffcc00'; ctx.font='bold 13px monospace'; ctx.textAlign='right';
+  ctx.fillText('SCORE ' + Math.floor(playerScore), W-8, HUD_Y + 11);
+  ctx.fillStyle='#aaccff'; ctx.font='bold 11px monospace';
+  ctx.fillText('HI '    + Math.floor(highScore),   W-8, HUD_Y + 22);
+
+  // Block D — multiplier badge. E2 corrected — badge placed flush BELOW the HUD bar (in the
+  // gameplay area) so it stays visible while boosted regardless of bar order.
   if (multiplier > 1.0) {
     const badgeY = HUD_Y + HUD_HEIGHT;           // sits flush under the HUD bar
     ctx.fillStyle = 'rgba(0,30,15,0.85)';
@@ -3385,6 +3578,66 @@ function loop(ts) {
       break;
     }
 
+    // J — DEATH_FREEZE: 0.5s pause after a capsule hit. PLACEHOLDER — Block L replaces with
+    // YMCA dance. Player is frozen (updatePlayer not called). World keeps animating so capsules
+    // keep rolling visually. Capsule re-hit is blocked by the GAMEPLAY-only guard inside
+    // updateCapsules + the explicit DEATH_FREEZE/GAME_OVER guard in hit().
+    case 'DEATH_FREEZE': {
+      deathFreezeT += dt;
+      updateCapsules(dt);
+      updatePickup(dt);
+      updateHelpers(dt);
+      updatePelosi(dt);
+      drawGameplay(false);
+      particles.forEach(p=>{
+        ctx.globalAlpha=Math.max(p.life,0);
+        ctx.fillStyle=p.color;
+        ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
+      });
+      ctx.globalAlpha=1;
+      if (deathFreezeT >= DEATH_FREEZE_DURATION) {
+        // Decrement at END of freeze so the HUD shows the loss settling in dramatically.
+        player.lives -= 1;
+        deathFreezeT = 0;
+        if (player.lives <= 0) {
+          // Capture final score + commit any new high score to localStorage before transitioning.
+          gameOverFinalScore = playerScore;
+          if (playerScore > highScore) {
+            highScore    = Math.floor(playerScore);
+            highScoreNew = true;
+            saveHighScore(highScore);
+          } else {
+            highScoreNew = false;
+          }
+          state = 'GAME_OVER';
+          stateT = 0;
+        } else {
+          // Score / multiplier / briefcase count / etc. PERSIST. Only platforms-reached resets
+          // (handled inside respawnPlayer for re-earnable +500 bonus per life).
+          respawnPlayer();
+          state = 'GAMEPLAY';
+          stateT = 0;
+        }
+      }
+      break;
+    }
+
+    // J — GAME_OVER: breakdown overlay reuses CUTSCENE_SCORE layout via drawScoreBreakdown.
+    // Tap to fully reset (handled in input handlers via restartFromGameOver). highScore was
+    // already persisted to localStorage at DEATH_FREEZE→GAME_OVER transition.
+    case 'GAME_OVER': {
+      drawScoreBreakdown({
+        header:        'GAME OVER',
+        total:         gameOverFinalScore,
+        prompt:        'TAP TO RESTART',
+        pulseT:        stateT,
+        showHighScore: true,
+        highScore:     highScore,
+        isNewHigh:     highScoreNew,
+      });
+      break;
+    }
+
     // I1 — cutscene state machine. Each phase below renders a placeholder for now; I2..I6 will
     // populate the visuals (RNC stage bg, dialogue, eagle, score breakdown, between-levels sky).
     // Gameplay simulation is suspended in all CUTSCENE_* states (no updateCapsules etc.).
@@ -3502,61 +3755,15 @@ function loop(ts) {
 
     case 'CUTSCENE_SCORE': {
       cutsceneT += dt;
-      // I5 — full score breakdown overlay. RNC stage backdrop + 0.85 black overlay (per spec).
-      drawRncStage();
-      ctx.fillStyle = 'rgba(0,0,0,0.85)';
-      ctx.fillRect(0, 0, W, H);
-
-      // Header
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 26px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('LEVEL 1 COMPLETE', W/2, 120);
-
-      // Breakdown rows: label-left at x=70, value-right at x=410
-      const labelX = 70, valueX = 410;
-      let y = 200;
-      const ROW = 38;
-      ctx.font = 'bold 13px monospace';
-      ctx.fillStyle = '#fff';
-      function row(label, val, color) {
-        ctx.fillStyle = '#cccccc';
-        ctx.textAlign = 'left';
-        ctx.fillText(label, labelX, y);
-        ctx.fillStyle = color || '#ffeb70';
-        ctx.textAlign = 'right';
-        ctx.fillText('+' + val, valueX, y);
-        y += ROW;
-      }
-      row('Survival:',         Math.floor(stats.survivalScore),                     '#aaffaa');
-      row('Capsules cleared:', stats.clearedCount    * CAPSULE_CLEAR_SCORE,         '#aaffaa');
-      row('Helper kills:',     stats.helperKillCount * HELPER_KILL_SCORE,           '#ff88ff');
-      row('Briefcases:',       stats.briefcaseCount  * BRIEFCASE_SCORE,             '#88ff88');
-      row('Platforms:',        stats.platformCount   * PLATFORM_REACH_BONUS,        '#88ddff');
-      row('Pelosi tears:',     stats.pelosiCount     * PELOSI_BONUS,                '#ffcc00');
-      row('Time bonus:',       stats.timeBonus,                                     '#ffaa55');
-      row('WIN BONUS:',        stats.winBonus,                                      '#ffcc00');
-
-      // Divider + total
-      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(labelX, y - 10); ctx.lineTo(valueX, y - 10); ctx.stroke();
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 18px monospace';
-      ctx.textAlign = 'left';
-      ctx.fillText('TOTAL:', labelX, y + 18);
-      ctx.fillStyle = '#ffcc00';
-      ctx.font = 'bold 24px monospace';
-      ctx.textAlign = 'right';
-      ctx.fillText(Math.floor(winFinalScore).toString(), valueX, y + 22);
-
-      // Pulsing prompt
-      const pulseS = 0.5 + 0.5 * Math.sin(stateT * 4);
-      ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulseS).toFixed(3) + ')';
-      ctx.font = 'bold 16px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText('TAP TO CONTINUE', W/2, 780);
-
+      // I5 — full score breakdown overlay. J — render delegated to shared drawScoreBreakdown
+      // helper (reused by GAME_OVER). showHighScore=false → no high-score block on level-complete.
+      drawScoreBreakdown({
+        header:        'LEVEL 1 COMPLETE',
+        total:         winFinalScore,
+        prompt:        'TAP TO CONTINUE',
+        pulseT:        stateT,
+        showHighScore: false,
+      });
       // I-CORR-3 — render any caption that's still fading out from PHASE3 ascent.
       renderCutsceneCaption();
       break;
