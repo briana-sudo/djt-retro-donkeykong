@@ -249,15 +249,30 @@ const DTJ_GAMEPLAY_X  = TOP.x + 100;   // F2: DTJ moved from TOP.x+260 to LEFT o
 let state = 'INTRO_BLACK', stateT = 0, totalT = 0;
 let skipDone = false;
 
-// H3 — restart from WIN_SEQUENCE: drop back to INTRO_BLACK so the intro replays. Gameplay state
-// (playerScore, lives, multiplier, platformsReached, all entity arrays) is reset by the existing
-// inline reset chain at the INTRO_SHATTER → GAMEPLAY transition. The transient WIN_SEQUENCE
-// overlay state (winFinalScore, winFreezeT) doesn't need reset — it's recomputed at next win.
-function restartFromWin() {
-  if (state !== 'WIN_SEQUENCE') return;
-  state = 'INTRO_BLACK';
-  stateT = 0;
-  scoreFloats.length = 0;
+// I1 — cutscene input: route a tap to the next phase based on current state.
+//   CUTSCENE_PHASE1 / CUTSCENE_PHASE3 with cutsceneT >= 10s: skip straight to SCORE
+//   CUTSCENE_SCORE: advance to BETWEEN
+//   CUTSCENE_BETWEEN: restart (drop to INTRO_BLACK; gameplay reset happens at GAMEPLAY entry)
+//   Anything else (FADE_IN, WIN_FREEZE, early PHASE1/PHASE3): input ignored
+function cutsceneAdvance() {
+  if (state === 'CUTSCENE_PHASE1' || state === 'CUTSCENE_PHASE3') {
+    if (cutsceneT >= CUTSCENE_SKIP_THRESHOLD) {
+      state = 'CUTSCENE_SCORE';
+      stateT = 0;
+    }
+    return;
+  }
+  if (state === 'CUTSCENE_SCORE') {
+    state = 'CUTSCENE_BETWEEN';
+    stateT = 0;
+    return;
+  }
+  if (state === 'CUTSCENE_BETWEEN') {
+    state = 'INTRO_BLACK';
+    stateT = 0;
+    scoreFloats.length = 0;
+    return;
+  }
 }
 
 function skipToGame() {
@@ -272,10 +287,10 @@ const GAME_KEYS = new Set(['ArrowLeft','ArrowRight','Space','KeyA','KeyZ']);
 window.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (GAME_KEYS.has(e.code)) e.preventDefault();
-  // H3 — key during WIN_SEQUENCE restarts; WIN_FREEZE eats the key (still in pause). Intro
-  // states bounce to GAMEPLAY via skipToGame.
-  if (state === 'WIN_SEQUENCE') { restartFromWin(); return; }
-  if (state === 'WIN_FREEZE') return;
+  // I1 — cutscene states route through cutsceneAdvance (which honors per-state rules).
+  // WIN_FREEZE eats input (still in pause). Intro states bounce to GAMEPLAY via skipToGame.
+  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN') return;
+  if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
   if (state !== 'GAMEPLAY') skipToGame();
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
@@ -625,13 +640,23 @@ const MAX_CAPSULES = 8;
 // tilt while rolling; this only controls the initial throw and the render mirror.
 const CAPSULE_THROW_DIR = -1;
 
-// H1 — Win trigger. Fires when player completes the top exit of ladder[5] (P4 → TOP). State
-// machine extends to GAMEPLAY → WIN_FREEZE (0.6s player-frozen pause, capsule kills suppressed,
-// other entities keep animating) → WIN_SEQUENCE (overlay; H3 wires tap-to-restart).
-const WIN_FREEZE_DURATION = 0.6;
-const WIN_BONUS           = 2000;
-let   winFreezeT          = 0;
-let   winFinalScore       = 0;
+// H1 + I1 — Win flow + cutscene state machine. Player completes ladder[5] top exit:
+//   GAMEPLAY → WIN_FREEZE (0.6s frozen on the gameplay canvas, capsule kills suppressed)
+//           → CUTSCENE_FADE_IN  (0.5s fade gameplay → RNC stage)
+//           → CUTSCENE_PHASE1   (DNC walks in, both speech bubbles, ~3s)
+//           → CUTSCENE_PHASE3   (eagle descends, grabs DTJ, ascends, ~3s)
+//           → CUTSCENE_SCORE    (breakdown overlay; tap to advance)
+//           → CUTSCENE_BETWEEN  (sky + eagle flies across; LEVEL 2 COMING SOON; tap)
+//           → INTRO_BLACK       (intro replays; full reset on the GAMEPLAY entry)
+const WIN_FREEZE_DURATION    = 0.6;
+const CUTSCENE_FADE_DURATION = 0.5;
+const CUTSCENE_PHASE1_DURATION = 3.0;
+const CUTSCENE_PHASE3_GRAB_DELAY = 0.3;       // pause after eagle reaches DTJ before ascent
+const CUTSCENE_SKIP_THRESHOLD = 10.0;         // input during PHASE1/PHASE3 after this skips to SCORE
+const WIN_BONUS              = 2000;
+let   winFreezeT             = 0;
+let   winFinalScore          = 0;
+let   cutsceneT              = 0;             // seconds since CUTSCENE_FADE_IN entered
 
 function triggerWin() {
   if (state !== 'GAMEPLAY') return;
@@ -645,8 +670,12 @@ function triggerWin() {
   state = 'WIN_FREEZE';
   stateT = 0;
   winFreezeT = 0;
+  cutsceneT = 0;
   player.vx = 0;
   player.vy = 0;
+  // I5 — snapshot final score now so the breakdown matches what the player sees on the WIN screen
+  // even if survival/animation continues to add a few points during the cutscene.
+  winFinalScore = playerScore;
 }
 
 // C3 / D1 — DTJ throw animation state machine. On capsule spawn timer fire (and only if IDLE):
@@ -2321,9 +2350,10 @@ function applyTouchState() {
 
 canvas.addEventListener('pointerdown', e => {
   e.preventDefault();
-  // H3 — tap during WIN_SEQUENCE restarts; WIN_FREEZE eats the tap; intro states skipToGame.
-  if (state === 'WIN_SEQUENCE') { restartFromWin(); return; }
-  if (state === 'WIN_FREEZE') return;
+  // I1 — cutscene tap routes through cutsceneAdvance (per-state advance rules).
+  // WIN_FREEZE / CUTSCENE_FADE_IN eat input; intro states skipToGame; GAMEPLAY = normal.
+  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN') return;
+  if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
   if (state !== 'GAMEPLAY') { skipToGame(); return; }
   canvas.setPointerCapture(e.pointerId);
   const r=canvas.getBoundingClientRect();
@@ -2350,9 +2380,10 @@ canvas.addEventListener('pointercancel', e=>{delete activeTouches[e.pointerId]; 
 // iOS Safari fallback — touch events in case pointer events don't fire
 canvas.addEventListener('touchstart', e=>{
   e.preventDefault();
-  // H3 — tap during WIN_SEQUENCE restarts; WIN_FREEZE eats the tap; intro states skipToGame.
-  if (state === 'WIN_SEQUENCE') { restartFromWin(); return; }
-  if (state === 'WIN_FREEZE') return;
+  // I1 — cutscene tap routes through cutsceneAdvance (per-state advance rules).
+  // WIN_FREEZE / CUTSCENE_FADE_IN eat input; intro states skipToGame; GAMEPLAY = normal.
+  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN') return;
+  if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
   if (state !== 'GAMEPLAY') { skipToGame(); return; }
   for (const t of e.changedTouches) {
     const r=canvas.getBoundingClientRect();
@@ -3008,7 +3039,8 @@ function loop(ts) {
 
     // H1 — 0.6s pause after the win trigger. Player is frozen (updatePlayer NOT called).
     // Capsules / helpers / Pelosi / pickup keep animating so the world doesn't visibly stall.
-    // Capsule-kill is suppressed via the state guard inside updateCapsules.
+    // Capsule-kill is suppressed via the state guard inside updateCapsules. I7 — at end of
+    // freeze we now hand off to the cutscene chain, not directly to a final overlay.
     case 'WIN_FREEZE': {
       winFreezeT += dt;
       updateCapsules(dt);
@@ -3023,42 +3055,88 @@ function loop(ts) {
       });
       ctx.globalAlpha=1;
       if (winFreezeT >= WIN_FREEZE_DURATION) {
-        state = 'WIN_SEQUENCE';
+        state = 'CUTSCENE_FADE_IN';
         stateT = 0;
-        winFinalScore = playerScore;
+        cutsceneT = 0;
       }
       break;
     }
 
-    // H3 — WIN_SEQUENCE overlay + tap-to-restart wiring. Renders frozen gameplay underneath
-    // (so the won-state world stays visible) plus a centered three-line panel:
-    //   LEVEL 1 COMPLETE        — white, large
-    //   SCORE: N                — yellow, medium
-    //   TAP TO RESTART          — pulsing, small
-    // On tap/key: restartFromWin() → state='INTRO_BLACK' → intro replays → GAMEPLAY entry resets
-    // playerScore=0, lives=3, etc. via the existing inline reset chain.
-    case 'WIN_SEQUENCE': {
+    // I1 — cutscene state machine. Each phase below renders a placeholder for now; I2..I6 will
+    // populate the visuals (RNC stage bg, dialogue, eagle, score breakdown, between-levels sky).
+    // Gameplay simulation is suspended in all CUTSCENE_* states (no updateCapsules etc.).
+
+    case 'CUTSCENE_FADE_IN': {
+      cutsceneT += dt;
+      // Fade gameplay → black. Render frozen gameplay first, then a black quad whose alpha rises
+      // from 0 → 1 over CUTSCENE_FADE_DURATION.
       drawGameplay(false);
-      particles.forEach(p=>{
-        ctx.globalAlpha=Math.max(p.life,0);
-        ctx.fillStyle=p.color;
-        ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
-      });
-      ctx.globalAlpha=1;
-      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      const a = Math.min(stateT / CUTSCENE_FADE_DURATION, 1);
+      ctx.fillStyle = 'rgba(0,0,0,' + a.toFixed(3) + ')';
       ctx.fillRect(0, 0, W, H);
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 26px monospace';
-      ctx.textAlign = 'center';
+      if (stateT >= CUTSCENE_FADE_DURATION) {
+        state = 'CUTSCENE_PHASE1';
+        stateT = 0;
+      }
+      break;
+    }
+
+    case 'CUTSCENE_PHASE1': {
+      cutsceneT += dt;
+      // I2/I3 placeholder: black bg + state label. Real content lands in I3.
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 18px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('CUTSCENE_PHASE1', W/2, H/2);
+      ctx.fillStyle = '#888'; ctx.font = '12px monospace';
+      ctx.fillText('t=' + stateT.toFixed(2) + 's', W/2, H/2 + 24);
+      if (stateT >= CUTSCENE_PHASE1_DURATION) {
+        state = 'CUTSCENE_PHASE3';
+        stateT = 0;
+      }
+      break;
+    }
+
+    case 'CUTSCENE_PHASE3': {
+      cutsceneT += dt;
+      // I2/I4 placeholder: black bg + state label. Real eagle descent/ascent lands in I4.
+      // Auto-advances at 3s for now so the chain is testable end-to-end.
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 18px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('CUTSCENE_PHASE3', W/2, H/2);
+      ctx.fillStyle = '#888'; ctx.font = '12px monospace';
+      ctx.fillText('t=' + stateT.toFixed(2) + 's', W/2, H/2 + 24);
+      if (stateT >= 3.0) {
+        state = 'CUTSCENE_SCORE';
+        stateT = 0;
+      }
+      break;
+    }
+
+    case 'CUTSCENE_SCORE': {
+      cutsceneT += dt;
+      // I5 placeholder: minimal centered score panel. Real breakdown lands in I5.
+      ctx.fillStyle = 'rgba(0,0,0,0.85)'; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 26px monospace'; ctx.textAlign = 'center';
       ctx.fillText('LEVEL 1 COMPLETE', W/2, 300);
-      ctx.fillStyle = '#ffcc00';
-      ctx.font = 'bold 20px monospace';
+      ctx.fillStyle = '#ffcc00'; ctx.font = 'bold 20px monospace';
       ctx.fillText('SCORE: ' + Math.floor(winFinalScore), W/2, 360);
-      // Pulsing prompt — sin oscillation 0..1 every ~1.5s
-      const pulse = 0.5 + 0.5 * Math.sin(stateT * 4);
-      ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulse).toFixed(3) + ')';
+      const pulseS = 0.5 + 0.5 * Math.sin(stateT * 4);
+      ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulseS).toFixed(3) + ')';
       ctx.font = 'bold 16px monospace';
-      ctx.fillText('TAP TO RESTART', W/2, 440);
+      ctx.fillText('TAP TO CONTINUE', W/2, 780);
+      break;
+    }
+
+    case 'CUTSCENE_BETWEEN': {
+      cutsceneT += dt;
+      // I6 placeholder. Real sky + eagle + LEVEL 2 COMING SOON lands in I6.
+      ctx.fillStyle = '#1a3a6a'; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 18px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('CUTSCENE_BETWEEN', W/2, H/2);
+      const pulseB = 0.5 + 0.5 * Math.sin(stateT * 4);
+      ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulseB).toFixed(3) + ')';
+      ctx.font = 'bold 14px monospace';
+      ctx.fillText('TAP TO RESTART', W/2, 780);
       break;
     }
   }
