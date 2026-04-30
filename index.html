@@ -2639,25 +2639,93 @@ function drawBubble(x, y, text, alpha) {
   ctx.restore();
 }
 
-// I3 — auto-width speech bubble for cutscene dialogue (some lines exceed the 180-px gameplay
-// bubble width). Tail points down at (x, y); bubble grows up + symmetrical around x with padding.
-function drawCutsceneBubble(x, y, text, alpha) {
-  ctx.save(); ctx.globalAlpha = alpha;
+// I3 / I-CORR — speech bubble for cutscene dialogue.
+//   speakerCx, speakerHeadY: world-space point that the bubble tail tip points down to
+//                            (typically center-x and top-of-sprite y of the speaker).
+//   text: arbitrary string. Word-wrapped to MAX_BUBBLE_WIDTH=140.
+//   alpha: 0..1 fade.
+// Bubble sits with its bottom 12px above (speakerCx, speakerHeadY), centered on speakerCx.
+// If centering would push the bubble off the canvas edge, it's clamped — but the tail still
+// points to speakerCx, so the bubble can sit further left/right than the speaker without
+// breaking the visual link.
+const MAX_BUBBLE_WIDTH  = 140;
+const MIN_BUBBLE_WIDTH  =  80;
+const BUBBLE_PADDING    =   8;
+const BUBBLE_LINE_HEIGHT = 16;
+const BUBBLE_GAP_ABOVE_HEAD = 12;
+function wrapBubbleText(text, maxTextWidth) {
+  const words = text.split(' ');
+  const lines = [];
+  let cur = '';
+  for (const word of words) {
+    const trial = cur ? cur + ' ' + word : word;
+    if (ctx.measureText(trial).width <= maxTextWidth) {
+      cur = trial;
+    } else {
+      if (cur) lines.push(cur);
+      cur = word;
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+function drawCutsceneBubble(speakerCx, speakerHeadY, text, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
   const fontPx = 12;
   ctx.font = 'bold ' + fontPx + 'px monospace';
-  const pad = 14;
-  const tw = ctx.measureText(text).width;
-  const pw = Math.max(120, Math.ceil(tw) + pad * 2);
-  const ph = 32;
-  const px = Math.max(4, Math.min(W - pw - 4, x - pw/2));    // clamp inside canvas
-  const py = y - ph - 16;
-  ctx.fillStyle = '#fff'; ctx.strokeStyle = '#cc0000'; ctx.lineWidth = 3;
-  ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 8); ctx.fill(); ctx.stroke();
-  // Tail
-  ctx.beginPath(); ctx.moveTo(x-9, py+ph); ctx.lineTo(x, py+ph+16); ctx.lineTo(x+9, py+ph); ctx.closePath();
-  ctx.fill(); ctx.stroke();
-  ctx.fillStyle = '#cc0000'; ctx.textAlign = 'center';
-  ctx.fillText(text, px + pw/2, py + ph/2 + fontPx/2 - 1);
+
+  // Word-wrap
+  const maxTextWidth = MAX_BUBBLE_WIDTH - 2 * BUBBLE_PADDING;
+  const lines = wrapBubbleText(text, maxTextWidth);
+
+  // Bubble dims: width = max(min, longestLineWidth+2*pad) clamped to MAX
+  let longestW = 0;
+  for (const line of lines) longestW = Math.max(longestW, ctx.measureText(line).width);
+  const bw = Math.max(MIN_BUBBLE_WIDTH,
+                      Math.min(MAX_BUBBLE_WIDTH, Math.ceil(longestW) + 2 * BUBBLE_PADDING));
+  const bh = lines.length * BUBBLE_LINE_HEIGHT + 2 * BUBBLE_PADDING;
+
+  // Position: bubble bottom = speakerHeadY - 12 (gap), centered on speakerCx, then edge-clamp.
+  const bubbleBottomY = speakerHeadY - BUBBLE_GAP_ABOVE_HEAD;
+  const bubbleTopY    = bubbleBottomY - bh;
+  let bubbleCenterX   = speakerCx;
+  if (bubbleCenterX - bw/2 < 4)       bubbleCenterX = 4 + bw/2;
+  else if (bubbleCenterX + bw/2 > W - 4) bubbleCenterX = W - 4 - bw/2;
+  const bubbleLeftX = bubbleCenterX - bw/2;
+
+  // Bubble box
+  ctx.fillStyle = '#fff';
+  ctx.strokeStyle = '#cc0000';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.roundRect(bubbleLeftX, bubbleTopY, bw, bh, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  // Tail: base on bubble bottom edge near where speakerCx sits horizontally; tip at the actual
+  // speaker (speakerCx, speakerHeadY). Even when bubble is edge-clamped, tail points back to
+  // speaker so the visual link is preserved.
+  const tailHalf = 9;
+  const tailBaseCenterX = Math.max(bubbleLeftX + tailHalf + 2,
+                                   Math.min(bubbleLeftX + bw - tailHalf - 2, speakerCx));
+  ctx.beginPath();
+  ctx.moveTo(tailBaseCenterX - tailHalf, bubbleBottomY);
+  ctx.lineTo(speakerCx,                  speakerHeadY);
+  ctx.lineTo(tailBaseCenterX + tailHalf, bubbleBottomY);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Text — top-aligned with PADDING on top; one line per BUBBLE_LINE_HEIGHT.
+  ctx.fillStyle = '#cc0000';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  for (let i = 0; i < lines.length; i++) {
+    const ly = bubbleTopY + BUBBLE_PADDING + i * BUBBLE_LINE_HEIGHT;
+    ctx.fillText(lines[i], bubbleCenterX, ly + 1);
+  }
+  ctx.textBaseline = 'alphabetic';   // restore default
   ctx.restore();
 }
 
