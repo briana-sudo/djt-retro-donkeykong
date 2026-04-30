@@ -280,7 +280,7 @@ function cutsceneAdvance() {
 }
 
 function skipToGame() {
-  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; pelosi.timer = PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN); pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; }
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; resetStats(); pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; pelosi.timer = PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN); pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; }
 }
 
 // ─────────────────────────────────────────────
@@ -466,6 +466,7 @@ function updatePlayer(dt) {
           const idx = platforms.indexOf(snapPlat);
           if (idx >= 0 && !player.platformsReached.has(idx)) {
             player.platformsReached.add(idx);
+            stats.platformCount++;
             addScore(PLATFORM_REACH_BONUS, true, player.x, player.y - 40, '#88ddff');
           }
         }
@@ -501,6 +502,7 @@ function updatePlayer(dt) {
           const idx = platforms.indexOf(snapPlat);
           if (idx >= 0 && !player.platformsReached.has(idx)) {
             player.platformsReached.add(idx);
+            stats.platformCount++;
             addScore(PLATFORM_REACH_BONUS, true, player.x, player.y - 40, '#88ddff');
           }
         }
@@ -594,6 +596,7 @@ function updatePlayer(dt) {
       const idx = platforms.indexOf(plat);
       if (idx >= 0 && !player.platformsReached.has(idx)) {
         player.platformsReached.add(idx);
+        stats.platformCount++;
         addScore(PLATFORM_REACH_BONUS, true, player.x, player.y - 40, '#88ddff');
       }
     }
@@ -666,11 +669,13 @@ function triggerWin() {
   if (state !== 'GAMEPLAY') return;
   // H1 — flat WIN_BONUS (no multiplier).
   playerScore += WIN_BONUS;
+  stats.winBonus = WIN_BONUS;                      // I5 — capture for breakdown
   // H2 — time bonus: completing under TARGET_TIME awards remaining seconds × TIME_BONUS_PER_SECOND.
   // No multiplier per spec.
   const levelTime = totalT - levelStartTime;
   const timeBonus = Math.max(0, Math.round((TARGET_TIME - levelTime) * TIME_BONUS_PER_SECOND));
   playerScore += timeBonus;
+  stats.timeBonus = timeBonus;                     // I5 — capture for breakdown
   state = 'WIN_FREEZE';
   stateT = 0;
   winFreezeT = 0;
@@ -870,6 +875,7 @@ function updateCapsules(dt) {
         const nearMidair = !c.onPlat && Math.abs(c.y - player.y) < 80;
         if (sameLevel || lowerLevel || nearMidair) {
           c.cleared = true;
+          stats.clearedCount++;
           addScore(CAPSULE_CLEAR_SCORE, true, c.x, c.y - 30, '#aaffaa');
         }
       }
@@ -946,6 +952,31 @@ let playerScore = 0;
 let multiplier = MULT_BASE;
 let multiplierT = 0;       // seconds remaining at current boosted multiplier; 0 → multiplier decays
 let levelStartTime = 0;    // totalT when GAMEPLAY entered; used for time-bonus on win
+// I5 — per-category stats tally for the cutscene score breakdown. survivalScore tracks the actual
+// multiplier-applied survival points (so the breakdown's Survival line matches reality). The
+// counts (clearedCount, helperKillCount, briefcaseCount, platformCount, pelosiCount) are event
+// counts shown × base score in the breakdown — the multiplier-adjusted contribution lives in
+// playerScore (TOTAL line). winBonus and timeBonus are flat amounts captured at triggerWin.
+const stats = {
+  survivalScore:    0,
+  clearedCount:     0,
+  helperKillCount:  0,
+  briefcaseCount:   0,
+  platformCount:    0,
+  pelosiCount:      0,
+  timeBonus:        0,
+  winBonus:         0,
+};
+function resetStats() {
+  stats.survivalScore = 0;
+  stats.clearedCount = 0;
+  stats.helperKillCount = 0;
+  stats.briefcaseCount = 0;
+  stats.platformCount = 0;
+  stats.pelosiCount = 0;
+  stats.timeBonus = 0;
+  stats.winBonus = 0;
+}
 const pickup = { active: false, x: 0, baseY: 0, y: 0, bobPhase: 0 };
 let pickupSpawnTimer = 0;  // counts up while !active; spawns next when >= pickupRespawnDelay
 let pickupRespawnDelay = 0;
@@ -1033,6 +1064,7 @@ function updatePickup(dt) {
   const overlapY = (pickup.y > player.y - 32) && (pickup.y - PICKUP_SIZE < player.y - 4);
   if (overlapX && overlapY) {
     // Collect — H2: BRIEFCASE_SCORE × current multiplier, then bump multiplier and reset its timer.
+    stats.briefcaseCount++;
     addScore(BRIEFCASE_SCORE, true, pickup.x, pickup.y - 20, '#88ff88');
     multiplier = Math.min(multiplier + MULT_ADD, MULT_MAX);
     multiplierT = MULT_DURATION;
@@ -1222,6 +1254,7 @@ function updateHelpers(dt) {
       const overlapY = (c.y + CAPSULE_R > h.y - h.h) && (c.y - CAPSULE_R < h.y);
       if (overlapX && overlapY) {
         // H2 — helper destroys capsule → +150 × multiplier
+        stats.helperKillCount++;
         addScore(HELPER_KILL_SCORE, true, c.x, c.y - 20, '#ff88ff');
         capsules.splice(ci, 1);
         if (h.type === 'ZOMBIE') { helperKilled = true; break; }
@@ -1389,6 +1422,7 @@ function updatePelosi(dt) {
         tornPieces.push({ x: pelosi.x - 6, y: baseY, vx: -180, vy: -240, rot: 0, rotV:  6, t: 0 });
         tornPieces.push({ x: pelosi.x + 6, y: baseY, vx:  180, vy: -260, rot: 0, rotV: -6, t: 0 });
         // H2 — Pelosi tear → +500 × multiplier (was flat 500). pelosiFlash overlay still shown.
+        stats.pelosiCount++;
         addScore(PELOSI_BONUS, true, pelosi.x, pelosi.y - PELOSI_HEIGHT, '#ffcc00');
         pelosiFlash.active = true;
         pelosiFlash.t = 0;
@@ -2873,7 +2907,7 @@ function loop(ts) {
       // Shake on first hit
       if(shatterT>0.5&&shatterT<0.55){ shakeAmt=10; boom(W/2,500,28,true); }
       if(shatterT>1.2&&shatterT<1.25){ shakeAmt=8; }
-      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjAnimState='IDLE'; dtjAnimT=0; dtjAnimX=DTJ_GAMEPLAY_X; helpers.length=0; player.lives=3; player.invulnT=0; player.platformsReached=new Set([0]); playerScore=0; multiplier=MULT_BASE; multiplierT=0; levelStartTime=totalT; scoreFloats.length=0; pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); pelosi.active=false; pelosi.phase='IDLE'; pelosi.phaseT=0; pelosi.timer=PELOSI_INTERVAL_MIN+Math.random()*(PELOSI_INTERVAL_MAX-PELOSI_INTERVAL_MIN); pelosi.facing=-1; pelosi.targetCapsule=null; pelosiFlash.active=false; tornPieces.length=0; }
+      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjAnimState='IDLE'; dtjAnimT=0; dtjAnimX=DTJ_GAMEPLAY_X; helpers.length=0; player.lives=3; player.invulnT=0; player.platformsReached=new Set([0]); playerScore=0; multiplier=MULT_BASE; multiplierT=0; levelStartTime=totalT; scoreFloats.length=0; resetStats(); pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); pelosi.active=false; pelosi.phase='IDLE'; pelosi.phaseT=0; pelosi.timer=PELOSI_INTERVAL_MIN+Math.random()*(PELOSI_INTERVAL_MAX-PELOSI_INTERVAL_MIN); pelosi.facing=-1; pelosi.targetCapsule=null; pelosiFlash.active=false; tornPieces.length=0; }
       break;
   }
 
@@ -3098,8 +3132,13 @@ function loop(ts) {
 
     case 'GAMEPLAY': {
       // H2 — survival score: +SCORE_PER_SECOND × multiplier per second (no float spawns; HUD score
-      // ticks visibly at +10/s base, +30/s while ×3 boost is active).
-      playerScore += SCORE_PER_SECOND * dt * multiplier;
+      // ticks visibly at +10/s base, +30/s while ×3 boost is active). I5 — also tracked into
+      // stats.survivalScore for the cutscene breakdown.
+      {
+        const inc = SCORE_PER_SECOND * dt * multiplier;
+        playerScore += inc;
+        stats.survivalScore += inc;
+      }
       updatePlayer(dt);
       updateCapsules(dt);
       updatePickup(dt);
@@ -3268,16 +3307,59 @@ function loop(ts) {
 
     case 'CUTSCENE_SCORE': {
       cutsceneT += dt;
-      // I2 — RNC stage backdrop with 0.85 black overlay. I5 will populate the breakdown.
+      // I5 — full score breakdown overlay. RNC stage backdrop + 0.85 black overlay (per spec).
       drawRncStage();
-      ctx.fillStyle = 'rgba(0,0,0,0.85)'; ctx.fillRect(0, 0, W, H);
-      ctx.fillStyle = '#fff'; ctx.font = 'bold 26px monospace'; ctx.textAlign = 'center';
-      ctx.fillText('LEVEL 1 COMPLETE', W/2, 300);
-      ctx.fillStyle = '#ffcc00'; ctx.font = 'bold 20px monospace';
-      ctx.fillText('SCORE: ' + Math.floor(winFinalScore), W/2, 360);
+      ctx.fillStyle = 'rgba(0,0,0,0.85)';
+      ctx.fillRect(0, 0, W, H);
+
+      // Header
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 26px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('LEVEL 1 COMPLETE', W/2, 120);
+
+      // Breakdown rows: label-left at x=70, value-right at x=410
+      const labelX = 70, valueX = 410;
+      let y = 200;
+      const ROW = 38;
+      ctx.font = 'bold 13px monospace';
+      ctx.fillStyle = '#fff';
+      function row(label, val, color) {
+        ctx.fillStyle = '#cccccc';
+        ctx.textAlign = 'left';
+        ctx.fillText(label, labelX, y);
+        ctx.fillStyle = color || '#ffeb70';
+        ctx.textAlign = 'right';
+        ctx.fillText('+' + val, valueX, y);
+        y += ROW;
+      }
+      row('Survival:',         Math.floor(stats.survivalScore),                     '#aaffaa');
+      row('Capsules cleared:', stats.clearedCount    * CAPSULE_CLEAR_SCORE,         '#aaffaa');
+      row('Helper kills:',     stats.helperKillCount * HELPER_KILL_SCORE,           '#ff88ff');
+      row('Briefcases:',       stats.briefcaseCount  * BRIEFCASE_SCORE,             '#88ff88');
+      row('Platforms:',        stats.platformCount   * PLATFORM_REACH_BONUS,        '#88ddff');
+      row('Pelosi tears:',     stats.pelosiCount     * PELOSI_BONUS,                '#ffcc00');
+      row('Time bonus:',       stats.timeBonus,                                     '#ffaa55');
+      row('WIN BONUS:',        stats.winBonus,                                      '#ffcc00');
+
+      // Divider + total
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(labelX, y - 10); ctx.lineTo(valueX, y - 10); ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 18px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText('TOTAL:', labelX, y + 18);
+      ctx.fillStyle = '#ffcc00';
+      ctx.font = 'bold 24px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(Math.floor(winFinalScore).toString(), valueX, y + 22);
+
+      // Pulsing prompt
       const pulseS = 0.5 + 0.5 * Math.sin(stateT * 4);
       ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulseS).toFixed(3) + ')';
       ctx.font = 'bold 16px monospace';
+      ctx.textAlign = 'center';
       ctx.fillText('TAP TO CONTINUE', W/2, 780);
       break;
     }
