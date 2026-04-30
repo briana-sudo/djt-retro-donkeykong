@@ -249,6 +249,17 @@ const DTJ_GAMEPLAY_X  = TOP.x + 100;   // F2: DTJ moved from TOP.x+260 to LEFT o
 let state = 'INTRO_BLACK', stateT = 0, totalT = 0;
 let skipDone = false;
 
+// H3 — restart from WIN_SEQUENCE: drop back to INTRO_BLACK so the intro replays. Gameplay state
+// (playerScore, lives, multiplier, platformsReached, all entity arrays) is reset by the existing
+// inline reset chain at the INTRO_SHATTER → GAMEPLAY transition. The transient WIN_SEQUENCE
+// overlay state (winFinalScore, winFreezeT) doesn't need reset — it's recomputed at next win.
+function restartFromWin() {
+  if (state !== 'WIN_SEQUENCE') return;
+  state = 'INTRO_BLACK';
+  stateT = 0;
+  scoreFloats.length = 0;
+}
+
 function skipToGame() {
   if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; pelosi.timer = PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN); pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; }
 }
@@ -261,9 +272,11 @@ const GAME_KEYS = new Set(['ArrowLeft','ArrowRight','Space','KeyA','KeyZ']);
 window.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (GAME_KEYS.has(e.code)) e.preventDefault();
-  // H1 — keys during WIN_FREEZE / WIN_SEQUENCE are ignored here (H3 will wire restart-on-tap).
-  // Only intro states bounce back to GAMEPLAY via skipToGame.
-  if (state !== 'GAMEPLAY' && state !== 'WIN_FREEZE' && state !== 'WIN_SEQUENCE') skipToGame();
+  // H3 — key during WIN_SEQUENCE restarts; WIN_FREEZE eats the key (still in pause). Intro
+  // states bounce to GAMEPLAY via skipToGame.
+  if (state === 'WIN_SEQUENCE') { restartFromWin(); return; }
+  if (state === 'WIN_FREEZE') return;
+  if (state !== 'GAMEPLAY') skipToGame();
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
 
@@ -2308,8 +2321,10 @@ function applyTouchState() {
 
 canvas.addEventListener('pointerdown', e => {
   e.preventDefault();
-  if (state !== 'GAMEPLAY' && state !== 'WIN_FREEZE' && state !== 'WIN_SEQUENCE') { skipToGame(); return; }
-  if (state !== 'GAMEPLAY') return;                       // H1 — ignore touch during WIN states
+  // H3 — tap during WIN_SEQUENCE restarts; WIN_FREEZE eats the tap; intro states skipToGame.
+  if (state === 'WIN_SEQUENCE') { restartFromWin(); return; }
+  if (state === 'WIN_FREEZE') return;
+  if (state !== 'GAMEPLAY') { skipToGame(); return; }
   canvas.setPointerCapture(e.pointerId);
   const r=canvas.getBoundingClientRect();
   const tx=(e.clientX-r.left)/scale, ty=(e.clientY-r.top)/scale;
@@ -2335,8 +2350,10 @@ canvas.addEventListener('pointercancel', e=>{delete activeTouches[e.pointerId]; 
 // iOS Safari fallback — touch events in case pointer events don't fire
 canvas.addEventListener('touchstart', e=>{
   e.preventDefault();
-  if (state !== 'GAMEPLAY' && state !== 'WIN_FREEZE' && state !== 'WIN_SEQUENCE') { skipToGame(); return; }
-  if (state !== 'GAMEPLAY') return;                       // H1 — ignore touch during WIN states
+  // H3 — tap during WIN_SEQUENCE restarts; WIN_FREEZE eats the tap; intro states skipToGame.
+  if (state === 'WIN_SEQUENCE') { restartFromWin(); return; }
+  if (state === 'WIN_FREEZE') return;
+  if (state !== 'GAMEPLAY') { skipToGame(); return; }
   for (const t of e.changedTouches) {
     const r=canvas.getBoundingClientRect();
     const tx=(t.clientX-r.left)/scale, ty=(t.clientY-r.top)/scale;
@@ -3013,9 +3030,13 @@ function loop(ts) {
       break;
     }
 
-    // H1 placeholder — H3 will replace with full LEVEL 1 COMPLETE overlay + tap-to-restart.
-    // For now: render the frozen gameplay + a basic centered "WIN!" panel so the trigger is
-    // visible end-to-end during H1 field test.
+    // H3 — WIN_SEQUENCE overlay + tap-to-restart wiring. Renders frozen gameplay underneath
+    // (so the won-state world stays visible) plus a centered three-line panel:
+    //   LEVEL 1 COMPLETE        — white, large
+    //   SCORE: N                — yellow, medium
+    //   TAP TO RESTART          — pulsing, small
+    // On tap/key: restartFromWin() → state='INTRO_BLACK' → intro replays → GAMEPLAY entry resets
+    // playerScore=0, lives=3, etc. via the existing inline reset chain.
     case 'WIN_SEQUENCE': {
       drawGameplay(false);
       particles.forEach(p=>{
@@ -3026,13 +3047,18 @@ function loop(ts) {
       ctx.globalAlpha=1;
       ctx.fillStyle = 'rgba(0,0,0,0.7)';
       ctx.fillRect(0, 0, W, H);
-      ctx.fillStyle = '#ffcc00';
-      ctx.font = 'bold 36px monospace';
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 26px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText('WIN!', W/2, H/2 - 10);
-      ctx.fillStyle = '#fff';
+      ctx.fillText('LEVEL 1 COMPLETE', W/2, 300);
+      ctx.fillStyle = '#ffcc00';
+      ctx.font = 'bold 20px monospace';
+      ctx.fillText('SCORE: ' + Math.floor(winFinalScore), W/2, 360);
+      // Pulsing prompt — sin oscillation 0..1 every ~1.5s
+      const pulse = 0.5 + 0.5 * Math.sin(stateT * 4);
+      ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulse).toFixed(3) + ')';
       ctx.font = 'bold 16px monospace';
-      ctx.fillText('SCORE: ' + Math.floor(winFinalScore), W/2, H/2 + 24);
+      ctx.fillText('TAP TO RESTART', W/2, 440);
       break;
     }
   }
