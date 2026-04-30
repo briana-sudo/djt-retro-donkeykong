@@ -68,15 +68,46 @@ function processSprite(name, img) {
   const id = ictx.getImageData(0, 0, w, h);
   const d = id.data;
   let transparentPixels = 0;
-  for (let i = 0; i < d.length; i += 4) {
-    if (d[i] > 240 && d[i+1] > 240 && d[i+2] > 240) {
-      d[i+3] = 0;
-      transparentPixels++;
+  // F5 — track tight bounding box of opaque pixels while alpha-keying.
+  let minX = w, maxX = -1, minY = h, maxY = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (d[i] > 240 && d[i+1] > 240 && d[i+2] > 240) {
+        d[i+3] = 0;
+        transparentPixels++;
+      } else {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
     }
   }
   ictx.putImageData(id, 0, 0);
-  spriteCache[name] = off;
-  console.log('Block A — sprite loaded:', name, w + 'x' + h, 'transparentPixels=' + transparentPixels);
+
+  // F5 — trim cached canvas to tight bounding box of non-transparent pixels.
+  // Solves the "sprite floats above platform" gap caused by JPG whitespace below the character.
+  if (maxX < 0 || maxY < 0) {
+    spriteCache[name] = off;                                            // entirely transparent — keep as-is
+    console.warn('Block A — sprite ' + name + ' fully transparent after alpha-key');
+    return;
+  }
+  const tw = maxX - minX + 1;
+  const th = maxY - minY + 1;
+  if (tw === w && th === h) {
+    spriteCache[name] = off;                                            // already tight, no trim needed
+  } else {
+    const trimmed = document.createElement('canvas');
+    trimmed.width = tw; trimmed.height = th;
+    const tctx = trimmed.getContext('2d');
+    tctx.drawImage(off, minX, minY, tw, th, 0, 0, tw, th);
+    spriteCache[name] = trimmed;
+  }
+  console.log('Block A/F5 — sprite loaded:', name,
+              'native=' + w + 'x' + h,
+              'trimmed=' + spriteCache[name].width + 'x' + spriteCache[name].height,
+              'transparentPixels=' + transparentPixels);
 }
 
 for (const [name, src] of Object.entries(spriteData)) {
@@ -90,8 +121,10 @@ for (const [name, src] of Object.entries(spriteData)) {
 }
 
 // Draw a sprite centered on x, feet at y. Uses Block A alpha-keyed cache when available.
-// footFrac: 0=top, 1=bottom (default 0.92 = near bottom)
-function drawSprite(name, x, y, targetH, flip=false, footFrac=0.92) {
+// F5 — default footFrac changed from 0.92 to 1.0 because sprites are now trimmed to tight
+// bounding box at load time; the cache's bottom row is the visible foot of the character.
+// Callers passing an explicit footFrac override the default.
+function drawSprite(name, x, y, targetH, flip=false, footFrac=1.0) {
   // Prefer the alpha-keyed cache; fall back to raw image if asset finished loading but
   // hasn't been processed yet (e.g. processSprite still queued).
   const cached = spriteCache[name];
@@ -2030,7 +2063,7 @@ function drawGameplay(shake) {
   // D.T.J. at top center — swap to throw sprite during throw window.
   // F4 — Level 1 throws are now LEFTWARD, so dtj_throw flip=true (mirrors so throwing arm faces screen-left toward the spawn arc).
   if (dtjThrowT > 0) {
-    drawSprite('dtj_throw', DTJ_GAMEPLAY_X, TOP.y, 110, true, 0.92);
+    drawSprite('dtj_throw', DTJ_GAMEPLAY_X, TOP.y, 110, true, 1.0);
   } else {
     drawSprite('dtj_idle', DTJ_GAMEPLAY_X, TOP.y, 110);
   }
