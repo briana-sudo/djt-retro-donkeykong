@@ -279,9 +279,12 @@ function cutsceneAdvance() {
     clearCaptions();
     // I-EAGLE-REWRITE (direction-fix addendum) — combo travels right→left in BETWEEN to match
     // the eagle_carry sprite's facing direction. Spawn off-screen RIGHT, mid-canvas vertically.
+    // Spawn x tuned so that 80 px/s × 4.5s of travel lands the center exactly at canvas center
+    // (W/2 = 240 with the current 480-wide canvas) — sprite holds cleanly in the middle when it
+    // slows to 0 at t=4.5s, not "too far left."
     comboActive  = true;
     dtjStageMode = 'NONE';
-    combo.x = W + COMBO_H;
+    combo.x = W / 2 + 80 * 4.5;                         // = 240 + 360 = 600 → final at W/2 = 240
     combo.y = H * 0.4 + COMBO_H * 0.5;
     state = 'CUTSCENE_BETWEEN';
     stateT = 0;
@@ -3565,14 +3568,15 @@ function loop(ts) {
 
       // I-EAGLE-REWRITE (direction-fix addendum) — eagle_carry.png shows DTJ + eagle oriented
       // for LEFTWARD flight, so the combined sprite enters from off-screen RIGHT and travels
-      // right-to-left across the sky. Same speed (80 px/s), same hold at t=4.5s, same captions.
-      // PHASE3 ascent already drifts left (-30 px/s), so combined cutscene reads consistently:
-      // eagle exits upper-left in PHASE3, then a fresh pass right→left in BETWEEN.
+      // right-to-left across the sky. Speed 80 px/s, hold at t=4.5s. Spawn x is tuned so the
+      // sprite lands at canvas center (W/2 = 240) cleanly, not too far left. PHASE3 ascent
+      // already drifts left (-30 px/s), so combined cutscene reads consistently: eagle exits
+      // upper-left in PHASE3, then a fresh pass right→left in BETWEEN.
       // Mutually exclusive: never render an individual DTJ sprite here. dtjStageMode = 'NONE'.
       if (!comboActive) {
         comboActive  = true;
         dtjStageMode = 'NONE';
-        combo.x = W + COMBO_H;                            // off-screen right
+        combo.x = W / 2 + 80 * 4.5;                       // = 600; lands at W/2 at t=4.5s
         combo.y = H * 0.4 + COMBO_H * 0.5;                // mid-canvas vertically
       }
       if (stateT < 4.5) combo.x -= 80 * dt;               // leftward at 80 px/s; hold from t=4.5s
