@@ -67,13 +67,32 @@ function processSprite(name, img) {
   ictx.drawImage(img, 0, 0);
   const id = ictx.getImageData(0, 0, w, h);
   const d = id.data;
+
+  // G1 — sample background color from the top-left corner. JPG backgrounds aren't always pure
+  // white (R=240+); they're often off-white (R~225–240) and the strict 240-threshold misses them.
+  // We treat any pixel whose channels are all close to the corner color (Manhattan distance) as
+  // background AND keep the strict near-white catch as a safety net.
+  const bgR = d[0], bgG = d[1], bgB = d[2];
+  const cornerSum = bgR + bgG + bgB;
+  const cornerIsLight = cornerSum > 600;     // avg channel > 200 → corner looks like background
+  const COLOR_TOL = 30;                      // Manhattan tolerance for "same as background"
+
   let transparentPixels = 0;
+  let cornerKilled = 0;                      // pixels removed by corner-color match (diagnostic)
+  let strictKilled = 0;                      // pixels removed by strict R>240 white check
   // F5 — track tight bounding box of opaque pixels while alpha-keying.
   let minX = w, maxX = -1, minY = h, maxY = -1;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
-      if (d[i] > 240 && d[i+1] > 240 && d[i+2] > 240) {
+      const r = d[i], g = d[i+1], b = d[i+2];
+      let keyOut = false;
+      if (r > 240 && g > 240 && b > 240) { keyOut = true; strictKilled++; }
+      else if (cornerIsLight &&
+               Math.abs(r - bgR) + Math.abs(g - bgG) + Math.abs(b - bgB) < COLOR_TOL) {
+        keyOut = true; cornerKilled++;
+      }
+      if (keyOut) {
         d[i+3] = 0;
         transparentPixels++;
       } else {
@@ -86,17 +105,22 @@ function processSprite(name, img) {
   }
   ictx.putImageData(id, 0, 0);
 
+  // G1 — runtime assertion: light corner but zero removed = something is wrong with this asset.
+  if (cornerIsLight && transparentPixels === 0) {
+    console.error('G1 — sprite ' + name + ' has light corner (' + bgR + ',' + bgG + ',' + bgB +
+                  ') but ZERO transparent pixels removed. JPG background may be unusual.');
+  }
+
   // F5 — trim cached canvas to tight bounding box of non-transparent pixels.
-  // Solves the "sprite floats above platform" gap caused by JPG whitespace below the character.
   if (maxX < 0 || maxY < 0) {
-    spriteCache[name] = off;                                            // entirely transparent — keep as-is
-    console.warn('Block A — sprite ' + name + ' fully transparent after alpha-key');
+    spriteCache[name] = off;
+    console.warn('G1 — sprite ' + name + ' fully transparent after alpha-key');
     return;
   }
   const tw = maxX - minX + 1;
   const th = maxY - minY + 1;
   if (tw === w && th === h) {
-    spriteCache[name] = off;                                            // already tight, no trim needed
+    spriteCache[name] = off;
   } else {
     const trimmed = document.createElement('canvas');
     trimmed.width = tw; trimmed.height = th;
@@ -104,10 +128,12 @@ function processSprite(name, img) {
     tctx.drawImage(off, minX, minY, tw, th, 0, 0, tw, th);
     spriteCache[name] = trimmed;
   }
-  console.log('Block A/F5 — sprite loaded:', name,
+  console.log('G1 — sprite loaded:', name,
               'native=' + w + 'x' + h,
               'trimmed=' + spriteCache[name].width + 'x' + spriteCache[name].height,
-              'transparentPixels=' + transparentPixels);
+              'corner=(' + bgR + ',' + bgG + ',' + bgB + ')',
+              'transparentPixels=' + transparentPixels,
+              '(strict=' + strictKilled + ' corner=' + cornerKilled + ')');
 }
 
 for (const [name, src] of Object.entries(spriteData)) {
@@ -120,19 +146,21 @@ for (const [name, src] of Object.entries(spriteData)) {
   sprites[name].src = src;
 }
 
-// Draw a sprite centered on x, feet at y. Uses Block A alpha-keyed cache when available.
-// F5 — default footFrac changed from 0.92 to 1.0 because sprites are now trimmed to tight
-// bounding box at load time; the cache's bottom row is the visible foot of the character.
-// Callers passing an explicit footFrac override the default.
+// Draw a sprite centered on x, feet at y. ALWAYS uses the alpha-keyed cached canvas.
+// G1 — raw-img fallback removed. If the cache is missing for a loaded sprite, we log loudly
+// and SKIP the draw rather than fall back to the un-keyed JPG (that fallback was the source
+// of the white/gray boxes around briefcase, barrel, etc.).
 function drawSprite(name, x, y, targetH, flip=false, footFrac=1.0) {
-  // Prefer the alpha-keyed cache; fall back to raw image if asset finished loading but
-  // hasn't been processed yet (e.g. processSprite still queued).
   const cached = spriteCache[name];
-  const img = sprites[name];
-  const drawable = cached || img;
-  if (!drawable) return;
-  const nw = cached ? cached.width  : (img && img.naturalWidth);
-  const nh = cached ? cached.height : (img && img.naturalHeight);
+  if (!cached) {
+    const img = sprites[name];
+    if (img && img.complete && img.naturalWidth) {
+      // Loaded but somehow not in cache — should never happen; surface immediately.
+      console.error('drawSprite: cache MISSING for loaded sprite "' + name + '"');
+    }
+    return;                                                              // skip draw — never use raw img
+  }
+  const nw = cached.width, nh = cached.height;
   if (!nw || !nh) return;
 
   const aspect = nw / nh;
@@ -142,7 +170,7 @@ function drawSprite(name, x, y, targetH, flip=false, footFrac=1.0) {
 
   ctx.save();
   if (flip) { ctx.translate(drawX*2 + targetW, 0); ctx.scale(-1, 1); }
-  ctx.drawImage(drawable, drawX, drawY, targetW, targetH);
+  ctx.drawImage(cached, drawX, drawY, targetW, targetH);
   ctx.restore();
 }
 
