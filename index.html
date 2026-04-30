@@ -138,22 +138,22 @@ window.addEventListener('resize', resize);
 //  GAME LAYOUT DATA
 // ─────────────────────────────────────────────
 const PLAT_H = 14;
-// Block 2.6 — redesigned geometry v2 (pre-audited 6/6 PASS in design phase).
+// Block B — geometry per Notion spec (canonical baseline). Pre-audited 6/6 PASS.
 const platforms = [
-  { x:   0, y: 790, w: 480, h: 14, tilt:  0    },  // FLOOR (flat)
-  { x:  10, y: 660, w: 460, h: 14, tilt:  2.5  },  // P1 left-down
-  { x:  20, y: 530, w: 420, h: 14, tilt: -2.5  },  // P2 right-down
-  { x:  50, y: 400, w: 420, h: 14, tilt:  2.5  },  // P3 left-down
-  { x:  80, y: 270, w: 360, h: 14, tilt: -2.5  },  // P4 right-down
-  { x: 110, y: 140, w: 240, h: 14, tilt:  0    }   // TOP (flat)
+  { x:  0, y: 790, w: 480, h: 14, tilt:  0   },  // FLOOR — full width
+  { x: 80, y: 660, w: 400, h: 14, tilt: -2.5 },  // P1 — tilts right-down
+  { x: 10, y: 530, w: 370, h: 14, tilt:  2.5 },  // P2 — tilts left-down
+  { x: 80, y: 400, w: 370, h: 14, tilt: -2.5 },  // P3
+  { x: 10, y: 270, w: 370, h: 14, tilt:  2.5 },  // P4
+  { x: 60, y: 140, w: 360, h: 14, tilt:  0   }   // TOP — DTJ stands here
 ];
 const ladders = [
-  { x: 108, y: 651, h: 139 },  // [0] FLOOR -> P1 left  (cx=120)
-  { x: 368, y: 662, h: 128 },  // [1] FLOOR -> P1 right (cx=380)
-  { x: 228, y: 526, h: 134 },  // [2] P1 -> P2          (cx=240)
-  { x: 338, y: 400, h: 125 },  // [3] P2 -> P3          (cx=350)
-  { x: 188, y: 269, h: 128 },  // [4] P3 -> P4          (cx=200)
-  { x: 268, y: 136, h: 133 }   // [5] P4 -> TOP         (cx=280)
+  { x:  80, y: 672, h: 118 },  // [0] FLOOR -> P1 left  (cx=92, inside P1 x=80)
+  { x: 370, y: 672, h: 118 },  // [1] FLOOR -> P1 right
+  { x: 120, y: 548, h: 118 },  // [2] P1 -> P2
+  { x: 340, y: 419, h: 118 },  // [3] P2 -> P3
+  { x:  90, y: 289, h: 118 },  // [4] P3 -> P4
+  { x: 350, y: 159, h: 118 }   // [5] P4 -> TOP
 ];
 const LADDER_W = 24;
 const TOP = platforms[5];
