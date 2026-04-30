@@ -260,18 +260,30 @@ let skipDone = false;
 function cutsceneAdvance() {
   if (state === 'CUTSCENE_PHASE1' || state === 'CUTSCENE_PHASE3') {
     if (cutsceneT >= CUTSCENE_SKIP_THRESHOLD) {
+      // I-CORR-3 — skipping past the dialogue phases drops any still-queued captions so they
+      // don't carry into SCORE. The SCORE breakdown is read silently.
+      clearCaptions();
       state = 'CUTSCENE_SCORE';
       stateT = 0;
     }
     return;
   }
   if (state === 'CUTSCENE_SCORE') {
+    // I-CORR-3 — any leftover SCORE caption tail is cleared before BETWEEN seeds its rotation.
+    clearCaptions();
     state = 'CUTSCENE_BETWEEN';
     stateT = 0;
     seedCutsceneClouds();                                 // I2 — fresh cloud layout each visit
+    // I-CORR-3 — push the 3 BETWEEN dialogue lines on transition entry (no fade between, but the
+    // caption strip still applies its own 0.2s fade-in / 0.3s fade-out per line).
+    pushCaption('DJT', 'THANK YOU PATRIOTS!',     1.5);
+    pushCaption('DJT', 'GREATEST VOTERS EVER!',   1.5);
+    pushCaption('DJT', 'WE LOVE THE EAGLE!',      1.5);
     return;
   }
   if (state === 'CUTSCENE_BETWEEN') {
+    // I-CORR-3 — drop any tail before returning to the intro loop.
+    clearCaptions();
     state = 'INTRO_BLACK';
     stateT = 0;
     scoreFloats.length = 0;
@@ -685,6 +697,9 @@ function triggerWin() {
   // I5 — snapshot final score now so the breakdown matches what the player sees on the WIN screen
   // even if survival/animation continues to add a few points during the cutscene.
   winFinalScore = playerScore;
+  // I-CORR-3 — make sure no stale caption lingers from a prior win cycle. The PHASE1 captions are
+  // pushed on FADE_IN→PHASE1 entry, so the queue should be empty at WIN_FREEZE start.
+  clearCaptions();
 }
 
 // C3 / D1 — DTJ throw animation state machine. On capsule spawn timer fire (and only if IDLE):
@@ -2639,93 +2654,121 @@ function drawBubble(x, y, text, alpha) {
   ctx.restore();
 }
 
-// I3 / I-CORR — speech bubble for cutscene dialogue.
-//   speakerCx, speakerHeadY: world-space point that the bubble tail tip points down to
-//                            (typically center-x and top-of-sprite y of the speaker).
-//   text: arbitrary string. Word-wrapped to MAX_BUBBLE_WIDTH=140.
-//   alpha: 0..1 fade.
-// Bubble sits with its bottom 12px above (speakerCx, speakerHeadY), centered on speakerCx.
-// If centering would push the bubble off the canvas edge, it's clamped — but the tail still
-// points to speakerCx, so the bubble can sit further left/right than the speaker without
-// breaking the visual link.
-const MAX_BUBBLE_WIDTH  = 140;
-const MIN_BUBBLE_WIDTH  =  80;
-const BUBBLE_PADDING    =   8;
-const BUBBLE_LINE_HEIGHT = 16;
-const BUBBLE_GAP_ABOVE_HEAD = 12;
-function wrapBubbleText(text, maxTextWidth) {
-  const words = text.split(' ');
+// I-CORR-3 — top-of-canvas caption system. Replaces the per-character speech bubbles for ALL
+// cutscene dialogue. ONE caption visible at a time. Sub-states FADE_IN → HOLD → FADE_OUT.
+// Renders a strip directly under the ticker bar with a color-coded speaker label and centered
+// dialogue text (auto-wrapped, max 3 lines, ellipsis if longer).
+const captionQueue = [];
+let captionCurrent = null;          // { speaker, text, holdSec }
+let captionPhase = 'idle';          // 'idle' | 'fadein' | 'hold' | 'fadeout'
+let captionPhaseT = 0;
+const CAPTION_FADE_IN     = 0.2;
+const CAPTION_FADE_OUT    = 0.3;
+const CAPTION_DEFAULT_HOLD = 1.5;
+
+function pushCaption(speaker, text, holdSec) {
+  captionQueue.push({ speaker: speaker, text: text, holdSec: (holdSec != null ? holdSec : CAPTION_DEFAULT_HOLD) });
+}
+
+function clearCaptions() {
+  captionQueue.length = 0;
+  captionCurrent = null;
+  captionPhase = 'idle';
+  captionPhaseT = 0;
+}
+
+function tickCaptions(dt) {
+  if (captionPhase === 'idle') {
+    if (captionQueue.length > 0) {
+      captionCurrent = captionQueue.shift();
+      captionPhase = 'fadein';
+      captionPhaseT = 0;
+    }
+    return;
+  }
+  captionPhaseT += dt;
+  if (captionPhase === 'fadein' && captionPhaseT >= CAPTION_FADE_IN) {
+    captionPhase = 'hold';
+    captionPhaseT = 0;
+  } else if (captionPhase === 'hold' && captionPhaseT >= captionCurrent.holdSec) {
+    captionPhase = 'fadeout';
+    captionPhaseT = 0;
+  } else if (captionPhase === 'fadeout' && captionPhaseT >= CAPTION_FADE_OUT) {
+    captionPhase = 'idle';
+    captionCurrent = null;
+    captionPhaseT = 0;
+  }
+}
+
+function renderCutsceneCaption() {
+  if (!captionCurrent) return;
+  const cap = captionCurrent;
+  let alpha = 1;
+  if      (captionPhase === 'fadein')  alpha = Math.min(1, captionPhaseT / CAPTION_FADE_IN);
+  else if (captionPhase === 'fadeout') alpha = Math.max(0, 1 - captionPhaseT / CAPTION_FADE_OUT);
+
+  const STRIP_TOP_Y     = TICKER_Y + TICKER_HEIGHT + 4;     // = 22 + 4 = ~22px under ticker
+  const PAD_X           = 16;
+  const PAD_Y           = 8;
+  const SPEAKER_FONT_PX = 12;
+  const TEXT_FONT_PX    = 18;
+  const LINE_HEIGHT     = 22;
+  const MAX_LINES       = 3;
+
+  // Word-wrap dialogue to canvas width minus padding.
+  ctx.save();
+  ctx.font = 'bold ' + TEXT_FONT_PX + 'px monospace';
+  const maxTextWidth = W - 2 * PAD_X;
+  const words = cap.text.split(' ');
   const lines = [];
   let cur = '';
   for (const word of words) {
+    if (lines.length >= MAX_LINES) break;
     const trial = cur ? cur + ' ' + word : word;
-    if (ctx.measureText(trial).width <= maxTextWidth) {
-      cur = trial;
-    } else {
-      if (cur) lines.push(cur);
-      cur = word;
-    }
+    if (ctx.measureText(trial).width <= maxTextWidth) cur = trial;
+    else { if (cur) lines.push(cur); cur = word; }
   }
-  if (cur) lines.push(cur);
-  return lines;
-}
-function drawCutsceneBubble(speakerCx, speakerHeadY, text, alpha) {
-  ctx.save();
+  if (cur && lines.length < MAX_LINES) lines.push(cur);
+  // Truncation guard: if user passes a long string AND wrap exceeds MAX_LINES, append ellipsis.
+  if (lines.length === MAX_LINES) {
+    let combinedLength = 0;
+    for (const ln of lines) combinedLength += ln.length + 1;
+    if (combinedLength < cap.text.length) lines[MAX_LINES - 1] += '…';
+  }
+
+  const stripH = PAD_Y + SPEAKER_FONT_PX + 4 + lines.length * LINE_HEIGHT + PAD_Y;
+
   ctx.globalAlpha = alpha;
-  const fontPx = 12;
-  ctx.font = 'bold ' + fontPx + 'px monospace';
+  // Strip background — semi-transparent black, full canvas width
+  ctx.fillStyle = 'rgba(0,0,0,0.85)';
+  ctx.fillRect(0, STRIP_TOP_Y, W, stripH);
+  // Top + bottom 1px gold borders
+  ctx.fillStyle = 'rgba(204,153,51,0.9)';
+  ctx.fillRect(0, STRIP_TOP_Y, W, 1);
+  ctx.fillRect(0, STRIP_TOP_Y + stripH - 1, W, 1);
 
-  // Word-wrap
-  const maxTextWidth = MAX_BUBBLE_WIDTH - 2 * BUBBLE_PADDING;
-  const lines = wrapBubbleText(text, maxTextWidth);
-
-  // Bubble dims: width = max(min, longestLineWidth+2*pad) clamped to MAX
-  let longestW = 0;
-  for (const line of lines) longestW = Math.max(longestW, ctx.measureText(line).width);
-  const bw = Math.max(MIN_BUBBLE_WIDTH,
-                      Math.min(MAX_BUBBLE_WIDTH, Math.ceil(longestW) + 2 * BUBBLE_PADDING));
-  const bh = lines.length * BUBBLE_LINE_HEIGHT + 2 * BUBBLE_PADDING;
-
-  // Position: bubble bottom = speakerHeadY - 12 (gap), centered on speakerCx, then edge-clamp.
-  const bubbleBottomY = speakerHeadY - BUBBLE_GAP_ABOVE_HEAD;
-  const bubbleTopY    = bubbleBottomY - bh;
-  let bubbleCenterX   = speakerCx;
-  if (bubbleCenterX - bw/2 < 4)       bubbleCenterX = 4 + bw/2;
-  else if (bubbleCenterX + bw/2 > W - 4) bubbleCenterX = W - 4 - bw/2;
-  const bubbleLeftX = bubbleCenterX - bw/2;
-
-  // Bubble box
-  ctx.fillStyle = '#fff';
-  ctx.strokeStyle = '#cc0000';
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.roundRect(bubbleLeftX, bubbleTopY, bw, bh, 8);
-  ctx.fill();
-  ctx.stroke();
-
-  // Tail: base on bubble bottom edge near where speakerCx sits horizontally; tip at the actual
-  // speaker (speakerCx, speakerHeadY). Even when bubble is edge-clamped, tail points back to
-  // speaker so the visual link is preserved.
-  const tailHalf = 9;
-  const tailBaseCenterX = Math.max(bubbleLeftX + tailHalf + 2,
-                                   Math.min(bubbleLeftX + bw - tailHalf - 2, speakerCx));
-  ctx.beginPath();
-  ctx.moveTo(tailBaseCenterX - tailHalf, bubbleBottomY);
-  ctx.lineTo(speakerCx,                  speakerHeadY);
-  ctx.lineTo(tailBaseCenterX + tailHalf, bubbleBottomY);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-
-  // Text — top-aligned with PADDING on top; one line per BUBBLE_LINE_HEIGHT.
-  ctx.fillStyle = '#cc0000';
-  ctx.textAlign = 'center';
+  // Speaker label (color-coded)
+  let speakerColor;
+  if      (cap.speaker === 'DNC') speakerColor = '#88aaff';
+  else if (cap.speaker === 'DJT') speakerColor = '#ffcc00';
+  else                              speakerColor = '#ffffff';
+  ctx.fillStyle = speakerColor;
+  ctx.font = 'bold ' + SPEAKER_FONT_PX + 'px monospace';
+  ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  for (let i = 0; i < lines.length; i++) {
-    const ly = bubbleTopY + BUBBLE_PADDING + i * BUBBLE_LINE_HEIGHT;
-    ctx.fillText(lines[i], bubbleCenterX, ly + 1);
+  ctx.fillText(cap.speaker + ':', PAD_X, STRIP_TOP_Y + PAD_Y);
+
+  // Dialogue lines
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold ' + TEXT_FONT_PX + 'px monospace';
+  ctx.textAlign = 'center';
+  let ly = STRIP_TOP_Y + PAD_Y + SPEAKER_FONT_PX + 4;
+  for (const line of lines) {
+    ctx.fillText(line, W / 2, ly);
+    ly += LINE_HEIGHT;
   }
-  ctx.textBaseline = 'alphabetic';   // restore default
+
+  ctx.textBaseline = 'alphabetic';
   ctx.restore();
 }
 
@@ -2870,6 +2913,10 @@ function loop(ts) {
     sf.y -= 30 * dt;
     if (sf.t >= SCORE_FLOAT_LIFETIME) scoreFloats.splice(i, 1);
   }
+
+  // I-CORR-3 — top-of-canvas caption strip (fade-in → hold → fade-out → next from queue).
+  // Ticks every frame regardless of state so out-of-CUTSCENE clears settle naturally.
+  tickCaptions(dt);
 
   // State transitions
   switch(state) {
@@ -3281,6 +3328,10 @@ function loop(ts) {
       if (stateT >= CUTSCENE_FADE_DURATION) {
         state = 'CUTSCENE_PHASE1';
         stateT = 0;
+        // I-CORR-3 — push the two PHASE1 dialogue captions on transition entry. They render in the
+        // top-of-canvas strip (single visible at a time, fade-in/hold/fade-out).
+        pushCaption('DNC', "YOU'RE FIRED, MR. PRESIDENT!", 1.8);
+        pushCaption('DJT', 'WITCH HUNT!', 1.2);
       }
       break;
     }
@@ -3303,17 +3354,8 @@ function loop(ts) {
       const dtjX = 320;
       drawSprite('dtj_idle', dtjX, STAGE_FLOOR_Y, 80, false, 1.0);
 
-      // Speech bubbles. DNC fires at t=0.0, DTJ at t=0.3. Both hold 1.5s then fade over 0.3s.
-      // DNC: visible 0.0 → 1.8 (1.5 hold + 0.3 fade)
-      if (stateT < 1.8) {
-        const a = stateT < 1.5 ? 1.0 : Math.max(0, 1 - (stateT - 1.5) / 0.3);
-        drawCutsceneBubble(dncX, STAGE_FLOOR_Y - 50, "YOU'RE FIRED, MR. PRESIDENT!", a);
-      }
-      // DTJ: visible 0.3 → 2.1
-      if (stateT >= 0.3 && stateT < 2.1) {
-        const a = stateT < 1.8 ? 1.0 : Math.max(0, 1 - (stateT - 1.8) / 0.3);
-        drawCutsceneBubble(dtjX, STAGE_FLOOR_Y - 80, "WITCH HUNT!", a);
-      }
+      // I-CORR-3 — captions render in the top strip (pushed on FADE_IN→PHASE1 entry).
+      renderCutsceneCaption();
 
       if (stateT >= CUTSCENE_PHASE1_DURATION) {
         state = 'CUTSCENE_PHASE3';
@@ -3356,6 +3398,8 @@ function loop(ts) {
           eagle.mode = 'ascend';
           eagle.timer = 0;
           eagle.ascentStart = stateT;
+          // I-CORR-3 — push the ascent caption when the grab completes. Hold 2.0s, then fade-out.
+          pushCaption('DJT', 'THANK YOU PATRIOTS!', 2.0);
         }
       } else if (eagle.mode === 'ascend') {
         eagle.timer += dt;
@@ -3365,18 +3409,14 @@ function loop(ts) {
         const dtjY = eagle.y + 60;                      // DTJ pinned below eagle
         drawSprite('dtj_idle',    dtjX, dtjY, 80, false, 1.0);
         drawSprite('eagle_carry', eagle.x, eagle.y, 80, false, 1.0);
-        // "THANK YOU PATRIOTS!" — visible 0..2.0s of ascent, fades over 0.3s
-        if (eagle.timer < 2.3) {
-          const a = eagle.timer < 2.0 ? 1.0 : Math.max(0, 1 - (eagle.timer - 2.0) / 0.3);
-          // Bubble anchored above DTJ's head (DTJ top ≈ dtjY - 80)
-          drawCutsceneBubble(dtjX, dtjY - 80, 'THANK YOU PATRIOTS!', a);
-        }
         if (eagle.y < -100) {
           state = 'CUTSCENE_SCORE';
           stateT = 0;
           eagle.mode = 'idle';                          // reset for next cutscene run
         }
       }
+      // I-CORR-3 — caption strip renders on top of stage in all eagle modes.
+      renderCutsceneCaption();
       break;
     }
 
@@ -3436,6 +3476,9 @@ function loop(ts) {
       ctx.font = 'bold 16px monospace';
       ctx.textAlign = 'center';
       ctx.fillText('TAP TO CONTINUE', W/2, 780);
+
+      // I-CORR-3 — render any caption that's still fading out from PHASE3 ascent.
+      renderCutsceneCaption();
       break;
     }
 
@@ -3459,14 +3502,9 @@ function loop(ts) {
       drawSprite('dtj_idle',    dtjX, dtjY, 80, false, 1.0);
       drawSprite('eagle_carry', eagle.x, eagle.y, 80, false, 1.0);
 
-      // I6 — DTJ speech bubble rotation (3 lines, each 1.5s, no fade)
-      let bubbleText = null;
-      if      (stateT < 1.5) bubbleText = 'THANK YOU PATRIOTS!';
-      else if (stateT < 3.0) bubbleText = 'GREATEST VOTERS EVER!';
-      else if (stateT < 4.5) bubbleText = 'WE LOVE THE EAGLE!';
-      if (bubbleText) {
-        drawCutsceneBubble(dtjX, dtjY - 80, bubbleText, 1.0);
-      }
+      // I-CORR-3 — DTJ caption rotation now lives in the top-of-canvas strip; the 3 lines were
+      // pushed to the queue in cutsceneAdvance (SCORE→BETWEEN). renderCutsceneCaption() draws
+      // whichever is current.
 
       // I6 — at t=5.0s reveal LEVEL 2 COMING SOON header + TAP TO RESTART prompt
       if (stateT >= 5.0) {
@@ -3479,6 +3517,9 @@ function loop(ts) {
         ctx.font = 'bold 14px monospace';
         ctx.fillText('TAP TO RESTART', W/2, 260);
       }
+
+      // I-CORR-3 — caption strip on top of sky.
+      renderCutsceneCaption();
       break;
     }
   }
