@@ -2243,18 +2243,25 @@ function drawDpad() {
   ctx.restore();
 }
 
+// E2 — top-bar layout (top to bottom): HUD then ticker. Named constants pin both stripes
+// against the top edge of the canvas so a future swap or resize lives in one place.
+const HUD_Y         = 0;
+const HUD_HEIGHT    = 24;
+const TICKER_Y      = HUD_Y + HUD_HEIGHT;       // = 24, directly below HUD
+const TICKER_HEIGHT = 18;
+
 function drawTicker() {
-  const ty=30;
-  ctx.fillStyle='#cc0000'; ctx.fillRect(0,ty,W,18);
-  // BREAKING badge
-  ctx.fillStyle='#ffff00'; ctx.fillRect(0,ty,70,18);
+  const ty = TICKER_Y;
+  ctx.fillStyle='#cc0000'; ctx.fillRect(0,ty,W,TICKER_HEIGHT);
+  // BREAKING badge — yellow on the LEFT, unchanged
+  ctx.fillStyle='#ffff00'; ctx.fillRect(0,ty,70,TICKER_HEIGHT);
   ctx.fillStyle='#cc0000'; ctx.font='bold 9px monospace'; ctx.textAlign='center';
   ctx.fillText('BREAKING',35,ty+13);
   // Divider
-  ctx.fillStyle='#fff'; ctx.fillRect(70,ty+2,2,14);
+  ctx.fillStyle='#fff'; ctx.fillRect(70,ty+2,2,TICKER_HEIGHT-4);
   // Scrolling text
   ctx.save();
-  ctx.beginPath(); ctx.rect(72,ty,W-72,18); ctx.clip();
+  ctx.beginPath(); ctx.rect(72,ty,W-72,TICKER_HEIGHT); ctx.clip();
   ctx.fillStyle='#ffff00'; ctx.font='bold 10px monospace'; ctx.textAlign='left';
   ctx.fillText(TICKER, tickX, ty+13);
   ctx.restore();
@@ -2290,24 +2297,27 @@ function drawHeart(cx, cy, size, filled) {
 }
 
 function drawHUD() {
-  ctx.fillStyle='rgba(0,0,10,0.88)'; ctx.fillRect(0,0,W,30);
+  // E2 — HUD bar pinned at top (y=0..HUD_HEIGHT). Hearts on left, title centered, score on right.
+  ctx.fillStyle='rgba(0,0,10,0.88)'; ctx.fillRect(0, HUD_Y, W, HUD_HEIGHT);
   // Block 3 — three hearts: filled = remaining, outlined = lost
-  const heartSize = 14, heartGap = 4, startX = 8 + heartSize / 2, heartY = 15;
+  const heartSize = 14, heartGap = 4, startX = 8 + heartSize / 2, heartY = HUD_Y + 12;
   for (let i = 0; i < 3; i++) {
     drawHeart(startX + i * (heartSize + heartGap), heartY, heartSize, i < player.lives);
   }
   ctx.fillStyle='#ffffff'; ctx.font='bold 13px monospace'; ctx.textAlign='center';
-  ctx.fillText('DNC vs DJT', W/2, 21);
+  ctx.fillText('DNC vs DJT', W/2, HUD_Y + 17);
   ctx.fillStyle='#ffcc00'; ctx.textAlign='right';
-  // Block D — real score + multiplier badge (only visible while boosted)
-  ctx.fillText('SCORE: ' + playerScore, W-8, 21);
+  // Block D — real score + multiplier badge. E2 — badge pulled out of the HUD bar and placed
+  // below the ticker so it stays visible (was hidden by ticker overlay in the old layout).
+  ctx.fillText('SCORE: ' + playerScore, W-8, HUD_Y + 17);
   if (multiplier > 1.0) {
+    const badgeY = TICKER_Y + TICKER_HEIGHT;     // sits flush under the ticker
     ctx.fillStyle = 'rgba(0,30,15,0.85)';
-    ctx.fillRect(W-58, 30, 58, 16);
+    ctx.fillRect(W-58, badgeY, 58, 16);
     ctx.fillStyle = '#44ff88';
     ctx.font = 'bold 11px monospace';
     ctx.textAlign = 'right';
-    ctx.fillText('×' + multiplier.toFixed(1), W-8, 42);
+    ctx.fillText('×' + multiplier.toFixed(1), W-8, badgeY + 12);
   }
 }
 
