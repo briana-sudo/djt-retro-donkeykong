@@ -251,25 +251,37 @@ const DTJ_GAMEPLAY_X  = TOP.x + 100;   // F2: DTJ moved from TOP.x+260 to LEFT o
 // ─────────────────────────────────────────────
 // INTRO_BLACK → INTRO_TITLE → INTRO_ESCALATOR → INTRO_STAIRS
 // → INTRO_TAUNT → INTRO_SHATTER → GAMEPLAY
-// J — added DEATH_FREEZE (mid-gameplay capsule-hit pause) and GAME_OVER (overlay + tap-to-restart).
-//     DEATH_FREEZE → GAMEPLAY (respawn) | GAME_OVER (last life)
+// J — added DEATH_REACTION (ragdoll-and-burst on capsule hit) and GAME_OVER (overlay + tap-to-restart).
+//     DEATH_REACTION → GAMEPLAY (respawn) | GAME_OVER (last life)
 //     GAME_OVER tap → INTRO_BLACK (full reset; the codebase has no separate 'STARTING' state —
 //     INTRO_BLACK is the start of the intro chain that the spec calls "STARTING").
 let state = 'INTRO_BLACK', stateT = 0, totalT = 0;
 let skipDone = false;
 
-// J — lives flow + high-score persistence.
-//   DEATH_FREEZE: 0.5s pause after a capsule hit. Player frozen, capsules continue. At end of
-//     freeze: decrement lives → respawn at FLOOR (lives>0) or transition to GAME_OVER (lives==0).
-//     PLACEHOLDER — Block L replaces the freeze with the YMCA dance.
-//   GAME_OVER: breakdown overlay (reuses CUTSCENE_SCORE layout), shows final + high score, tap
-//     to fully reset and replay intro. highScore persists in localStorage across sessions.
-const DEATH_FREEZE_DURATION = 0.5;
-let   deathFreezeT          = 0;
-let   gameOverFinalScore    = 0;
-let   highScore             = 0;
-let   highScoreNew          = false;       // true on game over if final beat the prior high
-const HIGH_SCORE_KEY        = 'djt_high_score';
+// J — lives flow + high-score persistence + ragdoll-burst death reaction.
+//   DEATH_REACTION: 1.2s total — gameplay-overlay (NOT a freeze). Capsules / helpers / Pelosi
+//     keep updating beneath. Player physics handled separately in the DEATH_REACTION case.
+//       phase1 'ragdoll' (0.0–0.8s): launched in capsule's vx direction (deathVx) + small upward
+//         pop (deathVy=-200), gravity applies, rotates 720°/s, ignores platform collision.
+//       phase2 'burst'   (transition→1.2s): triggered when player.y > FLOOR.y+40 OR phase1
+//         elapsed >= 0.8s. Spawns ~12 debris rects + 1-frame white flash. Player sprite is
+//         suppressed; debris IS the player visual now.
+//     At t=1.2s: lives -= 1 → respawn (lives>0) or GAME_OVER (lives==0).
+//     Block L (DTJ YMCA dance) will play simultaneously on top of this — coexist, don't gate.
+//   GAME_OVER: breakdown overlay (reuses CUTSCENE_SCORE layout via drawScoreBreakdown). Shows
+//     final + high score + creator credit. Tap → restartFromGameOver → INTRO_BLACK.
+const DEATH_REACTION_DURATION   = 1.2;
+const DEATH_PHASE1_MAX_DURATION = 0.8;     // hard cap on ragdoll phase even if player stays on-screen
+const DEATH_BURST_FALL_TRIGGER  = 40;      // px below FLOOR before phase1→phase2 forced
+const DEATH_DEBRIS_COUNT        = 12;
+let   deathReactionT            = 0;
+let   deathPhase                = 'phase1';// 'phase1' | 'phase2'
+let   deathBurstFlashT          = 0;       // ticks down from 1 to 0 across one frame after burst
+const deathDebris               = [];
+let   gameOverFinalScore        = 0;
+let   highScore                 = 0;
+let   highScoreNew              = false;   // true on game over if final beat the prior high
+const HIGH_SCORE_KEY            = 'djt_high_score';
 function loadHighScore() {
   try {
     const raw = localStorage.getItem(HIGH_SCORE_KEY);
@@ -354,7 +366,7 @@ window.addEventListener('keydown', e => {
   // WIN_FREEZE eats input (still in pause). Intro states bounce to GAMEPLAY via skipToGame.
   // J — DEATH_FREEZE eats input (placeholder; Block L's YMCA dance handles its own timing).
   //     GAME_OVER tap routes through restartFromGameOver — full reset, replay intro.
-  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_FREEZE') return;
+  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_REACTION') return;
   if (state === 'GAME_OVER') { restartFromGameOver(); return; }
   if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
   if (state !== 'GAMEPLAY') skipToGame();
@@ -838,6 +850,11 @@ function updateCapsules(dt) {
 
   for (let i = capsules.length - 1; i >= 0; i--) {
     const c = capsules[i];
+    // J — Pelosi-carried capsules are position-controlled by updatePelosi (CARRY_TO_ANCHOR).
+    // Skip ALL physics, off-screen despawn, player-collision, and clear-bonus checks for these.
+    // The carried capsule rejoins normal flow only if Pelosi shrugs (carried flag cleared) or
+    // gets despawned at SLAM (capsule spliced from array).
+    if (c.carried) continue;
 
     if (c.rolling && c.onPlat) {
       // D2 — FLOOR is the only flat platform where direction is forced (rightward, toward Pelosi).
@@ -934,7 +951,7 @@ function updateCapsules(dt) {
     // doesn't cost a life after the win trigger has fired.
     if (state === 'GAMEPLAY' && !capsuleOnAbove && playerOverlap) {
       c.collided = true;
-      hit('capsule');                                     // decrement lives + i-frames; no splice
+      hit('capsule', c);                                  // J — pass capsule ref so DEATH_REACTION ragdoll launches in capsule.vx direction
     }
     // H2 — "jumped over" bonus: capsule's x crossed the player's x without ever colliding.
     // Same-platform OR fallen-below-player AND not-yet-counted. Award once per capsule.
@@ -956,20 +973,35 @@ function updateCapsules(dt) {
   }
 }
 
-// J — capsule contact enters DEATH_FREEZE (0.5s pause). Lives are decremented at END of the
-// freeze, then the state machine branches to GAMEPLAY (respawn) or GAME_OVER. The capsule-
-// overlap check in updateCapsules already guards on `state === 'GAMEPLAY'`, so a capsule cannot
-// re-trigger hit() during DEATH_FREEZE/GAME_OVER. invulnT guard is kept defensively.
+// J — capsule contact enters DEATH_REACTION (ragdoll + burst, ~1.2s total). Lives are
+// decremented at END of phase2, then the state machine branches to GAMEPLAY (respawn) or
+// GAME_OVER. The capsule-overlap check in updateCapsules already guards on `state ===
+// 'GAMEPLAY'`, so a capsule cannot re-trigger hit() during DEATH_REACTION/GAME_OVER. invulnT
+// guard is kept defensively.
 //
 // Kill source contract: hit() is ONLY called from the capsule-contact path in updateCapsules.
-// Helpers / Antifa / Pelosi DO NOT call hit() — confirmed by grep audit.
-function hit(source) {
+// Helpers / Antifa / Pelosi / briefcase / etc. DO NOT call hit() — confirmed by grep audit.
+//
+// `capsule` is the capsule entity that hit the player. Its vx is sampled to launch the ragdoll
+// in the same direction the capsule was traveling (so DNC tumbles the way she got hit).
+function hit(source, capsule) {
   if (player.invulnT > 0) return;
-  if (state === 'DEATH_FREEZE' || state === 'GAME_OVER') return;
+  if (state === 'DEATH_REACTION' || state === 'GAME_OVER') return;
   if (typeof console !== 'undefined') console.log('HIT by', source, '— lives before decrement:', player.lives);
-  state = 'DEATH_FREEZE';
+  state = 'DEATH_REACTION';
   stateT = 0;
-  deathFreezeT = 0;
+  deathReactionT = 0;
+  deathPhase = 'phase1';
+  deathDebris.length = 0;
+  deathBurstFlashT = 0;
+  // Ragdoll launch — capsule.vx sign drives horizontal velocity. Defensive fallback if no
+  // capsule was passed in (shouldn't happen post-J refactor but keeps the call site safe).
+  const dirSign = (capsule && typeof capsule.vx === 'number')
+    ? (capsule.vx >= 0 ? 1 : -1)
+    : (player.facing >= 0 ? -1 : 1);
+  player.deathVx = dirSign * 180;
+  player.deathVy = -200;                                  // small upward pop
+  player.deathRotation = 0;                               // degrees, accumulates at 720°/s
   player.vx = 0;
   player.vy = 0;
 }
@@ -1032,6 +1064,11 @@ function restartFromGameOver() {
   comboActive  = false;
   dtjStageMode = 'NONE';
   clearCaptions();
+  // J — clear any in-flight death reaction state defensively.
+  deathReactionT     = 0;
+  deathPhase         = 'phase1';
+  deathBurstFlashT   = 0;
+  deathDebris.length = 0;
   state = 'INTRO_BLACK';
   stateT = 0;
 }
@@ -1371,10 +1408,13 @@ function updateHelpers(dt) {
     }
 
     // Helper vs capsule: destroy capsule on overlap. Zombie dies in the encounter; Antifa survives.
+    // J — skip carried capsules so helpers can't yank a capsule out of Pelosi's hand mid-walk.
+    // The defensive carriedAlive check in CARRY_TO_ANCHOR is the second line of defense.
     const halfW = h.w / 2;
     let helperKilled = false;
     for (let ci = capsules.length - 1; ci >= 0; ci--) {
       const c = capsules[ci];
+      if (c.carried) continue;
       // Capsule center ± CAPSULE_R vs helper body x±halfW, y in [h.y - h.h, h.y]
       const overlapX = (c.x + CAPSULE_R > h.x - halfW) && (c.x - CAPSULE_R < h.x + halfW);
       const overlapY = (c.y + CAPSULE_R > h.y - h.h) && (c.y - CAPSULE_R < h.y);
@@ -1412,7 +1452,8 @@ function triggerHelperSpawn(reason) {
 // without grabbing: SHRUG (0.4s, no sprite swap, small arm-up bounce via y-bob) → walk back right,
 // no points. No collision with player at any phase.
 //
-// Phase machine: IDLE → WALKING_LEFT → (GRAB → SLAM → TEAR | SHRUG) → WALKING_RIGHT → IDLE
+// Phase machine (J — added CARRY_TO_ANCHOR between GRAB and SLAM):
+//   IDLE → WALKING_LEFT → (GRAB → CARRY_TO_ANCHOR → SLAM → TEAR | SHRUG) → WALKING_RIGHT → IDLE
 const PELOSI_HEIGHT           = 80;
 const PELOSI_WALK_SPD         = 50;
 const PELOSI_GRAB_RANGE_X     = 30;
@@ -1421,6 +1462,11 @@ const PELOSI_SLAM_DURATION    = 0.3;
 const PELOSI_TEAR_DURATION    = 0.6;
 const PELOSI_SHRUG_DURATION   = 0.4;
 const PELOSI_LEFT_LIMIT       = 240;       // C1 — halfway across FLOOR (W/2). Was 60.
+// J — smash anchor. After GRAB, Pelosi walks the capsule to this x before SLAM so the smash
+// always plays in full view, never half-off-canvas. Same value as PELOSI_LEFT_LIMIT (canvas
+// center) — kept as a separate constant since it expresses a different intent.
+const PELOSI_SMASH_X          = 240;
+const PELOSI_ANCHOR_TOLERANCE = 4;         // px — Pelosi snaps to PELOSI_SMASH_X within this
 const PELOSI_INTERVAL_MIN     = 30.0;
 const PELOSI_INTERVAL_MAX     = 45.0;
 const PELOSI_BONUS            = 500;
@@ -1523,17 +1569,60 @@ function updatePelosi(dt) {
     }
     case 'GRAB': {
       if (pelosi.phaseT >= PELOSI_GRAB_DURATION) {
-        // Mid-flight despawn permitted by capsule travel rule for Pelosi only.
+        // J — capsule is captured but NOT destroyed yet. Pelosi will carry it to PELOSI_SMASH_X
+        // before slamming. Setting `carried = true` makes updateCapsules skip the carried capsule
+        // entirely (no roll, no fall, no player-collision, no off-screen despawn). vx=0 is
+        // belt-and-suspenders — even if updateCapsules ran for one frame before the flag was
+        // checked, vx=0 prevents motion.
         if (pelosi.targetCapsule) {
-          const ci = capsules.indexOf(pelosi.targetCapsule);
-          if (ci >= 0) capsules.splice(ci, 1);
+          pelosi.targetCapsule.carried = true;
+          pelosi.targetCapsule.vx = 0;
         }
-        spawnPelosiGlassShatter(pelosi.x, pelosi.y - PELOSI_HEIGHT * 0.55);
-        pelosi.phase = 'SLAM';
+        pelosi.phase = 'CARRY_TO_ANCHOR';
         pelosi.phaseT = 0;
       }
       break;
     }
+
+    // J — CARRY_TO_ANCHOR: walk Pelosi (and the carried capsule) to PELOSI_SMASH_X before the
+    // SLAM/TEAR sequence plays. Direction depends on which side of the anchor she's on. On
+    // arrival, splice the capsule + spawn the glass shatter (work that was previously in GRAB
+    // end), then transition to SLAM. Defensive: if the carried capsule has somehow been removed
+    // (shouldn't happen — carried=true skips all despawn paths), fall through to SHRUG and exit.
+    case 'CARRY_TO_ANCHOR': {
+      const carriedAlive = pelosi.targetCapsule && capsules.indexOf(pelosi.targetCapsule) >= 0;
+      if (!carriedAlive) {
+        pelosi.targetCapsule = null;
+        pelosi.phase = 'SHRUG';
+        pelosi.phaseT = 0;
+        break;
+      }
+      const dx = PELOSI_SMASH_X - pelosi.x;
+      if (Math.abs(dx) <= PELOSI_ANCHOR_TOLERANCE) {
+        // Arrived. Snap to anchor, splice capsule, spawn shatter, transition to SLAM.
+        pelosi.x = PELOSI_SMASH_X;
+        const ci = capsules.indexOf(pelosi.targetCapsule);
+        if (ci >= 0) capsules.splice(ci, 1);
+        spawnPelosiGlassShatter(pelosi.x, pelosi.y - PELOSI_HEIGHT * 0.55);
+        pelosi.phase = 'SLAM';
+        pelosi.phaseT = 0;
+        break;
+      }
+      // Walk toward anchor; facing follows movement direction.
+      if (dx > 0) {
+        pelosi.x += PELOSI_WALK_SPD * dt;
+        pelosi.facing = 1;
+      } else {
+        pelosi.x -= PELOSI_WALK_SPD * dt;
+        pelosi.facing = -1;
+      }
+      // Drag the capsule with her at hand height. Capsule is rendered separately by drawCapsules
+      // (which iterates capsules[]); we just keep its position pinned to Pelosi's hand each frame.
+      pelosi.targetCapsule.x = pelosi.x;
+      pelosi.targetCapsule.y = pelosi.y - PELOSI_HEIGHT * 0.5;
+      break;
+    }
+
     case 'SLAM': {
       if (pelosi.phaseT >= PELOSI_SLAM_DURATION) {
         pelosi.phase = 'TEAR';
@@ -2517,7 +2606,7 @@ canvas.addEventListener('pointerdown', e => {
   // I1 — cutscene tap routes through cutsceneAdvance (per-state advance rules).
   // WIN_FREEZE / CUTSCENE_FADE_IN eat input; intro states skipToGame; GAMEPLAY = normal.
   // J — DEATH_FREEZE eats input. GAME_OVER tap = restartFromGameOver (full reset to intro).
-  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_FREEZE') return;
+  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_REACTION') return;
   if (state === 'GAME_OVER') { restartFromGameOver(); return; }
   if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
   if (state !== 'GAMEPLAY') { skipToGame(); return; }
@@ -2549,7 +2638,7 @@ canvas.addEventListener('touchstart', e=>{
   // I1 — cutscene tap routes through cutsceneAdvance (per-state advance rules).
   // WIN_FREEZE / CUTSCENE_FADE_IN eat input; intro states skipToGame; GAMEPLAY = normal.
   // J — DEATH_FREEZE eats input. GAME_OVER tap = restartFromGameOver (full reset to intro).
-  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_FREEZE') return;
+  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_REACTION') return;
   if (state === 'GAME_OVER') { restartFromGameOver(); return; }
   if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
   if (state !== 'GAMEPLAY') { skipToGame(); return; }
@@ -2745,8 +2834,8 @@ function drawCutsceneSky(dt) {
 
 // J — shared score-breakdown overlay. Reused by CUTSCENE_SCORE (level complete) and GAME_OVER
 // (lives exhausted). Same fonts, same spacing, same row component. Layout-identical except for
-// the header text, the total value, the prompt text, and an optional high-score block at the
-// bottom of the breakdown that GAME_OVER turns on.
+// the header text, the total value, the prompt text, an optional high-score block + creator
+// credit line at the bottom (both GAME_OVER opt-ins).
 //   opts = {
 //     header,        // header line, e.g. 'LEVEL 1 COMPLETE' or 'GAME OVER'
 //     total,         // numeric total to display (already-final score)
@@ -2755,6 +2844,7 @@ function drawCutsceneSky(dt) {
 //     showHighScore, // bool — when true, render a HIGH SCORE row + (optional) NEW HIGH SCORE! flag
 //     highScore,     // numeric high score to render (only used if showHighScore)
 //     isNewHigh,     // bool — when true, render 'NEW HIGH SCORE!' line (only used if showHighScore)
+//     showCredit,    // bool — when true, render 'Created by Brian Albert' subtle line at very bottom
 //   }
 function drawScoreBreakdown(opts) {
   drawRncStage();
@@ -2832,6 +2922,14 @@ function drawScoreBreakdown(opts) {
   ctx.font = 'bold 16px monospace';
   ctx.textAlign = 'center';
   ctx.fillText(opts.prompt, W/2, 780);
+
+  // J — creator credit (GAME_OVER only). Subtle gray, smaller font, very bottom of overlay.
+  if (opts.showCredit) {
+    ctx.fillStyle = 'rgba(200,200,200,0.6)';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Created by Brian Albert', W/2, 820);
+  }
 }
 
 function drawHUD() {
@@ -2855,8 +2953,10 @@ function drawHUD() {
   // HUD typography matches the existing 13px monospace SCORE style without crowding the title.
   ctx.fillStyle='#ffcc00'; ctx.font='bold 13px monospace'; ctx.textAlign='right';
   ctx.fillText('SCORE ' + Math.floor(playerScore), W-8, HUD_Y + 11);
+  // J — HIGH SCORE display rule: blank dashes when the player has never set a score (or
+  // localStorage was empty / parse failed). Once highScore > 0, show the integer normally.
   ctx.fillStyle='#aaccff'; ctx.font='bold 11px monospace';
-  ctx.fillText('HI '    + Math.floor(highScore),   W-8, HUD_Y + 22);
+  ctx.fillText('HI ' + (highScore > 0 ? Math.floor(highScore) : '---'), W-8, HUD_Y + 22);
 
   // Block D — multiplier badge. E2 corrected — badge placed flush BELOW the HUD bar (in the
   // gameplay area) so it stays visible while boosted regardless of bar order.
@@ -3108,15 +3208,26 @@ function drawGameplay(shake) {
     drawSprite(walkSprite, dtjAnimX, TOP.y, 110, walkFlip, 1.0);
   }
 
-  // Player character (DNC)
-  // DNC player — canvas drawn (keep as-is, working well)
-  const walking = player.vx !== 0 || player.onLadder;
-  // Block 3 — blink during invulnerability: toggle alpha every 0.1s (5 flashes/s).
-  // Method: Math.floor(invulnT * 10) % 2 chooses dim/bright frame.
-  const blinkDim = player.invulnT > 0 && Math.floor(player.invulnT * 10) % 2 === 0;
-  if (blinkDim) { ctx.save(); ctx.globalAlpha = 0.4; }
-  drawDonkey(player.x, player.y, 0.65, player.facing < 0, walking, player.walkT);
-  if (blinkDim) ctx.restore();
+  // Player character (DNC). J — death reaction overrides normal render:
+  //   phase1 → render rotated about body center (deathRotation accumulates at 720°/s)
+  //   phase2 → suppress player render entirely; debris IS the player visual now
+  if (state === 'DEATH_REACTION' && deathPhase === 'phase2') {
+    // No-op — debris draw happens in the DEATH_REACTION state case after drawGameplay.
+  } else if (state === 'DEATH_REACTION' && deathPhase === 'phase1') {
+    ctx.save();
+    ctx.translate(player.x, player.y - 24);                // approx body center; foot 24 below
+    ctx.rotate(player.deathRotation * Math.PI / 180);
+    drawDonkey(0, 24, 0.65, false, false, 0);              // foot at +24 from rotation pivot
+    ctx.restore();
+  } else {
+    const walking = player.vx !== 0 || player.onLadder;
+    // Block 3 — blink during invulnerability: toggle alpha every 0.1s (5 flashes/s).
+    // Method: Math.floor(invulnT * 10) % 2 chooses dim/bright frame.
+    const blinkDim = player.invulnT > 0 && Math.floor(player.invulnT * 10) % 2 === 0;
+    if (blinkDim) { ctx.save(); ctx.globalAlpha = 0.4; }
+    drawDonkey(player.x, player.y, 0.65, player.facing < 0, walking, player.walkT);
+    if (blinkDim) ctx.restore();
+  }
 
   // Block 2.5 — green $ box decorations removed (Block 4 will replace with real briefcase pickups)
 
@@ -3578,27 +3689,100 @@ function loop(ts) {
       break;
     }
 
-    // J — DEATH_FREEZE: 0.5s pause after a capsule hit. PLACEHOLDER — Block L replaces with
-    // YMCA dance. Player is frozen (updatePlayer not called). World keeps animating so capsules
-    // keep rolling visually. Capsule re-hit is blocked by the GAMEPLAY-only guard inside
-    // updateCapsules + the explicit DEATH_FREEZE/GAME_OVER guard in hit().
-    case 'DEATH_FREEZE': {
-      deathFreezeT += dt;
+    // J — DEATH_REACTION: ragdoll spin (phase1) → burst into debris (phase2). NOT a freeze —
+    // capsules / helpers / Pelosi / pickup keep updating beneath so the world carries on around
+    // the dying player. Capsule re-hit is blocked by the GAMEPLAY-only guard inside updateCapsules
+    // + the explicit DEATH_REACTION/GAME_OVER guard in hit(). drawGameplay's player-render block
+    // checks `state === 'DEATH_REACTION'` and switches to a rotated draw (phase1) or suppresses
+    // the player draw entirely (phase2).
+    case 'DEATH_REACTION': {
+      deathReactionT += dt;
       updateCapsules(dt);
       updatePickup(dt);
       updateHelpers(dt);
       updatePelosi(dt);
-      drawGameplay(false);
+
+      if (deathPhase === 'phase1') {
+        // Ragdoll physics — separate from updatePlayer so platform collision is bypassed (player
+        // tumbles through the world). Gravity matches walk-state GRAVITY=1400 for visual continuity.
+        player.x += player.deathVx * dt;
+        player.y += player.deathVy * dt;
+        player.deathVy += GRAVITY * dt;
+        player.deathRotation += 720 * dt;                 // two full rotations per second
+        // Phase1 → phase2 transition: passed below FLOOR by 40px OR phase1 cap elapsed (whichever first).
+        const fellThrough = player.y > FLOOR.y + DEATH_BURST_FALL_TRIGGER;
+        const cappedOut   = deathReactionT >= DEATH_PHASE1_MAX_DURATION;
+        if (fellThrough || cappedOut) {
+          deathPhase = 'phase2';
+          deathBurstFlashT = 1;                            // 1 frame of full-bright white flash
+          // Spawn DEATH_DEBRIS_COUNT little rotating rects at the player's last position.
+          for (let i = 0; i < DEATH_DEBRIS_COUNT; i++) {
+            deathDebris.push({
+              x:    player.x,
+              y:    player.y - 24,                         // approx body center
+              vx:   -150 + Math.random() * 300,            // [-150, 150]
+              vy:   -300 + Math.random() * 200,            // [-300, -100]
+              size: 4 + Math.random() * 2,                 // 4-6 px square
+              rot:  Math.random() * Math.PI * 2,
+              rotV: -8 + Math.random() * 16,               // rad/sec
+              life: 0.4,                                   // alpha fades over 0.4s
+              t:    0,
+              color: ['#ffffff', '#aaccff', '#ff88aa', '#ffcc66'][Math.floor(Math.random() * 4)],
+            });
+          }
+        }
+      } else {
+        // phase2 — debris physics. Player sprite suppressed in drawGameplay.
+        for (let i = deathDebris.length - 1; i >= 0; i--) {
+          const d = deathDebris[i];
+          d.t  += dt;
+          d.x  += d.vx * dt;
+          d.y  += d.vy * dt;
+          d.vy += GRAVITY * dt;
+          d.rot += d.rotV * dt;
+          if (d.t >= d.life) deathDebris.splice(i, 1);
+        }
+        if (deathBurstFlashT > 0) deathBurstFlashT = 0;    // flash is one-frame; cleared after first phase2 render
+      }
+
+      drawGameplay(false);                                  // renders world; player handled per state inside
+      // Existing particles trail (not death debris — death debris drawn below)
       particles.forEach(p=>{
         ctx.globalAlpha=Math.max(p.life,0);
         ctx.fillStyle=p.color;
         ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
       });
       ctx.globalAlpha=1;
-      if (deathFreezeT >= DEATH_FREEZE_DURATION) {
-        // Decrement at END of freeze so the HUD shows the loss settling in dramatically.
+
+      // Death debris (phase2 only — drawn on top of everything)
+      if (deathPhase === 'phase2') {
+        for (const d of deathDebris) {
+          const a = Math.max(0, 1 - d.t / d.life);
+          ctx.save();
+          ctx.globalAlpha = a;
+          ctx.translate(d.x, d.y);
+          ctx.rotate(d.rot);
+          ctx.fillStyle = d.color;
+          ctx.fillRect(-d.size / 2, -d.size / 2, d.size, d.size);
+          ctx.restore();
+        }
+        // One-frame white burst flash on the first phase2 render
+        if (deathBurstFlashT > 0) {
+          ctx.save();
+          ctx.globalAlpha = 0.6;
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, W, H);
+          ctx.restore();
+        }
+      }
+
+      // End-of-reaction transition (lives decrement + branch).
+      if (deathReactionT >= DEATH_REACTION_DURATION) {
         player.lives -= 1;
-        deathFreezeT = 0;
+        deathReactionT = 0;
+        deathPhase = 'phase1';
+        deathDebris.length = 0;
+        deathBurstFlashT = 0;
         if (player.lives <= 0) {
           // Capture final score + commit any new high score to localStorage before transitioning.
           gameOverFinalScore = playerScore;
@@ -3634,6 +3818,7 @@ function loop(ts) {
         showHighScore: true,
         highScore:     highScore,
         isNewHigh:     highScoreNew,
+        showCredit:    true,                              // J — creator credit at very bottom
       });
       break;
     }
@@ -3793,6 +3978,7 @@ function loop(ts) {
       // pushed in cutsceneAdvance (SCORE→BETWEEN). renderCutsceneCaption() draws current.
 
       // I6 — at t=5.0s reveal LEVEL 2 COMING SOON header + TAP TO RESTART prompt.
+      // J — creator credit subtitle below the prompt, matches GAME_OVER overlay style.
       if (stateT >= 5.0) {
         ctx.fillStyle = '#fff';
         ctx.font = 'bold 26px monospace';
@@ -3802,6 +3988,9 @@ function loop(ts) {
         ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulseB).toFixed(3) + ')';
         ctx.font = 'bold 14px monospace';
         ctx.fillText('TAP TO RESTART', W/2, 260);
+        ctx.fillStyle = 'rgba(200,200,200,0.6)';
+        ctx.font = '10px monospace';
+        ctx.fillText('Created by Brian Albert', W/2, 290);
       }
 
       // I-CORR-3 — caption strip flush above sky horizon.
