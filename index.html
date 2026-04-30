@@ -527,8 +527,11 @@ const CAPSULE_R = 18;                              // Block 2.5 — bumped from 
 const CAPSULE_ROLL_SPD = 75;
 const CAPSULE_GRAV = 1100;
 const CAPSULE_LADDER_DROP_CHANCE = 0.65;           // Block 2.5 — bumped from 0.5
-let dtjThrowT = 0;       // throw animation timer (>0 → show dtj_throw)
-// Block 2.6 — lastSpawnDir removed; Level 1 capsules always roll rightward from the static barrel
+// G4 — initial throw direction. -1 = leftward (current Level 1), +1 = rightward.
+// Used to derive (a) capsule spawn vx sign and (b) the dtj_throw render flip — keeping them
+// in lockstep so changing one constant flips both. After spawn, capsule vx still snaps to platform
+// tilt while rolling; this only controls the initial throw and the render mirror.
+const CAPSULE_THROW_DIR = -1;
 
 function spawnCapsule() {
   // F4 — Level 1: capsules now spawn from the barrel and roll/are thrown to screen LEFT.
@@ -536,7 +539,7 @@ function spawnCapsule() {
   capsules.push({
     x: BARREL_X,                   // Block C — spawns from the static barrel decoration
     y: TOP.y - CAPSULE_R,          // sitting on TOP platform
-    vx: -CAPSULE_ROLL_SPD,         // F4 — negative vx (leftward)
+    vx: CAPSULE_THROW_DIR * CAPSULE_ROLL_SPD,   // G4 — sign derived from CAPSULE_THROW_DIR
     vy: 0,
     rolling: true,
     onPlat: TOP,
@@ -2296,9 +2299,12 @@ function drawGameplay(shake) {
   drawPelosi();
 
   // D.T.J. at top center — swap to throw sprite during throw window.
-  // F4 — Level 1 throws are now LEFTWARD, so dtj_throw flip=true (mirrors so throwing arm faces screen-left toward the spawn arc).
+  // G4 — flip is derived from CAPSULE_THROW_DIR, not a hardcoded boolean. dtj_throw default
+  // orientation is right-facing; a leftward throw (CAPSULE_THROW_DIR < 0) mirrors the sprite
+  // so the throwing arm leads the capsule. Flipping the constant flips both the spawn vx
+  // and this render in lockstep.
   if (dtjThrowT > 0) {
-    drawSprite('dtj_throw', DTJ_GAMEPLAY_X, TOP.y, 110, true, 1.0);
+    drawSprite('dtj_throw', DTJ_GAMEPLAY_X, TOP.y, 110, CAPSULE_THROW_DIR < 0, 1.0);
   } else {
     drawSprite('dtj_idle', DTJ_GAMEPLAY_X, TOP.y, 110);
   }
