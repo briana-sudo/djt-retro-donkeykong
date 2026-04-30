@@ -277,11 +277,11 @@ function cutsceneAdvance() {
   if (state === 'CUTSCENE_SCORE') {
     // I-CORR-3 — any leftover SCORE caption tail is cleared before BETWEEN seeds its rotation.
     clearCaptions();
-    // I-EAGLE-REWRITE — initialize combo for BETWEEN entry: spawn off-screen left, mid-canvas
-    // vertically (foot-anchor convention so combo body sits ~mid-canvas with eagle on top).
+    // I-EAGLE-REWRITE (direction-fix addendum) — combo travels right→left in BETWEEN to match
+    // the eagle_carry sprite's facing direction. Spawn off-screen RIGHT, mid-canvas vertically.
     comboActive  = true;
     dtjStageMode = 'NONE';
-    combo.x = -COMBO_H;
+    combo.x = W + COMBO_H;
     combo.y = H * 0.4 + COMBO_H * 0.5;
     state = 'CUTSCENE_BETWEEN';
     stateT = 0;
@@ -3563,17 +3563,19 @@ function loop(ts) {
       cutsceneT += dt;
       drawCutsceneSky(dt);
 
-      // I-EAGLE-REWRITE — combined sprite flies right across sky. Initialization happens in
-      // cutsceneAdvance (SCORE→BETWEEN). Cold-entry init below catches dev edge cases (e.g.
-      // hot-reload mid-cutscene where comboActive starts false). Mutually exclusive: never
-      // render an individual DTJ sprite here. dtjStageMode is forced to 'NONE'.
+      // I-EAGLE-REWRITE (direction-fix addendum) — eagle_carry.png shows DTJ + eagle oriented
+      // for LEFTWARD flight, so the combined sprite enters from off-screen RIGHT and travels
+      // right-to-left across the sky. Same speed (80 px/s), same hold at t=4.5s, same captions.
+      // PHASE3 ascent already drifts left (-30 px/s), so combined cutscene reads consistently:
+      // eagle exits upper-left in PHASE3, then a fresh pass right→left in BETWEEN.
+      // Mutually exclusive: never render an individual DTJ sprite here. dtjStageMode = 'NONE'.
       if (!comboActive) {
         comboActive  = true;
         dtjStageMode = 'NONE';
-        combo.x = -COMBO_H;
-        combo.y = H * 0.4 + COMBO_H * 0.5;
+        combo.x = W + COMBO_H;                            // off-screen right
+        combo.y = H * 0.4 + COMBO_H * 0.5;                // mid-canvas vertically
       }
-      if (stateT < 4.5) combo.x += 80 * dt;               // rightward at 80 px/s; hold from t=4.5s
+      if (stateT < 4.5) combo.x -= 80 * dt;               // leftward at 80 px/s; hold from t=4.5s
       drawSprite('eagle_carry', combo.x, combo.y, COMBO_H, false, 1.0);
 
       // I-CORR-3 — DTJ caption rotation lives in the top-of-canvas strip. The 3 lines are
