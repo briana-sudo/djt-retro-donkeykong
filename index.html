@@ -634,15 +634,18 @@ function updateCapsules(dt) {
       continue;
     }
 
-    // AABB collision with DNC (player.y is the foot)
+    // AABB collision with DNC (player.y is the foot).
+    // G3 — capsule travel rule: hitting the player decrements lives/grants i-frames but does NOT
+    // despawn the capsule. Capsule keeps cascading; only helper-kill, Pelosi-grab, lifeTimer expiry,
+    // and off-screen exit can remove it. The 1s invulnerability timer prevents double-hit damage,
+    // and the player respawns at FLOOR.x+60 — by the time invuln expires the capsule has moved on.
     if (
       c.x + CAPSULE_R > player.x - 10 &&
       c.x - CAPSULE_R < player.x + 10 &&
       c.y + CAPSULE_R > player.y - 32 &&
       c.y - CAPSULE_R < player.y - 4
     ) {
-      hit('capsule');
-      capsules.splice(i, 1);
+      hit('capsule');                                     // decrement lives + i-frames; no splice
     }
   }
 }
