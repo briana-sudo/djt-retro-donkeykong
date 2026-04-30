@@ -879,17 +879,56 @@ function drawPickup() {
 //  BLOCK E — HELPER SYSTEM v1 (Antifa + Zombie Voter only)
 // ─────────────────────────────────────────────
 // Spawned by briefcase pickup. Both helpers destroy capsules on contact and never hurt the player.
-// Antifa: 5–10 per wave, spawn at FLOOR, float upward, ghost through platforms, despawn off top.
-// Zombie Voter: 1–2 per wave, spawn on random middle platform, slow patrol, killed by any capsule contact.
-// Sprites are alpha-keyed by Block A. NO Secret Service / Pelosi / Eagle in this block.
+// Antifa: 5–10 per wave, spawn on FLOOR, walk along platforms toward the nearest up-ladder, climb,
+//   repeat until they hit TOP or the 25s safety lifeTimer expires. (G5 — was: float upward
+//   ghosting through platforms, which was wrong per Brian's F-deploy feedback.)
+// Zombie Voter: 1–2 per wave, spawn on random middle platform, slow patrol, killed by any capsule
+//   contact. Behavior unchanged from Block E.
+// Sprites use the cached PNG canvases (G1 replacement).
 const helpers = [];
-const MAX_HELPERS  = 24;
-const ANTIFA_SIZE  = 64;       // F6 — 2x of original 32
-const ZOMBIE_SIZE  = 72;       // F6 — 2x of original 36
-const ANTIFA_VY    = -45;       // slow upward float
-const ZOMBIE_SPD   = 40;
-const HELPER_LIFE  = 25.0;      // safety auto-despawn
+const MAX_HELPERS    = 24;
+const ANTIFA_SIZE    = 64;       // F6 — 2x of original 32
+const ZOMBIE_SIZE    = 72;       // F6 — 2x of original 36
+const ANTIFA_WALK_SPD  = 60;     // G5 — Notion spec
+const ANTIFA_CLIMB_SPD = 90;     // G5 — Notion spec
+const ZOMBIE_SPD     = 40;
+const HELPER_LIFE    = 25.0;     // safety auto-despawn
 const ZOMBIE_SPRITES = ['zombie_winemom', 'zombie_pinkhair', 'zombie_glasses', 'zombie_dad'];
+
+// G5 — ladder/platform topology helpers. Reuses getPlatY (no duplicated geometry math).
+function getLadderBasePlat(lad) {
+  // Platform whose surface sits at the ladder's base (lad.y + lad.h). Returns null if none.
+  const ladCx = lad.x + LADDER_W / 2;
+  for (const plat of platforms) {
+    if (ladCx < plat.x - 2 || ladCx > plat.x + plat.w + 2) continue;
+    const platY = getPlatY(plat, ladCx);
+    if (Math.abs(platY - (lad.y + lad.h)) < 20) return plat;
+  }
+  return null;
+}
+function getLadderTopPlat(lad) {
+  // Platform whose surface is at or just above the ladder's top (lad.y). Returns null if none.
+  // Uses the same x-margin (16) and tolerance window the player's top-exit snap uses.
+  const ladCx = lad.x + LADDER_W / 2;
+  for (const plat of platforms) {
+    if (ladCx < plat.x - 16 || ladCx > plat.x + plat.w + 16) continue;
+    const platY = getPlatY(plat, ladCx);
+    if (platY > lad.y + 6) continue;        // platform must be at or above ladder top
+    if (platY < lad.y - 25) continue;       // not too far above
+    return plat;
+  }
+  return null;
+}
+function findNearestUpLadder(plat, fromX) {
+  let nearest = null, nearestDist = Infinity;
+  for (const lad of ladders) {
+    if (getLadderBasePlat(lad) !== plat) continue;     // ladder must rise FROM this platform
+    const ladCx = lad.x + LADDER_W / 2;
+    const d = Math.abs(ladCx - fromX);
+    if (d < nearestDist) { nearestDist = d; nearest = lad; }
+  }
+  return nearest;
+}
 
 function spawnAntifaWave() {
   const n = 5 + Math.floor(Math.random() * 6);   // 5–10
@@ -898,14 +937,17 @@ function spawnAntifaWave() {
     const x = FLOOR.x + 20 + Math.random() * (FLOOR.w - 40);
     helpers.push({
       type: 'ANTIFA',
+      state: 'WALK',                             // G5 — WALK | CLIMB
       x: x,
-      y: FLOOR.y - 2,                            // foot at floor surface
+      y: FLOOR.y,                                // foot at floor surface
       vx: 0,
-      vy: ANTIFA_VY,
+      vy: 0,
       w: ANTIFA_SIZE * 0.7,
       h: ANTIFA_SIZE,
       sprite: 'antifa',
-      plat: null,
+      plat: FLOOR,                               // current platform while walking
+      targetLad: null,                           // ladder we're walking toward
+      currentLad: null,                          // ladder we're currently climbing
       lifeTimer: HELPER_LIFE,
     });
   }
@@ -941,9 +983,49 @@ function updateHelpers(dt) {
     if (h.lifeTimer <= 0) { helpers.splice(i, 1); continue; }
 
     if (h.type === 'ANTIFA') {
-      // Float upward, ignore platforms (passes through). Despawns when off top.
-      h.y += h.vy * dt;
-      if (h.y < -30) { helpers.splice(i, 1); continue; }
+      // G5 — walk current platform toward nearest up-ladder, climb it, repeat.
+      if (h.state === 'WALK') {
+        // Refresh target ladder if we don't have one or our platform changed under us.
+        if (!h.targetLad || getLadderBasePlat(h.targetLad) !== h.plat) {
+          h.targetLad = findNearestUpLadder(h.plat, h.x);
+        }
+        if (h.targetLad) {
+          const ladCx = h.targetLad.x + LADDER_W / 2;
+          const dx = ladCx - h.x;
+          if (Math.abs(dx) <= ANTIFA_WALK_SPD * dt) {
+            // Arrived at ladder base — switch to CLIMB
+            h.x = ladCx;
+            h.state = 'CLIMB';
+            h.currentLad = h.targetLad;
+            h.targetLad = null;
+            h.vx = 0;
+          } else {
+            h.vx = Math.sign(dx) * ANTIFA_WALK_SPD;
+            h.x += h.vx * dt;
+          }
+        } else {
+          // No up-ladder from this platform (e.g. they reached TOP). Stand idle until despawn.
+          h.vx = 0;
+        }
+        // Snap to platform surface (handles tilt)
+        if (h.plat) h.y = getPlatY(h.plat, h.x);
+      } else if (h.state === 'CLIMB') {
+        h.y -= ANTIFA_CLIMB_SPD * dt;
+        const lad = h.currentLad;
+        if (h.y <= lad.y + 4) {
+          // Reached top — snap to destination platform surface, return to WALK
+          const topPlat = getLadderTopPlat(lad);
+          if (topPlat) {
+            h.plat = topPlat;
+            h.y = getPlatY(topPlat, h.x);
+          } else {
+            h.y = lad.y;                                 // defensive — keep them on the ladder line
+          }
+          h.state = 'WALK';
+          h.currentLad = null;
+          h.targetLad = null;
+        }
+      }
     } else if (h.type === 'ZOMBIE') {
       // Slow horizontal patrol on platform; reverse at edges (6px buffer)
       h.x += h.vx * dt;
