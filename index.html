@@ -176,7 +176,7 @@ let state = 'INTRO_BLACK', stateT = 0, totalT = 0;
 let skipDone = false;
 
 function skipToGame() {
-  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjThrowT = 0; briefcases.length = 0; player.lives = 3; player.invulnT = 0; playerScore = 0; multiplier = 1.0; multiplierT = 0; pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); }
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjThrowT = 0; briefcases.length = 0; helpers.length = 0; player.lives = 3; player.invulnT = 0; playerScore = 0; multiplier = 1.0; multiplierT = 0; pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); }
 }
 
 // ─────────────────────────────────────────────
@@ -827,9 +827,115 @@ function drawPickup() {
   drawSprite('briefcase', pickup.x, pickup.y, PICKUP_SIZE, false, 1.0);
 }
 
-// Block D — stub. Block E will populate with Antifa + Zombie Voter spawn.
+// ─────────────────────────────────────────────
+//  BLOCK E — HELPER SYSTEM v1 (Antifa + Zombie Voter only)
+// ─────────────────────────────────────────────
+// Spawned by briefcase pickup. Both helpers destroy capsules on contact and never hurt the player.
+// Antifa: 5–10 per wave, spawn at FLOOR, float upward, ghost through platforms, despawn off top.
+// Zombie Voter: 1–2 per wave, spawn on random middle platform, slow patrol, killed by any capsule contact.
+// Sprites are alpha-keyed by Block A. NO Secret Service / Pelosi / Eagle in this block.
+const helpers = [];
+const MAX_HELPERS  = 24;
+const ANTIFA_SIZE  = 32;
+const ZOMBIE_SIZE  = 36;
+const ANTIFA_VY    = -45;       // slow upward float
+const ZOMBIE_SPD   = 40;
+const HELPER_LIFE  = 25.0;      // safety auto-despawn
+const ZOMBIE_SPRITES = ['zombie_winemom', 'zombie_pinkhair', 'zombie_glasses', 'zombie_dad'];
+
+function spawnAntifaWave() {
+  const n = 5 + Math.floor(Math.random() * 6);   // 5–10
+  for (let i = 0; i < n; i++) {
+    if (helpers.length >= MAX_HELPERS) break;
+    const x = FLOOR.x + 20 + Math.random() * (FLOOR.w - 40);
+    helpers.push({
+      type: 'ANTIFA',
+      x: x,
+      y: FLOOR.y - 2,                            // foot at floor surface
+      vx: 0,
+      vy: ANTIFA_VY,
+      w: ANTIFA_SIZE * 0.7,
+      h: ANTIFA_SIZE,
+      sprite: 'antifa',
+      plat: null,
+      lifeTimer: HELPER_LIFE,
+    });
+  }
+}
+
+function spawnZombieWave() {
+  const n = 1 + Math.floor(Math.random() * 2);   // 1–2
+  for (let i = 0; i < n; i++) {
+    if (helpers.length >= MAX_HELPERS) break;
+    const idx = MIDDLE_PLATFORM_INDICES[Math.floor(Math.random() * MIDDLE_PLATFORM_INDICES.length)];
+    const plat = platforms[idx];
+    const x = plat.x + 20 + Math.random() * (plat.w - 40);
+    const sprite = ZOMBIE_SPRITES[Math.floor(Math.random() * ZOMBIE_SPRITES.length)];
+    helpers.push({
+      type: 'ZOMBIE',
+      x: x,
+      y: getPlatY(plat, x),
+      vx: Math.random() < 0.5 ? -ZOMBIE_SPD : ZOMBIE_SPD,
+      vy: 0,
+      w: ZOMBIE_SIZE * 0.7,
+      h: ZOMBIE_SIZE,
+      sprite: sprite,
+      plat: plat,
+      lifeTimer: HELPER_LIFE,
+    });
+  }
+}
+
+function updateHelpers(dt) {
+  for (let i = helpers.length - 1; i >= 0; i--) {
+    const h = helpers[i];
+    h.lifeTimer -= dt;
+    if (h.lifeTimer <= 0) { helpers.splice(i, 1); continue; }
+
+    if (h.type === 'ANTIFA') {
+      // Float upward, ignore platforms (passes through). Despawns when off top.
+      h.y += h.vy * dt;
+      if (h.y < -30) { helpers.splice(i, 1); continue; }
+    } else if (h.type === 'ZOMBIE') {
+      // Slow horizontal patrol on platform; reverse at edges (6px buffer)
+      h.x += h.vx * dt;
+      h.y = getPlatY(h.plat, h.x);
+      if (h.x < h.plat.x + 6) {
+        h.x = h.plat.x + 6;
+        h.vx = Math.abs(h.vx);
+      } else if (h.x > h.plat.x + h.plat.w - 6) {
+        h.x = h.plat.x + h.plat.w - 6;
+        h.vx = -Math.abs(h.vx);
+      }
+    }
+
+    // Helper vs capsule: destroy capsule on overlap. Zombie dies in the encounter; Antifa survives.
+    const halfW = h.w / 2;
+    let helperKilled = false;
+    for (let ci = capsules.length - 1; ci >= 0; ci--) {
+      const c = capsules[ci];
+      // Capsule center ± CAPSULE_R vs helper body x±halfW, y in [h.y - h.h, h.y]
+      const overlapX = (c.x + CAPSULE_R > h.x - halfW) && (c.x - CAPSULE_R < h.x + halfW);
+      const overlapY = (c.y + CAPSULE_R > h.y - h.h) && (c.y - CAPSULE_R < h.y);
+      if (overlapX && overlapY) {
+        capsules.splice(ci, 1);
+        if (h.type === 'ZOMBIE') { helperKilled = true; break; }
+      }
+    }
+    if (helperKilled) helpers.splice(i, 1);
+  }
+}
+
+function drawHelpers() {
+  for (const h of helpers) {
+    drawSprite(h.sprite, h.x, h.y, h.h, h.vx < 0, 1.0);
+  }
+}
+
+// Block E — populated. Random pick: Antifa wave or Zombie Voter wave on each briefcase collect.
 function triggerHelperSpawn(reason) {
-  if (typeof console !== 'undefined') console.log('Block D — triggerHelperSpawn(' + reason + ') — Block E will populate');
+  if (Math.random() < 0.5) spawnAntifaWave();
+  else                     spawnZombieWave();
 }
 
 // ─────────────────────────────────────────────
@@ -1913,10 +2019,11 @@ function drawGameplay(shake) {
   // y arg is the foot/bottom edge sitting on TOP surface; footFrac=1.0 anchors the bottom there.
   drawSprite('barrel_upright', BARREL_X, TOP.y, CAPSULE_R * 2, false, 1.0);
 
-  // Capsules + briefcases + pickup (rendered behind characters so DNC/DTJ overlap looks right)
+  // Capsules + briefcases + pickup + helpers (rendered behind characters so DNC/DTJ overlap looks right)
   drawCapsules();
   drawBriefcases();
   drawPickup();
+  drawHelpers();
 
   // D.T.J. at top center — swap to throw sprite during throw window.
   // Block 2.6 — Level 1 throws are always rightward, so dtj_throw uses a fixed flip (no conditional).
@@ -2079,7 +2186,7 @@ function loop(ts) {
       // Shake on first hit
       if(shatterT>0.5&&shatterT<0.55){ shakeAmt=10; boom(W/2,500,28,true); }
       if(shatterT>1.2&&shatterT<1.25){ shakeAmt=8; }
-      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjThrowT=0; briefcases.length=0; player.lives=3; player.invulnT=0; playerScore=0; multiplier=1.0; multiplierT=0; pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); }
+      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjThrowT=0; briefcases.length=0; helpers.length=0; player.lives=3; player.invulnT=0; playerScore=0; multiplier=1.0; multiplierT=0; pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); }
       break;
   }
 
@@ -2307,6 +2414,7 @@ function loop(ts) {
       updateCapsules(dt);
       updateBriefcases(dt);
       updatePickup(dt);
+      updateHelpers(dt);
       drawGameplay(shakeAmt>0);
       // Particles leftover
       particles.forEach(p=>{
