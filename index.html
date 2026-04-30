@@ -176,7 +176,7 @@ let state = 'INTRO_BLACK', stateT = 0, totalT = 0;
 let skipDone = false;
 
 function skipToGame() {
-  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjThrowT = 0; briefcases.length = 0; player.lives = 3; player.invulnT = 0; }
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjThrowT = 0; briefcases.length = 0; player.lives = 3; player.invulnT = 0; playerScore = 0; multiplier = 1.0; multiplierT = 0; pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); }
 }
 
 // ─────────────────────────────────────────────
@@ -734,6 +734,102 @@ function drawBriefcases() {
   for (const b of briefcases) {
     drawSprite('briefcase', b.x, b.y, b.h, b.vx < 0, 1.0);
   }
+}
+
+// ─────────────────────────────────────────────
+//  BLOCK D — BRIEFCASE PICKUP (collectible, distinct from briefcase enemy)
+// ─────────────────────────────────────────────
+// First spawn: above P4 (~40px above surface — must jump to grab).
+// On collect: +250 score, multiplier +0.6 (cap 3.0, 5s), trigger helper, respawn after 8–12s
+// on a random middle platform (P1–P4, never TOP or FLOOR).
+// Max 1 visible. Renders briefcase.JPG at 3x the patrol-briefcase size.
+const PICKUP_SIZE          = 72;          // 3x of BRIEFCASE_H (24)
+const PICKUP_HOVER_PX      = 40;          // height above platform surface
+const BRIEFCASE_SCORE      = 250;
+const BRIEFCASE_RESPAWN_MIN = 8.0;
+const BRIEFCASE_RESPAWN_MAX = 12.0;
+const MULT_ADD             = 0.6;
+const MULT_MAX             = 3.0;
+const MULT_DURATION        = 5.0;
+// Player score + multiplier state (Block 9 will extend with per-second + capsule-clear bonuses).
+let playerScore = 0;
+let multiplier = 1.0;
+let multiplierT = 0;       // seconds remaining at current boosted multiplier; 0 → multiplier resets to 1.0
+const pickup = { active: false, x: 0, baseY: 0, y: 0, bobPhase: 0 };
+let pickupSpawnTimer = 0;  // counts up while !active; spawns next when >= pickupRespawnDelay
+let pickupRespawnDelay = 0;
+
+// Middle platforms (excludes TOP at index 5 and FLOOR at index 0)
+const MIDDLE_PLATFORM_INDICES = [1, 2, 3, 4];
+
+function spawnPickupOnPlatform(plat) {
+  // Centered-ish x with some randomness, kept inside platform with margin
+  const margin = 28;
+  const px = plat.x + margin + Math.random() * (plat.w - 2 * margin);
+  pickup.x = px;
+  pickup.baseY = getPlatY(plat, px) - PICKUP_HOVER_PX;
+  pickup.y = pickup.baseY;
+  pickup.bobPhase = 0;
+  pickup.active = true;
+}
+
+function spawnFirstPickup() {
+  // Always P4 (one level under TOP), centered above platform surface
+  const p4 = platforms[4];
+  const px = p4.x + p4.w / 2;
+  pickup.x = px;
+  pickup.baseY = getPlatY(p4, px) - PICKUP_HOVER_PX;
+  pickup.y = pickup.baseY;
+  pickup.bobPhase = 0;
+  pickup.active = true;
+}
+
+function updatePickup(dt) {
+  // Multiplier decay
+  if (multiplierT > 0) {
+    multiplierT = Math.max(0, multiplierT - dt);
+    if (multiplierT === 0) multiplier = 1.0;
+  }
+
+  if (!pickup.active) {
+    pickupSpawnTimer += dt;
+    if (pickupSpawnTimer >= pickupRespawnDelay) {
+      const idx = MIDDLE_PLATFORM_INDICES[Math.floor(Math.random() * MIDDLE_PLATFORM_INDICES.length)];
+      spawnPickupOnPlatform(platforms[idx]);
+      pickupSpawnTimer = 0;
+    }
+    return;
+  }
+
+  // Bob
+  pickup.bobPhase += dt * 2;
+  pickup.y = pickup.baseY + Math.sin(pickup.bobPhase) * 4;
+
+  // AABB collision with player. Pickup body: x±18, y in [py-72, py] (footFrac=1.0).
+  // Player body: x±10, y in [py-32, py-4]. Player must jump up to overlap (40px hover gap).
+  const halfW = 18;
+  const overlapX = (pickup.x + halfW > player.x - 10) && (pickup.x - halfW < player.x + 10);
+  const overlapY = (pickup.y > player.y - 32) && (pickup.y - PICKUP_SIZE < player.y - 4);
+  if (overlapX && overlapY) {
+    // Collect
+    playerScore += BRIEFCASE_SCORE;
+    multiplier = Math.min(multiplier + MULT_ADD, MULT_MAX);
+    multiplierT = MULT_DURATION;
+    triggerHelperSpawn('briefcase');
+    pickup.active = false;
+    pickupSpawnTimer = 0;
+    pickupRespawnDelay = BRIEFCASE_RESPAWN_MIN + Math.random() * (BRIEFCASE_RESPAWN_MAX - BRIEFCASE_RESPAWN_MIN);
+  }
+}
+
+function drawPickup() {
+  if (!pickup.active) return;
+  drawSprite('briefcase', pickup.x, pickup.y, PICKUP_SIZE, false, 1.0);
+}
+
+// Block D — stub. Block E will populate with Antifa + Zombie Voter spawn.
+function triggerHelperSpawn(reason) {
+  if (typeof console !== 'undefined') console.log('Block D — triggerHelperSpawn(' + reason + ') — Block E will populate');
 }
 
 // ─────────────────────────────────────────────
@@ -1747,7 +1843,16 @@ function drawHUD() {
   ctx.fillStyle='#ffffff'; ctx.font='bold 13px monospace'; ctx.textAlign='center';
   ctx.fillText('DNC vs DJT', W/2, 21);
   ctx.fillStyle='#ffcc00'; ctx.textAlign='right';
-  ctx.fillText('SCORE: 0', W-8, 21);
+  // Block D — real score + multiplier badge (only visible while boosted)
+  ctx.fillText('SCORE: ' + playerScore, W-8, 21);
+  if (multiplier > 1.0) {
+    ctx.fillStyle = 'rgba(0,30,15,0.85)';
+    ctx.fillRect(W-58, 30, 58, 16);
+    ctx.fillStyle = '#44ff88';
+    ctx.font = 'bold 11px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText('×' + multiplier.toFixed(1), W-8, 42);
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -1808,9 +1913,10 @@ function drawGameplay(shake) {
   // y arg is the foot/bottom edge sitting on TOP surface; footFrac=1.0 anchors the bottom there.
   drawSprite('barrel_upright', BARREL_X, TOP.y, CAPSULE_R * 2, false, 1.0);
 
-  // Capsules + briefcases (rendered behind characters so DNC/DTJ overlap looks right)
+  // Capsules + briefcases + pickup (rendered behind characters so DNC/DTJ overlap looks right)
   drawCapsules();
   drawBriefcases();
+  drawPickup();
 
   // D.T.J. at top center — swap to throw sprite during throw window.
   // Block 2.6 — Level 1 throws are always rightward, so dtj_throw uses a fixed flip (no conditional).
@@ -1973,7 +2079,7 @@ function loop(ts) {
       // Shake on first hit
       if(shatterT>0.5&&shatterT<0.55){ shakeAmt=10; boom(W/2,500,28,true); }
       if(shatterT>1.2&&shatterT<1.25){ shakeAmt=8; }
-      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjThrowT=0; briefcases.length=0; player.lives=3; player.invulnT=0; }
+      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjThrowT=0; briefcases.length=0; player.lives=3; player.invulnT=0; playerScore=0; multiplier=1.0; multiplierT=0; pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); }
       break;
   }
 
@@ -2200,6 +2306,7 @@ function loop(ts) {
       updatePlayer(dt);
       updateCapsules(dt);
       updateBriefcases(dt);
+      updatePickup(dt);
       drawGameplay(shakeAmt>0);
       // Particles leftover
       particles.forEach(p=>{
