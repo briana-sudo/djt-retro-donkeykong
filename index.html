@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>DNC vs D.T.J.</title>
+<title>DNC vs DJT</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
@@ -135,22 +135,22 @@ window.addEventListener('resize', resize);
 //  GAME LAYOUT DATA
 // ─────────────────────────────────────────────
 const PLAT_H = 14;
-// Block 2.5 — redesigned geometry (pre-audited 6/6 PASS in design phase).
+// Block 2.6 — redesigned geometry v2 (pre-audited 6/6 PASS in design phase).
 const platforms = [
-  { x:  0, y: 790, w: 480, h: 14, tilt:  0    },  // FLOOR
-  { x: 40, y: 660, w: 400, h: 14, tilt:  2.5  },  // P1 left-down
-  { x: 40, y: 530, w: 360, h: 14, tilt: -2.5  },  // P2 right-down
-  { x: 80, y: 400, w: 360, h: 14, tilt:  2.5  },  // P3 left-down
-  { x: 40, y: 270, w: 360, h: 14, tilt: -2.5  },  // P4 right-down
-  { x: 80, y: 140, w: 300, h: 14, tilt:  0    }   // TOP
+  { x:   0, y: 790, w: 480, h: 14, tilt:  0    },  // FLOOR (flat)
+  { x:  10, y: 660, w: 460, h: 14, tilt:  2.5  },  // P1 left-down
+  { x:  20, y: 530, w: 420, h: 14, tilt: -2.5  },  // P2 right-down
+  { x:  50, y: 400, w: 420, h: 14, tilt:  2.5  },  // P3 left-down
+  { x:  80, y: 270, w: 360, h: 14, tilt: -2.5  },  // P4 right-down
+  { x: 110, y: 140, w: 240, h: 14, tilt:  0    }   // TOP (flat)
 ];
 const ladders = [
-  { x: 108, y: 651, h: 139 },  // [0] FLOOR -> P1 left  (cx=120, base=790=FLOOR, top=651 vs P1@654.8)
-  { x: 368, y: 662, h: 128 },  // [1] FLOOR -> P1 right (cx=380, base=790=FLOOR, top=662 vs P1@666.1)
-  { x: 188, y: 527, h: 131 },  // [2] P1 -> P2          (cx=200, base=658 vs P1@658.3, top=527 vs P2@530.9)
-  { x: 268, y: 397, h: 130 },  // [3] P2 -> P3          (cx=280, base=527 vs P2@527.4, top=397 vs P3@400.9)
-  { x: 188, y: 267, h: 130 },  // [4] P3 -> P4          (cx=200, base=397 vs P3@397.4, top=267 vs P4@270.9)
-  { x: 268, y: 136, h: 131 }   // [5] P4 -> TOP         (cx=280, base=267 vs P4@267.4, top=136 vs TOP@140)
+  { x: 108, y: 651, h: 139 },  // [0] FLOOR -> P1 left  (cx=120)
+  { x: 368, y: 662, h: 128 },  // [1] FLOOR -> P1 right (cx=380)
+  { x: 228, y: 526, h: 134 },  // [2] P1 -> P2          (cx=240)
+  { x: 338, y: 400, h: 125 },  // [3] P2 -> P3          (cx=350)
+  { x: 188, y: 269, h: 128 },  // [4] P3 -> P4          (cx=200)
+  { x: 268, y: 136, h: 133 }   // [5] P4 -> TOP         (cx=280)
 ];
 const LADDER_W = 24;
 const TOP = platforms[5];
@@ -165,7 +165,7 @@ let state = 'INTRO_BLACK', stateT = 0, totalT = 0;
 let skipDone = false;
 
 function skipToGame() {
-  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjThrowT = 0; lastSpawnDir = 1; briefcases.length = 0; player.lives = 3; player.invulnT = 0; }
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjThrowT = 0; briefcases.length = 0; player.lives = 3; player.invulnT = 0; }
 }
 
 // ─────────────────────────────────────────────
@@ -476,16 +476,14 @@ const CAPSULE_ROLL_SPD = 75;
 const CAPSULE_GRAV = 1100;
 const CAPSULE_LADDER_DROP_CHANCE = 0.65;           // Block 2.5 — bumped from 0.5
 let dtjThrowT = 0;       // throw animation timer (>0 → show dtj_throw)
-let lastSpawnDir = 1;    // Block 2.5 — sign of most recent capsule vx (default +1 = right)
+// Block 2.6 — lastSpawnDir removed; Level 1 capsules always roll rightward from the static barrel
 
 function spawnCapsule() {
-  // Block 2.5 — random direction + random x in middle 60% of TOP
-  const vx = (Math.random() < 0.5 ? -1 : 1) * CAPSULE_ROLL_SPD;
-  const spawnX = TOP.x + TOP.w * 0.2 + Math.random() * TOP.w * 0.6;
+  // Block 2.6 — Level 1: capsules always roll rightward from the static barrel at TOP.x+50.
   capsules.push({
-    x: spawnX,
+    x: TOP.x + 50,                 // spawns FROM the static barrel decoration
     y: TOP.y - CAPSULE_R,          // sitting on TOP platform
-    vx: vx,
+    vx: CAPSULE_ROLL_SPD,          // always positive (rightward)
     vy: 0,
     rolling: true,
     onPlat: TOP,
@@ -493,8 +491,7 @@ function spawnCapsule() {
     lifeTimer: 4.0,                // Block 2 — capsule breaks at 0
   });
   dtjThrowT = 0.5;
-  lastSpawnDir = Math.sign(vx) || 1;
-  // Block 2.5 — pick next spawn delay (2.5–4.5s)
+  // Block 2.5 — random spawn interval preserved (2.5–4.5s)
   capsuleSpawnInterval = 2.5 + Math.random() * 2.0;
 }
 
@@ -1737,7 +1734,7 @@ function drawHUD() {
     drawHeart(startX + i * (heartSize + heartGap), heartY, heartSize, i < player.lives);
   }
   ctx.fillStyle='#ffffff'; ctx.font='bold 13px monospace'; ctx.textAlign='center';
-  ctx.fillText('DNC vs D.T.J.', W/2, 21);
+  ctx.fillText('DNC vs DJT', W/2, 21);
   ctx.fillStyle='#ffcc00'; ctx.textAlign='right';
   ctx.fillText('SCORE: 0', W-8, 21);
 }
@@ -1792,15 +1789,22 @@ function drawGameplay(shake) {
   drawTV(TOP.x+TOP.w-46,  TOP.y-68, 'MSNBC', totalT);
   drawTV(TOP.x+TOP.w-46,  TOP.y-34, 'MSNBC', totalT+0.4);
 
+  // Block 2.6 — static barrel decoration on TOP, screen-LEFT of DTJ (which is DTJ's right hand side).
+  // Drawn AFTER platforms but BEFORE DTJ so DTJ overlaps it visually if they cross.
+  // Decorative only — no entity, no collision. Capsules spawn FROM this position (TOP.x+50).
+  // y arg is the foot/bottom edge sitting on TOP surface; footFrac=1.0 anchors the bottom there.
+  drawSprite('barrel_upright', TOP.x + 50, TOP.y, CAPSULE_R * 2, false, 1.0);
+
   // Capsules + briefcases (rendered behind characters so DNC/DTJ overlap looks right)
   drawCapsules();
   drawBriefcases();
 
   // D.T.J. at top center — swap to throw sprite during throw window.
-  // Block 2.5 — flip dtj_throw to face the most recently spawned capsule (lastSpawnDir < 0 → face left).
-  // dtj_idle keeps its default orientation (no flip).
+  // Block 2.6 — Level 1 throws are always rightward, so dtj_throw uses a fixed flip (no conditional).
+  // flip=false because the dtj_throw asset's default orientation already places the throwing arm on screen-right.
+  // If field-test shows the arm rendering on screen-left, flip this single boolean to true.
   if (dtjThrowT > 0) {
-    drawSprite('dtj_throw', TOP.x + 80, TOP.y, 110, lastSpawnDir < 0, 0.92);
+    drawSprite('dtj_throw', TOP.x + 80, TOP.y, 110, false, 0.92);
   } else {
     drawSprite('dtj_idle', TOP.x + 80, TOP.y, 110);
   }
@@ -1955,7 +1959,7 @@ function loop(ts) {
       // Shake on first hit
       if(shatterT>0.5&&shatterT<0.55){ shakeAmt=10; boom(W/2,500,28,true); }
       if(shatterT>1.2&&shatterT<1.25){ shakeAmt=8; }
-      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjThrowT=0; lastSpawnDir=1; briefcases.length=0; player.lives=3; player.invulnT=0; }
+      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjThrowT=0; briefcases.length=0; player.lives=3; player.invulnT=0; }
       break;
   }
 
