@@ -2311,8 +2311,8 @@ function drawHeart(cx, cy, size, filled) {
 }
 
 function drawHUD() {
-  // E2 — HUD bar pinned at top (y=0..HUD_HEIGHT). Hearts on left, title centered, score on right.
-  ctx.fillStyle='rgba(0,0,10,0.88)'; ctx.fillRect(0, HUD_Y, W, HUD_HEIGHT);
+  // F1 — HUD background fill REMOVED. Hearts, title, and score render directly over the night
+  // sky. (Was: ctx.fillStyle='rgba(0,0,10,0.88)'; ctx.fillRect(0, HUD_Y, W, HUD_HEIGHT);)
   // Block 3 — three hearts: filled = remaining, outlined = lost
   const heartSize = 14, heartGap = 4, startX = 8 + heartSize / 2, heartY = HUD_Y + 12;
   for (let i = 0; i < 3; i++) {
