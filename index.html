@@ -2600,6 +2600,28 @@ function drawBubble(x, y, text, alpha) {
   ctx.restore();
 }
 
+// I3 — auto-width speech bubble for cutscene dialogue (some lines exceed the 180-px gameplay
+// bubble width). Tail points down at (x, y); bubble grows up + symmetrical around x with padding.
+function drawCutsceneBubble(x, y, text, alpha) {
+  ctx.save(); ctx.globalAlpha = alpha;
+  const fontPx = 12;
+  ctx.font = 'bold ' + fontPx + 'px monospace';
+  const pad = 14;
+  const tw = ctx.measureText(text).width;
+  const pw = Math.max(120, Math.ceil(tw) + pad * 2);
+  const ph = 32;
+  const px = Math.max(4, Math.min(W - pw - 4, x - pw/2));    // clamp inside canvas
+  const py = y - ph - 16;
+  ctx.fillStyle = '#fff'; ctx.strokeStyle = '#cc0000'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 8); ctx.fill(); ctx.stroke();
+  // Tail
+  ctx.beginPath(); ctx.moveTo(x-9, py+ph); ctx.lineTo(x, py+ph+16); ctx.lineTo(x+9, py+ph); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#cc0000'; ctx.textAlign = 'center';
+  ctx.fillText(text, px + pw/2, py + ph/2 + fontPx/2 - 1);
+  ctx.restore();
+}
+
 // ─────────────────────────────────────────────
 //  GAMEPLAY LAYOUT
 // ─────────────────────────────────────────────
@@ -3146,10 +3168,34 @@ function loop(ts) {
 
     case 'CUTSCENE_PHASE1': {
       cutsceneT += dt;
-      // I2 — RNC stage backdrop (black letterbox + scaled stage png). I3 will add DNC, DTJ, dialogue.
       drawRncStage();
-      ctx.fillStyle = '#888'; ctx.font = '12px monospace'; ctx.textAlign = 'center';
-      ctx.fillText('CUTSCENE_PHASE1  t=' + stateT.toFixed(2), W/2, 30);
+
+      // I3 — DNC walks from x=80 to x=200 over 2.0s (60 px/s, 120 px), then idles. drawDonkey
+      // expects the y arg as the foot position; STAGE_FLOOR_Y (=540) is the gold-star carpet line.
+      const DNC_START_X = 80;
+      const DNC_TARGET_X = 200;
+      const DNC_WALK_DUR = (DNC_TARGET_X - DNC_START_X) / 60;     // = 2.0s
+      const dncProgress = Math.min(stateT, DNC_WALK_DUR) / DNC_WALK_DUR;
+      const dncX = DNC_START_X + (DNC_TARGET_X - DNC_START_X) * dncProgress;
+      const dncWalking = stateT < DNC_WALK_DUR;
+      drawDonkey(dncX, STAGE_FLOOR_Y, 1.0, false, dncWalking, stateT);
+
+      // DTJ idle in front of the podium (right side of stage). 80px tall per spec.
+      const dtjX = 320;
+      drawSprite('dtj_idle', dtjX, STAGE_FLOOR_Y, 80, false, 1.0);
+
+      // Speech bubbles. DNC fires at t=0.0, DTJ at t=0.3. Both hold 1.5s then fade over 0.3s.
+      // DNC: visible 0.0 → 1.8 (1.5 hold + 0.3 fade)
+      if (stateT < 1.8) {
+        const a = stateT < 1.5 ? 1.0 : Math.max(0, 1 - (stateT - 1.5) / 0.3);
+        drawCutsceneBubble(dncX, STAGE_FLOOR_Y - 50, "YOU'RE FIRED, MR. PRESIDENT!", a);
+      }
+      // DTJ: visible 0.3 → 2.1
+      if (stateT >= 0.3 && stateT < 2.1) {
+        const a = stateT < 1.8 ? 1.0 : Math.max(0, 1 - (stateT - 1.8) / 0.3);
+        drawCutsceneBubble(dtjX, STAGE_FLOOR_Y - 80, "WITCH HUNT!", a);
+      }
+
       if (stateT >= CUTSCENE_PHASE1_DURATION) {
         state = 'CUTSCENE_PHASE3';
         stateT = 0;
