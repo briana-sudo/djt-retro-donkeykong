@@ -2525,6 +2525,11 @@ function drawRncStage() {
 // Procedural sky for CUTSCENE_BETWEEN. Vertical gradient + 3–5 drifting cloud blobs.
 // Cloud state initialized lazily on first draw and re-seeded any time the cutscene re-enters.
 const CUTSCENE_CLOUDS = [];
+
+// I4 — eagle entity for the cutscene. mode: 'idle' (not active) | 'descend' | 'grab' | 'ascend'.
+// Lazy-initialized at first frame of CUTSCENE_PHASE3 (when mode==='idle'); reset to 'idle' when
+// PHASE3 transitions to SCORE so a re-entry initializes fresh.
+const cutsceneEagle = { x: 0, y: 0, mode: 'idle', timer: 0, ascentStart: 0 };
 function seedCutsceneClouds() {
   CUTSCENE_CLOUDS.length = 0;
   const N = 4 + Math.floor(Math.random() * 2);            // 4 or 5 clouds
@@ -3205,13 +3210,58 @@ function loop(ts) {
 
     case 'CUTSCENE_PHASE3': {
       cutsceneT += dt;
-      // I2 — RNC stage backdrop. I4 will add eagle descend/ascend with DTJ.
       drawRncStage();
-      ctx.fillStyle = '#888'; ctx.font = '12px monospace'; ctx.textAlign = 'center';
-      ctx.fillText('CUTSCENE_PHASE3  t=' + stateT.toFixed(2), W/2, 30);
-      if (stateT >= 3.0) {
-        state = 'CUTSCENE_SCORE';
-        stateT = 0;
+
+      // I4 — DNC stays at x=200 idle, watching upward. (No bubble in Phase 3.)
+      drawDonkey(200, STAGE_FLOOR_Y, 1.0, false, false, 0);
+
+      // I4 — eagle state machine. Descend at 200 px/s from y=-100 to grab y=DTJ.y-60=480, then
+      // 0.3s grab pause, then ascend at 250 px/s with -30 px/s horizontal drift, DTJ pinned 60px
+      // below eagle. Phase exits when eagle.y < -100 (off top of canvas).
+      const eagle = cutsceneEagle;
+      if (eagle.mode === 'idle') {
+        eagle.x = 320;                                  // = DTJ x from Phase 1
+        eagle.y = -100;
+        eagle.mode = 'descend';
+        eagle.timer = 0;
+        eagle.ascentStart = -1;
+      }
+      const DTJ_GRAB_Y = STAGE_FLOOR_Y - 60;            // = 480
+
+      if (eagle.mode === 'descend') {
+        eagle.y += 200 * dt;
+        if (eagle.y >= DTJ_GRAB_Y) { eagle.y = DTJ_GRAB_Y; eagle.mode = 'grab'; eagle.timer = 0; }
+        // DTJ still on stage
+        drawSprite('dtj_idle', 320, STAGE_FLOOR_Y, 80, false, 1.0);
+        drawSprite('eagle_fly', eagle.x, eagle.y, 80, false, 1.0);
+      } else if (eagle.mode === 'grab') {
+        eagle.timer += dt;
+        drawSprite('dtj_idle', 320, STAGE_FLOOR_Y, 80, false, 1.0);
+        drawSprite('eagle_carry', eagle.x, eagle.y, 80, false, 1.0);
+        if (eagle.timer >= CUTSCENE_PHASE3_GRAB_DELAY) {
+          eagle.mode = 'ascend';
+          eagle.timer = 0;
+          eagle.ascentStart = stateT;
+        }
+      } else if (eagle.mode === 'ascend') {
+        eagle.timer += dt;
+        eagle.y -= 250 * dt;
+        eagle.x -=  30 * dt;
+        const dtjX = eagle.x;
+        const dtjY = eagle.y + 60;                      // DTJ pinned below eagle
+        drawSprite('dtj_idle',    dtjX, dtjY, 80, false, 1.0);
+        drawSprite('eagle_carry', eagle.x, eagle.y, 80, false, 1.0);
+        // "THANK YOU PATRIOTS!" — visible 0..2.0s of ascent, fades over 0.3s
+        if (eagle.timer < 2.3) {
+          const a = eagle.timer < 2.0 ? 1.0 : Math.max(0, 1 - (eagle.timer - 2.0) / 0.3);
+          // Bubble anchored above DTJ's head (DTJ top ≈ dtjY - 80)
+          drawCutsceneBubble(dtjX, dtjY - 80, 'THANK YOU PATRIOTS!', a);
+        }
+        if (eagle.y < -100) {
+          state = 'CUTSCENE_SCORE';
+          stateT = 0;
+          eagle.mode = 'idle';                          // reset for next cutscene run
+        }
       }
       break;
     }
