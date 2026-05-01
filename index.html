@@ -1072,6 +1072,27 @@ function computeDesiredMusic() {
 // cased to delegate to startBgmRotation, which subscribes to the song's 'end' event so each
 // 3-song cycle advances naturally without timers. SILENT just stops the current sound.
 function transitionToMusic(newMusic) {
+  // AUDIO-BUGHUNT-1 LOG POINT 1 — fires on every transitionToMusic call, BEFORE the
+  // early-return check. Captures the from/to MUSIC_STATES, current state, rotation idx,
+  // which Howls are actually playing right now (vs what currentMusic claims), Howler ctx
+  // state, and a timestamp. Diagnostic only — no behavior change.
+  console.log('[BGM:transition]', {
+    from: currentMusic,
+    to: newMusic,
+    state: state,
+    rotationIdx: bgmRotationIdx,
+    actuallyPlaying: (() => {
+      const playing = [];
+      for (const [name, howl] of Object.entries(SOUND_LIBRARY)) {
+        if (howl && typeof howl.playing === 'function' && howl.playing()) {
+          playing.push(name);
+        }
+      }
+      return playing;
+    })(),
+    howlerCtxState: (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx.state : 'no-ctx',
+    t: performance.now().toFixed(0),
+  });
   if (newMusic === currentMusic) return;
   const FADE_MS = 200;
   // AUDIO-3e Fix D — rotation songs (greenwood/queen/brown) get .pause() instead of .stop().
@@ -1153,8 +1174,34 @@ function startBgmRotation() {
   sound.fade(0, targetVol, 200);
   currentlyPlayingSound = songKey;
   sound.once('end', () => {
+    // AUDIO-BUGHUNT-1 LOG POINT 2a — fires when a rotation song reaches its natural end.
+    // Captures which song ended, current state/music, and what the next rotation pick will
+    // be. If this never logs when a song ends, the 'end' event chain is broken (e.g. .pause()
+    // suppressed it, or .off('end') detached it before the song reached duration).
+    const _endedIdx  = bgmRotationIdx;
+    const _nextIdx   = (bgmRotationIdx + 1) % BGM_ROTATION_SONGS.length;
+    console.log('[BGM:end-fired]', {
+      endedSong: BGM_ROTATION_SONGS[_endedIdx],
+      state: state,
+      currentMusic: currentMusic,
+      nextIdx: _nextIdx,
+      nextSong: BGM_ROTATION_SONGS[_nextIdx],
+      t: performance.now().toFixed(0),
+    });
     bgmRotationIdx = (bgmRotationIdx + 1) % BGM_ROTATION_SONGS.length;
     if (currentMusic === MUSIC_STATES.BGM_ROTATION) startBgmRotation();
+    // AUDIO-BUGHUNT-1 LOG POINT 2b — fires after the advancement+restart attempt. If
+    // newSongPlaying === false here, the recursive startBgmRotation didn't actually start
+    // the next song (most likely because currentMusic !== BGM_ROTATION at the moment of
+    // recursion, OR because the .play() call failed/queued).
+    const _newSongName = BGM_ROTATION_SONGS[bgmRotationIdx];
+    const _newHowl     = SOUND_LIBRARY[_newSongName];
+    console.log('[BGM:end-handled]', {
+      newIdx: bgmRotationIdx,
+      newSong: _newSongName,
+      newSongPlaying: (_newHowl && typeof _newHowl.playing === 'function') ? _newHowl.playing() : 'unknown',
+      t: performance.now().toFixed(0),
+    });
   });
 }
 
@@ -1163,6 +1210,24 @@ function startBgmRotation() {
 // handles cross-browser unlock; no per-frame note scheduling needed. PAUSED bails so music
 // doesn't switch during pause.
 function tickBGM() {
+  // AUDIO-BUGHUNT-1 LOG POINT 4 — state-change watcher. Module-level `window._lastLoggedState`
+  // holds the previous state seen by tickBGM. When it differs from the current state, log
+  // the transition with audio context. Fires once per state edge regardless of how many
+  // frames spend in each state. Diagnostic only; no behavior change.
+  if (typeof window._lastLoggedState === 'undefined') {
+    window._lastLoggedState = null;
+  }
+  if (state !== window._lastLoggedState) {
+    console.log('[BGM:state-change]', {
+      from: window._lastLoggedState,
+      to: state,
+      currentMusic: currentMusic,
+      lives: (typeof player !== 'undefined') ? player.lives : 'no-player',
+      rotationIdx: bgmRotationIdx,
+      t: performance.now().toFixed(0),
+    });
+    window._lastLoggedState = state;
+  }
   if (state === 'PAUSED') return;
   const desired = computeDesiredMusic();
   if (desired !== currentMusic) {
@@ -1181,6 +1246,16 @@ function tickBGM() {
 // Self-heal nullifies currentMusic so transitionToMusic doesn't early-return at L1057, then
 // invokes it with the same desired value to issue a fresh play.
 function selfHealBgm() {
+  // AUDIO-BUGHUNT-1 LOG POINT 3a — capture entry vars BEFORE guards. Local var only;
+  // no behavior change. Used by LOG POINT 3b below to log the full eval context once
+  // we know the call passed the guards.
+  const _selfHealEntry = {
+    audioOn: audioOn,
+    state: state,
+    howlerCtxState: (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx.state : 'no-ctx',
+    currentMusic: currentMusic,
+    t: performance.now().toFixed(0),
+  };
   if (!audioOn) return;
   if (state === 'PAUSED') return;
   if (typeof Howler === 'undefined' || !Howler.ctx || Howler.ctx.state !== 'running') return;
@@ -1208,6 +1283,21 @@ function selfHealBgm() {
     const sound    = SOUND_LIBRARY[songName];
     isPlaying = !!(sound && sound.playing());
   }
+  // AUDIO-BUGHUNT-1 LOG POINT 3b — fires for every selfHealBgm call that passes the
+  // guards. Captures entry context (from LOG POINT 3a above), the desired music, whether
+  // the desired Howl is actually playing, and whether self-heal will trigger a forced
+  // transition. If willTrigger is true repeatedly for the same desired song, the heal is
+  // racing against something that re-silences the Howl (R3/R4 likely candidates).
+  console.log('[BGM:selfHeal-eval]', {
+    audioOn:        _selfHealEntry.audioOn,
+    state:          _selfHealEntry.state,
+    howlerCtxState: _selfHealEntry.howlerCtxState,
+    currentMusic:   _selfHealEntry.currentMusic,
+    t:              _selfHealEntry.t,
+    desired:        desired,
+    isPlaying:      isPlaying,
+    willTrigger:   !isPlaying,
+  });
   if (!isPlaying) {
     currentMusic = null;             // sentinel so transitionToMusic doesn't early-return
     transitionToMusic(desired);
