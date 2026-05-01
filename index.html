@@ -3,6 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<!-- N-FIX-8 — iOS Safari PWA hints. Brian's iPhone has the game saved as a home-screen
+     icon (PWA-style launcher). iOS treats home-screen-launched pages slightly differently
+     than browser tabs; these meta tags signal "this page is a standalone PWA," which on
+     some iOS versions resolves audio-routing quirks (the launcher uses a slightly different
+     WebKit instance than the browser tab). black-translucent status bar avoids a top
+     padding artifact on launch. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>DNC vs DJT</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -284,6 +292,11 @@ const RAGDOLL_DEBRIS_LIFE       = 0.4;     // K — debris alpha-fades over this
 const RAGDOLL_BURST_FLASH_ALPHA = 0.6;     // K — full-screen white flash alpha at burst moment
 let   deathReactionT            = 0;
 let   deathPhase                = 'phase1';// 'phase1' | 'phase2'
+// N-FIX-8 — dedicated GAMEOVER_PENDING duration counter. Decoupled from `stateT` so any
+// code path that resets stateT mid-PENDING (legitimate or accidental) cannot bypass the
+// 6-second YMCA-dance protection floor. Reset to 0 only on PENDING entry; incremented per
+// frame in the PENDING update branch.
+let   gameOverPendingT          = 0;
 let   ragdollBurstFlashT        = 0;       // ticks down from 1 across one frame after any burst
 const ragdollDebris             = [];     // K — shared between player + Antifa bursts
 let   gameOverFinalScore        = 0;
@@ -713,20 +726,47 @@ function ensureAudioContext() {
       }
     } catch (e) { /* old-style synchronous resume threw — ignore, retry next gesture */ }
   }
-  // iOS Safari warm-up blip — schedules a brief silent oscillator inside the user gesture
-  // to fully unlock Web Audio. No-op on desktop where the resume above is sufficient. Gated
-  // on state === 'running' so we only fire it when the context is actually ready (avoiding
-  // the iOS race where 'suspended' → 'running' is async even after resume()).
+  // iOS Safari warm-up blips — N-FIX-8 layered fix. Some iOS versions need TWO warm-ups
+  // to fully unlock Web Audio: blip 1 is a silent default-frequency oscillator (wakes the
+  // graph), blip 2 is an explicit 440Hz oscillator at gain=0 (older iOS versions only
+  // accept the audio graph as "primed" after a real frequency has been scheduled). Both
+  // gated on state === 'running' so we only fire when the context is ready.
   if (audioContext && audioContext.state === 'running' && masterChannel) {
     try {
-      const blipOsc  = audioContext.createOscillator();
-      const blipGain = audioContext.createGain();
-      blipGain.gain.value = 0;                            // silent — only purpose is to schedule SOMETHING
-      blipOsc.connect(blipGain);
-      blipGain.connect(masterChannel);
-      blipOsc.start(audioContext.currentTime);
-      blipOsc.stop(audioContext.currentTime + 0.01);
+      // Blip 1 — silent oscillator (wakes the audio graph on most iOS versions).
+      const blip1     = audioContext.createOscillator();
+      const blip1Gain = audioContext.createGain();
+      blip1Gain.gain.value = 0;
+      blip1.connect(blip1Gain);
+      blip1Gain.connect(masterChannel);
+      blip1.start(audioContext.currentTime);
+      blip1.stop(audioContext.currentTime + 0.01);
+      // Blip 2 — 440Hz at gain=0 (older iOS versions only treat the graph as primed after
+      // an explicit frequency has been scheduled).
+      const blip2     = audioContext.createOscillator();
+      blip2.frequency.value = 440;
+      const blip2Gain = audioContext.createGain();
+      blip2Gain.gain.value = 0;
+      blip2.connect(blip2Gain);
+      blip2Gain.connect(masterChannel);
+      blip2.start(audioContext.currentTime);
+      blip2.stop(audioContext.currentTime + 0.05);
+      // N-FIX-8 iOS DIAG (post-blip).
+      if (typeof console !== 'undefined') {
+        console.log('AUDIO IOS DIAG: warm-up blips scheduled, audioContext.currentTime =',
+          audioContext.currentTime);
+      }
     } catch (e) { /* blip failed; main audio path still works on most browsers */ }
+  }
+  // N-FIX-8 — temporary iOS audio diagnostic. Removed in N-FIX-9 once iPhone audio is
+  // confirmed working in field. Logs every ensureAudioContext call so Brian can see
+  // (via Mac Safari Web Inspector OR eruda) whether the context state transitions to
+  // 'running' on iPhone Safari.
+  if (typeof console !== 'undefined') {
+    console.log('AUDIO IOS DIAG: ensureAudioContext called',
+      'context state =', audioContext ? audioContext.state : 'null',
+      'time =', audioContext ? audioContext.currentTime : 'null',
+      'master gain =', masterChannel ? masterChannel.gain.value : 'null');
   }
 }
 
@@ -1269,6 +1309,17 @@ function transitionToMusic(newMusic) {
 function tickBGM() {
   if (!audioContext || !bgmChannel) return;
   if (state === 'PAUSED') return;
+  // N-FIX-8 — temporary iOS audio diagnostic. One-shot log on first tickBGM call after
+  // audio infra is ready. Confirms tickBGM is reaching the state machine + which music
+  // it picks first. Removed in N-FIX-9.
+  if (typeof window !== 'undefined' && !window.__ios_diag_tick_logged) {
+    if (typeof console !== 'undefined') {
+      console.log('AUDIO IOS DIAG: tickBGM running',
+        'state =', state, 'currentMusic =', currentMusic,
+        'audioContext.state =', audioContext.state);
+    }
+    window.__ios_diag_tick_logged = true;
+  }
   const desired = computeDesiredMusic();
   if (desired !== currentMusic) {
     transitionToMusic(desired);
@@ -2483,7 +2534,12 @@ function updateCapsules(dt) {
 // in the same direction the capsule was traveling (so DNC tumbles the way she got hit).
 function hit(source, capsule) {
   if (player.invulnT > 0) return;
-  if (state === 'DEATH_REACTION' || state === 'GAME_OVER') return;
+  // N-FIX-8 — added GAMEOVER_PENDING to the guard. The current call-site (updateCapsules
+  // L2449) already gates on state==='GAMEPLAY' so the leak is theoretical, but defense in
+  // depth: a future call site without the GAMEPLAY gate would otherwise restart the death
+  // sequence during PENDING (resetting stateT and any non-isolated timers). gameOverPendingT
+  // is now isolated, but blocking hit() entirely is the cleanest defense.
+  if (state === 'DEATH_REACTION' || state === 'GAME_OVER' || state === 'GAMEOVER_PENDING') return;
   if (typeof console !== 'undefined') console.log('HIT by', source, '— lives before decrement:', player.lives);
   state = 'DEATH_REACTION';
   stateT = 0;
@@ -6025,6 +6081,7 @@ function loop(ts) {
           // GAME_OVER transition (when dtjDanceState === 'IDLE' && !bubble.active).
           state = 'GAMEOVER_PENDING';
           stateT = 0;
+          gameOverPendingT = 0;        // N-FIX-8 — dedicated PENDING timer; floor of 6.0s before GAME_OVER fires
         } else {
           // L — score PERSISTS across respawn (lives already decremented). Multiplier and
           // briefcase reset (streak loss penalty). Capsules cleared for clean restart.
@@ -6058,13 +6115,15 @@ function loop(ts) {
       updatePelosi(dt);
       updateSS(dt);
       drawGameplay(false);
-      // N-FIX-6 BUG 1 — minimum-duration gate. Math check: dance starts at hit+0.2s during
-      // DEATH_REACTION; DEATH_REACTION ends at hit+1.2s = PENDING entry; dance ends at
-      // hit+0.2+(3.0*2)=6.2s = PENDING+5.0s. With this gate, PENDING runs at least 6.0s
-      // so the YMCA tail has time to fully decay before the GAME_OVER overlay appears.
-      // Belt-and-suspenders against any future dance-state-machine bug that might end the
-      // dance early (dtjDanceState flips to IDLE prematurely).
-      if (stateT >= 6.0 && dtjDanceState === 'IDLE' && !bubble.active) {
+      // N-FIX-8 — dedicated gameOverPendingT counter. Replaces N-FIX-6's `stateT >= 6.0`
+      // gate to isolate the timer from any code path that resets stateT mid-PENDING.
+      // Math: dance starts at hit+0.2s during DEATH_REACTION; DEATH_REACTION ends at
+      // hit+1.2s = PENDING entry; dance ends at hit+0.2+(3.0*2)=6.2s = PENDING+5.0s.
+      // With this 6.0s floor on gameOverPendingT, PENDING runs PENDING+6.0s = hit+7.2s,
+      // giving the dance a full second of post-IDLE buffer for YMCA tail to fully decay
+      // before the GAME_OVER overlay covers the dance.
+      gameOverPendingT += dt;
+      if (gameOverPendingT >= 6.0 && dtjDanceState === 'IDLE' && !bubble.active) {
         if (highScoreNew) {
           initialsEntryActive = true;
           initialsCursor      = 0;
