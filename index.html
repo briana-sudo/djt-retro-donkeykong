@@ -588,6 +588,7 @@ function pickTaunt() {
 
 function fireTaunt(phrase) {
   spawnBubble(phrase, TAUNT_HOLD, TAUNT_FADE);
+  playSfx_taunt();                                                // N — taunt SFX (was silent in M)
 }
 
 function resetTauntTimer() {
@@ -630,12 +631,33 @@ function tickTaunts(dt) {
 }
 
 // ─────────────────────────────────────────────
-//  L — AUDIO CONTEXT + YMCA SYNTH
+//  L / N — AUDIO CONTEXT + CHANNELS + YMCA SYNTH
 // ─────────────────────────────────────────────
 // Web Audio is gated by user-gesture init. First user input on any state primes the context.
 // Subsequent calls are idempotent. iOS Safari requires the context's resume() inside a touch
 // handler too, otherwise it stays in 'suspended' state. ensureAudioContext() handles both.
-let audioContext = null;
+//
+// N — channel topology under the master gain:
+//    master  (1.0 default, 0 when muted by audio toggle)
+//      ├── bgmChannel   (1.0 normal, 0.5 during dance ducking, smooth 200ms ramps)
+//      ├── sfxChannel   (1.0 always)
+//      └── synthChannel (1.0 always — used by Block L's YMCA dance synth, NOT ducked
+//                        because YMCA is the focal audio while the player ragdolls)
+// All play* functions guard on `audioContext && audioOn` — when toggled off, master.gain=0
+// silences output but BGM keeps scheduling so unmute resumes from current position.
+let audioContext   = null;
+let masterChannel  = null;
+let bgmChannel     = null;
+let sfxChannel     = null;
+let synthChannel   = null;
+let audioOn        = true;             // boot default; loaded from localStorage below
+const AUDIO_ON_KEY = 'djt_audio_on';
+
+// Boot — read persisted toggle state. try/catch wraps Safari private mode.
+try {
+  const stored = localStorage.getItem(AUDIO_ON_KEY);
+  if (stored === 'false') audioOn = false;
+} catch (e) { /* default true */ }
 
 function ensureAudioContext() {
   if (!audioContext) {
@@ -644,11 +666,41 @@ function ensureAudioContext() {
       if (Ctor) audioContext = new Ctor();
     } catch (e) {
       audioContext = null;                                       // fallback: silent game
+      return;
+    }
+    if (audioContext) {
+      // N — build channel graph once on first init.
+      try {
+        masterChannel = audioContext.createGain();
+        bgmChannel    = audioContext.createGain();
+        sfxChannel    = audioContext.createGain();
+        synthChannel  = audioContext.createGain();
+        masterChannel.gain.value = audioOn ? 1.0 : 0.0;
+        bgmChannel.gain.value    = 1.0;
+        sfxChannel.gain.value    = 1.0;
+        synthChannel.gain.value  = 1.0;
+        bgmChannel.connect(masterChannel);
+        sfxChannel.connect(masterChannel);
+        synthChannel.connect(masterChannel);
+        masterChannel.connect(audioContext.destination);
+      } catch (e) {
+        // Channel graph build failed; fall back to direct destination routing in legacy code.
+        masterChannel = bgmChannel = sfxChannel = synthChannel = null;
+      }
     }
   }
   if (audioContext && audioContext.state === 'suspended') {
     try { audioContext.resume(); } catch (e) {}
   }
+}
+
+// N — toggle master audio. Idempotent state mutation + localStorage persist + channel apply.
+// Bound to M-key on PC + speaker icon tap on mobile. Works during GAMEPLAY and PAUSED only.
+function toggleAudio() {
+  audioOn = !audioOn;
+  if (masterChannel) masterChannel.gain.value = audioOn ? 1.0 : 0.0;
+  try { localStorage.setItem(AUDIO_ON_KEY, String(audioOn)); } catch (e) {}
+  if (audioOn) playSfx_pauseToggle();                            // feedback chirp on enable
 }
 
 // L — YMCA synth. 130 BPM descending arpeggio (E5, D5, C5, G4) per locked spec. Each note:
@@ -683,7 +735,10 @@ function playYmcaNote(freq) {
   gain.gain.linearRampToValueAtTime(0.0001, now + 0.37);
   osc1.connect(gain);
   osc2.connect(gain);
-  gain.connect(audioContext.destination);
+  // N — route through synthChannel so master toggle silences the YMCA synth (was direct to
+  // destination in Block L, which would have bypassed the toggle). Fallback to destination
+  // if channel graph failed to init.
+  gain.connect(synthChannel || audioContext.destination);
   osc1.start(now);
   osc2.start(now);
   osc1.stop(now + 0.4);
@@ -709,30 +764,439 @@ function stopYmca() {
   }
 }
 
+// ─────────────────────────────────────────────
+//  N — SFX LIBRARY (~25 effects, all synth)
+// ─────────────────────────────────────────────
+// Each playSfx_* function creates oscillators on-demand, sets envelope, plays once, and
+// auto-disconnects via osc.stop(t+dur). No asset loading. All routed through sfxChannel so
+// master toggle silences them. Audio-off / no-context: every function early-returns no-op.
+
+// Generic envelope helper. attack 5ms peak → exp decay to near-zero by durSec. Caller picks
+// frequency, oscillator type, peak gain, total duration. Used by ~half the SFX.
+function _sfxNote(freq, oscType, durSec, gainPeak, channel) {
+  if (!audioContext || !audioOn) return;
+  const ch = channel || sfxChannel || audioContext.destination;
+  const t = audioContext.currentTime;
+  const osc = audioContext.createOscillator();
+  osc.type = oscType;
+  osc.frequency.setValueAtTime(freq, t);
+  const g = audioContext.createGain();
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(gainPeak, t + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(0.01, durSec));
+  osc.connect(g);
+  g.connect(ch);
+  osc.start(t);
+  osc.stop(t + durSec + 0.05);
+}
+
+// Frequency sweep — linear ramp from f0→f1 over durSec.
+function _sfxSweep(f0, f1, oscType, durSec, gainPeak) {
+  if (!audioContext || !audioOn) return;
+  const ch = sfxChannel || audioContext.destination;
+  const t = audioContext.currentTime;
+  const osc = audioContext.createOscillator();
+  osc.type = oscType;
+  osc.frequency.setValueAtTime(f0, t);
+  osc.frequency.linearRampToValueAtTime(f1, t + durSec);
+  const g = audioContext.createGain();
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(gainPeak, t + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + durSec);
+  osc.connect(g); g.connect(ch);
+  osc.start(t); osc.stop(t + durSec + 0.05);
+}
+
+// Filtered noise burst. Used for thuds, splashes, glass, etc.
+function _sfxNoise(durSec, filterType, filterFreq, gainPeak) {
+  if (!audioContext || !audioOn) return;
+  const ch = sfxChannel || audioContext.destination;
+  const t = audioContext.currentTime;
+  const bufferSize = Math.max(1, Math.floor(audioContext.sampleRate * durSec));
+  const buffer = audioContext.createBuffer(1, bufferSize, audioContext.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+  const src = audioContext.createBufferSource();
+  src.buffer = buffer;
+  const filter = audioContext.createBiquadFilter();
+  filter.type = filterType || 'highpass';
+  filter.frequency.value = filterFreq || 1000;
+  const g = audioContext.createGain();
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(gainPeak, t + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + durSec);
+  src.connect(filter); filter.connect(g); g.connect(ch);
+  src.start(t); src.stop(t + durSec + 0.05);
+}
+
+// Arpeggio — sequence of notes at startTime + i*spacing.
+function _sfxArpeggio(freqs, oscType, noteSpacing, noteDur, gainPeak) {
+  if (!audioContext || !audioOn) return;
+  const ch = sfxChannel || audioContext.destination;
+  const t0 = audioContext.currentTime;
+  for (let i = 0; i < freqs.length; i++) {
+    const t = t0 + i * noteSpacing;
+    const osc = audioContext.createOscillator();
+    osc.type = oscType;
+    osc.frequency.setValueAtTime(freqs[i], t);
+    const g = audioContext.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(gainPeak, t + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + noteDur);
+    osc.connect(g); g.connect(ch);
+    osc.start(t); osc.stop(t + noteDur + 0.05);
+  }
+}
+
+// PLAYER ACTIONS
+function playSfx_jump()        { _sfxSweep(200, 400, 'square', 0.10, 0.06); }
+function playSfx_land()        { _sfxNoise(0.06, 'lowpass', 200, 0.05); _sfxNote(80, 'square', 0.06, 0.04); }
+// playSfx_climb intentionally omitted per spec — no sound on ladder ticks.
+
+// CAPSULE EVENTS
+function playSfx_capsuleSpawn()      { _sfxNoise(0.15, 'highpass', 800, 0.04); }
+function playSfx_capsuleBounce()     { _sfxNote(800, 'triangle', 0.08, 0.05); }
+function playSfx_capsuleHitsPlayer() { _sfxNote(200, 'square', 0.20, 0.10); }
+function playSfx_capsuleDestroyed()  { _sfxSweep(600, 200, 'square', 0.10, 0.08); }
+
+// PELOSI
+function playSfx_pelosiGrab()  { _sfxNote(280, 'square', 0.10, 0.05); }
+function playSfx_pelosiSlam()  { _sfxNoise(0.20, 'highpass', 2400, 0.10); }
+function playSfx_pelosiTear()  { _sfxNoise(0.30, 'bandpass', 1200, 0.08); _sfxSweep(200, 80, 'sawtooth', 0.30, 0.05); }
+
+// BRIEFCASE
+function playSfx_briefcaseAppear() { _sfxNote(1200, 'triangle', 0.30, 0.05); }
+function playSfx_briefcasePickup() { _sfxArpeggio([523.25, 659.25, 783.99, 1046.50], 'triangle', 0.075, 0.20, 0.07); }
+
+// ANTIFA & HELPERS
+function playSfx_antifaSpawn()  {
+  // Alarm sting — alternate 400/600 over 4 cycles.
+  if (!audioContext || !audioOn) return;
+  for (let i = 0; i < 4; i++) {
+    const f = (i % 2 === 0) ? 400 : 600;
+    setTimeout(() => _sfxNote(f, 'square', 0.10, 0.07), i * 100);
+  }
+}
+function playSfx_antifaThrown() { _sfxNoise(0.30, 'bandpass', 1000, 0.06); _sfxSweep(300, 700, 'sawtooth', 0.30, 0.04); }
+function playSfx_antifaSplat()  { _sfxNoise(0.15, 'lowpass', 400, 0.08); _sfxNote(120, 'square', 0.15, 0.06); }
+function playSfx_helperKill()   { _sfxSweep(600, 200, 'square', 0.10, 0.08); }
+
+// PLAYER DEATH
+function playSfx_playerHit() { _sfxNote(200, 'square', 0.20, 0.10); }
+function playSfx_burst()     { _sfxNoise(0.20, 'highpass', 1200, 0.08); _sfxSweep(600, 100, 'square', 0.20, 0.06); }
+function playSfx_respawn()   { _sfxNote(800, 'triangle', 0.10, 0.06); }
+
+// WIN / LOSE
+function playSfx_levelComplete() { _sfxArpeggio([523.25, 659.25, 783.99, 1046.50, 1318.51], 'triangle', 0.10, 0.30, 0.08); }
+function playSfx_gameOver()      { _sfxSweep(400, 100, 'triangle', 1.50, 0.08); }
+function playSfx_newHighScore()  { _sfxArpeggio([523.25, 587.33, 659.25, 698.46, 783.99, 880.00], 'triangle', 0.10, 0.20, 0.08); }
+
+// HUD / UI
+function playSfx_initialsCycle()   { _sfxNote(600, 'square', 0.03, 0.04); }
+function playSfx_initialsConfirm() { _sfxNote(1000, 'triangle', 0.10, 0.06); }
+function playSfx_pauseToggle()     { _sfxNote(500, 'triangle', 0.06, 0.05); }
+
+// CUTSCENE
+function playSfx_taunt()        { _sfxNote(300, 'square', 0.08, 0.06); }
+function playSfx_introTaunt()   { _sfxNote(200, 'square', 0.30, 0.10); setTimeout(() => _sfxNote(200, 'square', 0.20, 0.06), 100); }
+function playSfx_eagleScreech() { _sfxSweep(1400, 600, 'sawtooth', 0.50, 0.07); }
+
+// ─────────────────────────────────────────────
+//  N — BACKGROUND MUSIC (100 BPM patriotic march)
+// ─────────────────────────────────────────────
+// Simple 8-bar loop in C major. Square melody + triangle bass. Each bar is 4/4 at 100 BPM
+// (= 0.6s/beat, 2.4s/bar, 19.2s/loop). Schedule one bar at a time — main-loop tick checks
+// `bgmScheduledUntil < currentTime + LOOKAHEAD` and schedules the next bar's notes.
+//
+// Pause behavior: bgmActive=false stops scheduling. Already-scheduled notes finish their tail
+// (~0.5s max). Resume reschedules from the bar after currentTime — phrase position is lost
+// across pause but the march character resumes seamlessly from a bar boundary.
+//
+// Audio toggle (master.gain=0): BGM keeps scheduling so unmute resumes from current position
+// without a phrase reset. BGM and master toggle are independent.
+
+// Melody (C major, square wave). Each note: { f: freq, b: beat-offset-in-bar, d: durBeats }.
+// 8 bars stored as an array of arrays. Melody intentionally a bit goofy — parallel-fifth jumps
+// and a "wrong-note" landing on F natural in bar 4 to give it that cartoon-march feel.
+const BGM_MELODY = [
+  // Bar 1: C - C - E - G
+  [{f:523.25,b:0,d:1},{f:523.25,b:1,d:1},{f:659.25,b:2,d:1},{f:783.99,b:3,d:1}],
+  // Bar 2: G - F - E - D
+  [{f:783.99,b:0,d:1},{f:698.46,b:1,d:1},{f:659.25,b:2,d:1},{f:587.33,b:3,d:1}],
+  // Bar 3: C - E - G - C5
+  [{f:523.25,b:0,d:1},{f:659.25,b:1,d:1},{f:783.99,b:2,d:1},{f:1046.50,b:3,d:1}],
+  // Bar 4: C5 - B - G - F (wrong-note feel: F over the bass C)
+  [{f:1046.50,b:0,d:1},{f:987.77,b:1,d:1},{f:783.99,b:2,d:1},{f:698.46,b:3,d:1}],
+  // Bar 5: E - E - G - G
+  [{f:659.25,b:0,d:1},{f:659.25,b:1,d:1},{f:783.99,b:2,d:1},{f:783.99,b:3,d:1}],
+  // Bar 6: A - G - F - E
+  [{f:880.00,b:0,d:1},{f:783.99,b:1,d:1},{f:698.46,b:2,d:1},{f:659.25,b:3,d:1}],
+  // Bar 7: D - D - F - A
+  [{f:587.33,b:0,d:1},{f:587.33,b:1,d:1},{f:698.46,b:2,d:1},{f:880.00,b:3,d:1}],
+  // Bar 8: G - C - C - C  (turnaround back to bar 1)
+  [{f:783.99,b:0,d:1},{f:523.25,b:1,d:1},{f:523.25,b:2,d:1},{f:523.25,b:3,d:1}],
+];
+// Bass — oom-pah pattern, octaves below tonic + dominant.
+const BGM_BASS = [
+  // Bars 1-8: alternating I-V on beats 1-3 / 2-4 (oom-pah pattern simplified to half notes)
+  [{f:130.81,b:0,d:2},{f:196.00,b:2,d:2}],   // C2 - G2
+  [{f:130.81,b:0,d:2},{f:196.00,b:2,d:2}],
+  [{f:130.81,b:0,d:2},{f:196.00,b:2,d:2}],
+  [{f:130.81,b:0,d:2},{f:196.00,b:2,d:2}],
+  [{f:164.81,b:0,d:2},{f:196.00,b:2,d:2}],   // E2 - G2 (vi-V hint)
+  [{f:174.61,b:0,d:2},{f:196.00,b:2,d:2}],   // F2 - G2 (IV-V)
+  [{f:146.83,b:0,d:2},{f:174.61,b:2,d:2}],   // D2 - F2
+  [{f:196.00,b:0,d:2},{f:130.81,b:2,d:2}],   // G2 - C2 (V-I turnaround)
+];
+const BGM_BPM       = 100;
+const BGM_BEAT_SEC  = 60 / BGM_BPM;                              // 0.6s
+const BGM_BAR_SEC   = 4 * BGM_BEAT_SEC;                          // 2.4s
+const BGM_LOOP_BARS = BGM_MELODY.length;                         // 8
+const BGM_LOOP_SEC  = BGM_LOOP_BARS * BGM_BAR_SEC;               // 19.2s
+const BGM_LOOKAHEAD = 0.5;                                       // schedule notes this many sec ahead
+let   bgmActive          = false;
+let   bgmStartCurrentTime = 0;                                   // audioContext.currentTime when BGM was started
+let   bgmScheduledUntil  = 0;                                    // last contextTime up to which notes are scheduled
+let   bgmDuckLevel       = 1.0;                                  // 1.0 normal, 0.5 ducked
+
+function _bgmScheduleNoteAt(t, freq, durSec, oscType, channel, peak) {
+  const osc = audioContext.createOscillator();
+  osc.type = oscType;
+  osc.frequency.setValueAtTime(freq, t);
+  const g = audioContext.createGain();
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(peak, t + 0.005);
+  g.gain.setValueAtTime(peak * 0.3, t + 0.085);
+  g.gain.linearRampToValueAtTime(0.0001, t + Math.max(0.1, durSec - 0.05));
+  osc.connect(g);
+  g.connect(channel);
+  osc.start(t);
+  osc.stop(t + durSec + 0.05);
+}
+
+function _bgmScheduleBar(barIdx, barStartTime) {
+  if (!audioContext || !bgmChannel) return;
+  const melody = BGM_MELODY[barIdx];
+  const bass   = BGM_BASS[barIdx];
+  for (const n of melody) {
+    _bgmScheduleNoteAt(barStartTime + n.b * BGM_BEAT_SEC, n.f, n.d * BGM_BEAT_SEC, 'square', bgmChannel, 0.05);
+  }
+  for (const n of bass) {
+    _bgmScheduleNoteAt(barStartTime + n.b * BGM_BEAT_SEC, n.f, n.d * BGM_BEAT_SEC, 'triangle', bgmChannel, 0.06);
+  }
+  // Snare-like noise burst on beats 2 and 4 for march feel.
+  for (let beat = 1; beat <= 3; beat += 2) {
+    const t = barStartTime + beat * BGM_BEAT_SEC;
+    if (t < audioContext.currentTime) continue;
+    const dur = 0.05;
+    const bs = audioContext.sampleRate * dur;
+    const buf = audioContext.createBuffer(1, bs, audioContext.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bs; i++) data[i] = Math.random() * 2 - 1;
+    const src = audioContext.createBufferSource();
+    src.buffer = buf;
+    const f = audioContext.createBiquadFilter();
+    f.type = 'highpass'; f.frequency.value = 4000;
+    const g = audioContext.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.04, t + 0.003);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f); f.connect(g); g.connect(bgmChannel);
+    src.start(t); src.stop(t + dur + 0.05);
+  }
+}
+
+function startBGM() {
+  if (!audioContext || !bgmChannel) return;
+  if (bgmActive) return;
+  bgmActive = true;
+  bgmStartCurrentTime = audioContext.currentTime;
+  bgmScheduledUntil = audioContext.currentTime;
+}
+
+function stopBGM() {
+  bgmActive = false;
+  bgmScheduledUntil = 0;
+  // Already-scheduled notes finish their tail naturally (~0.5s max). No need to disconnect
+  // — BGM channel persists; only scheduling stops.
+}
+
+function tickBGM() {
+  if (!bgmActive || !audioContext || !bgmChannel) return;
+  if (state === 'PAUSED') return;                                // pause halts scheduling
+  const now = audioContext.currentTime;
+  while (bgmScheduledUntil < now + BGM_LOOKAHEAD) {
+    // Compute which bar to schedule based on elapsed time since start.
+    const elapsed = bgmScheduledUntil - bgmStartCurrentTime;
+    const barIdx  = Math.floor((elapsed / BGM_BAR_SEC)) % BGM_LOOP_BARS;
+    const barStartT = bgmStartCurrentTime + Math.floor(elapsed / BGM_BAR_SEC) * BGM_BAR_SEC;
+    _bgmScheduleBar(barIdx, barStartT);
+    bgmScheduledUntil = barStartT + BGM_BAR_SEC;
+  }
+}
+
+// N — BGM ducking on dance start/end. 200ms linear ramp via bgmChannel.gain. Synth (YMCA)
+// continues at full volume on synthChannel — only BGM ducks because YMCA is the focal audio
+// during the death dance.
+function duckBGM() {
+  if (!audioContext || !bgmChannel) return;
+  bgmDuckLevel = 0.5;
+  const t = audioContext.currentTime;
+  bgmChannel.gain.cancelScheduledValues(t);
+  bgmChannel.gain.setValueAtTime(bgmChannel.gain.value, t);
+  bgmChannel.gain.linearRampToValueAtTime(0.5, t + 0.2);
+}
+function unduckBGM() {
+  if (!audioContext || !bgmChannel) return;
+  bgmDuckLevel = 1.0;
+  const t = audioContext.currentTime;
+  bgmChannel.gain.cancelScheduledValues(t);
+  bgmChannel.gain.setValueAtTime(bgmChannel.gain.value, t);
+  bgmChannel.gain.linearRampToValueAtTime(1.0, t + 0.2);
+}
+
+// ─────────────────────────────────────────────
+//  N — PAUSE STATE
+// ─────────────────────────────────────────────
+// New game state 'PAUSED'. Entered via P-key, Escape-key, or pause-icon tap during GAMEPLAY.
+// Most update branches gate on state==='GAMEPLAY' so they freeze automatically when state
+// flips to PAUSED. Block M's taunt timer + tickDtjDance + tickBubble + tickBGM all check
+// state==='PAUSED' (or its inverse) explicitly to avoid drift.
+//
+// lastGameplayState: stores the pre-pause state value to restore on unpause. Almost always
+// 'GAMEPLAY' but kept as a string for forward compat (e.g., a future block could allow
+// pausing during a different state).
+let lastGameplayState = 'GAMEPLAY';
+
+function isPausableState() {
+  // Only allow pause during active gameplay. Death animations, game-over, intros, cutscenes
+  // are already non-interactive; pausing them would conflict with their own time-driven logic.
+  return state === 'GAMEPLAY';
+}
+
+function togglePause() {
+  if (state === 'PAUSED') {
+    state = lastGameplayState;
+    stateT = 0;
+    playSfx_pauseToggle();
+  } else if (isPausableState()) {
+    lastGameplayState = state;
+    state = 'PAUSED';
+    stateT = 0;
+    playSfx_pauseToggle();
+  }
+}
+
+function drawPauseOverlay() {
+  if (state !== 'PAUSED') return;
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 48px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('PAUSED', W/2, H/2 - 20);
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.font = 'bold 14px monospace';
+  ctx.fillText('TAP OR PRESS P TO RESUME', W/2, H/2 + 20);
+  ctx.fillStyle = '#9a7a00';
+  ctx.font = '10px monospace';
+  ctx.fillText('Created by Brian Albert', W/2, H - 20);
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────
+//  N — AUDIO + PAUSE ICONS (top-right corner)
+// ─────────────────────────────────────────────
+// Two small icon buttons rendered at the top-right of the canvas, just below the SCORE/HI HUD.
+// Speaker icon (audio toggle) at SPEAKER_BOX. Pause/play icon at PAUSE_BOX (immediately left
+// of speaker). Tap zones are larger than the icon visuals for finger-friendly hit testing.
+const ICON_Y       = 48;                                          // below HUD bar (HUD ends ~y=42)
+const ICON_SIZE    = 22;
+const SPEAKER_BOX  = { x: W - 30, y: ICON_Y, w: ICON_SIZE, h: ICON_SIZE };
+const PAUSE_BOX    = { x: W - 60, y: ICON_Y, w: ICON_SIZE, h: ICON_SIZE };
+
+function drawAudioIcon() {
+  const cx = SPEAKER_BOX.x + SPEAKER_BOX.w / 2;
+  const cy = SPEAKER_BOX.y + SPEAKER_BOX.h / 2;
+  ctx.save();
+  ctx.strokeStyle = audioOn ? '#88ccff' : '#888888';
+  ctx.fillStyle   = audioOn ? '#88ccff' : '#888888';
+  ctx.lineWidth = 2;
+  // Speaker box outline
+  ctx.beginPath();
+  ctx.moveTo(cx - 7, cy - 4);
+  ctx.lineTo(cx - 3, cy - 4);
+  ctx.lineTo(cx + 1, cy - 7);
+  ctx.lineTo(cx + 1, cy + 7);
+  ctx.lineTo(cx - 3, cy + 4);
+  ctx.lineTo(cx - 7, cy + 4);
+  ctx.closePath();
+  ctx.fill();
+  if (audioOn) {
+    // Sound waves
+    ctx.beginPath(); ctx.arc(cx + 4, cy, 4, -Math.PI/3, Math.PI/3); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx + 4, cy, 7, -Math.PI/3, Math.PI/3); ctx.stroke();
+  } else {
+    // Slash through speaker
+    ctx.strokeStyle = '#ff5555';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(cx - 8, cy - 8);
+    ctx.lineTo(cx + 9, cy + 9);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawPauseIcon() {
+  const cx = PAUSE_BOX.x + PAUSE_BOX.w / 2;
+  const cy = PAUSE_BOX.y + PAUSE_BOX.h / 2;
+  ctx.save();
+  ctx.fillStyle = '#88ccff';
+  if (state === 'PAUSED') {
+    // Play triangle (▶)
+    ctx.beginPath();
+    ctx.moveTo(cx - 5, cy - 7);
+    ctx.lineTo(cx + 7, cy);
+    ctx.lineTo(cx - 5, cy + 7);
+    ctx.closePath();
+    ctx.fill();
+  } else {
+    // Pause bars (||)
+    ctx.fillRect(cx - 6, cy - 7, 4, 14);
+    ctx.fillRect(cx + 2, cy - 7, 4, 14);
+  }
+  ctx.restore();
+}
+
+function pointInIconBox(tx, ty, box) {
+  return tx >= box.x && tx <= box.x + box.w && ty >= box.y && ty <= box.y + box.h;
+}
+
 // L — dance tick. Handles trigger countdown → dance start, then dance progression. Called from
 // main loop every frame regardless of state so a dance survives state transitions cleanly
 // (e.g. DEATH_REACTION → GAMEPLAY respawn while dance still playing on TOP).
 function tickDtjDance(dt) {
+  // N — pause halts dance progression. Trigger countdown also frozen so a dance pending at
+  // pause time fires at the expected total elapsed time post-resume.
+  if (state === 'PAUSED') return;
   if (dtjDanceTrigger) {
     dtjDanceTriggerT -= dt;
     if (dtjDanceTriggerT <= 0) {
-      // L — start the dance. Cycles based on lives at trigger time: lives>1 means after the
-      // pending decrement the player will still have a life → 1 cycle. lives===1 means
-      // game-over after decrement → 2 cycles.
       dtjDanceState  = 'DANCING';
       dtjDanceT      = 0;
       dtjDanceCycles = (player.lives > 1) ? 1 : 2;
       dtjDanceTrigger = false;
-      // Cycle 1 bubble: random LOSER!/SAD!.
       const c1 = DTJ_DANCE_BUBBLE_CYCLE1_TEXTS[Math.floor(Math.random() * DTJ_DANCE_BUBBLE_CYCLE1_TEXTS.length)];
       spawnDanceBubble(c1);
       startYmca();
+      duckBGM();                                                  // N — duck BGM on dance start
     }
   }
   if (dtjDanceState === 'DANCING') {
     const prevT = dtjDanceT;
     dtjDanceT += dt;
-    // L — cycle 2 bubble swap: at exactly t=3.0s (start of cycle 2) for game-over dances.
     if (dtjDanceCycles === 2 && prevT < DTJ_DANCE_CYCLE_DURATION && dtjDanceT >= DTJ_DANCE_CYCLE_DURATION) {
       spawnDanceBubble(DTJ_DANCE_BUBBLE_CYCLE2_TEXT);
     }
@@ -741,6 +1205,7 @@ function tickDtjDance(dt) {
       dtjDanceState = 'IDLE';
       dtjDanceT = 0;
       stopYmca();
+      unduckBGM();                                                // N — restore BGM on dance end
     }
   }
   tickBubble(dt);
@@ -813,6 +1278,16 @@ window.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (GAME_KEYS.has(e.code)) e.preventDefault();
   ensureAudioContext();                                          // L — first-input audio gate (PC keyboard path)
+  // N — global audio toggle (M-key). Works in any state.
+  if (e.code === 'KeyM') { toggleAudio(); return; }
+  // N — pause toggle (P-key, Escape). togglePause internally gates on isPausableState().
+  if (e.code === 'KeyP' || e.code === 'Escape') {
+    e.preventDefault();
+    togglePause();
+    return;
+  }
+  // N — PAUSED state eats all OTHER input (no movement, no UI advance).
+  if (state === 'PAUSED') return;
   // I1 — cutscene states route through cutsceneAdvance (which honors per-state rules).
   // WIN_FREEZE eats input (still in pause). Intro states bounce to GAMEPLAY via skipToGame.
   // J — DEATH_REACTION eats input. GAME_OVER tap = restartFromGameOver — full reset.
@@ -1129,6 +1604,7 @@ function updatePlayer(dt) {
   if (doJump && player.onGround) {
     player.vy = JUMP_VY;
     player.onGround = false;
+    playSfx_jump();                                              // N — short upward chirp on jump
   }
 
   // Gravity
@@ -1245,6 +1721,7 @@ let   cutsceneT              = 0;             // seconds since CUTSCENE_FADE_IN 
 
 function triggerWin() {
   if (state !== 'GAMEPLAY') return;
+  playSfx_levelComplete();                                       // N — fanfare sting on win trigger
   // H1 — flat WIN_BONUS (no multiplier).
   playerScore += WIN_BONUS;
   stats.winBonus = WIN_BONUS;                      // I5 — capture for breakdown
@@ -1512,6 +1989,7 @@ function hit(source, capsule) {
   // first. Cycle count decided at trigger time inside tickDtjDance based on player.lives.
   dtjDanceTrigger  = true;
   dtjDanceTriggerT = DTJ_DANCE_TRIGGER_DELAY;
+  playSfx_capsuleHitsPlayer();                            // N — thwack on hit moment
 }
 
 // L — per-respawn reset (renamed from J's respawnPlayer + extended). Lives already decremented
@@ -1646,6 +2124,9 @@ function resetForGameOver() {
   highScoreNew       = false;
   gameOverFinalScore = 0;
   _resetEntitiesAndPerLevel();
+  // N — defensive BGM stop in case the GAMEOVER_PENDING → GAME_OVER transition was bypassed
+  // (shouldn't happen post-L-FIX-1 wait gate, but harmless if BGM is already stopped).
+  stopBGM();
   state  = 'INTRO_BLACK';
   stateT = 0;
 }
@@ -1670,6 +2151,7 @@ function cycleInitialsLetter(delta) {
   const len  = INITIALS_CYCLE.length;
   const next = ((safe + delta) % len + len) % len;
   initialsLetters[initialsCursor] = INITIALS_CYCLE[next];
+  playSfx_initialsCycle();                                               // N — blip on each cycle step
 }
 function setInitialsLetter(ch) {
   if (!initialsEntryActive) return;
@@ -1734,6 +2216,7 @@ function endInitialsArrowHold() {
 }
 function submitInitialsEntry() {
   if (!initialsEntryActive) return;
+  playSfx_initialsConfirm();                                             // N — ding on submit
   const built = initialsLetters.join('');
   // K-FIX-5 — push into leaderboard (was: highScoreInitials = built; saveHighScore + saveHighScoreInitials).
   // Belt-and-suspenders regex match here too (input paths are constrained, but defense-in-depth).
@@ -1986,6 +2469,7 @@ function spawnPickupOnPlatform(plat, fixedX) {
   pickup.y = pickup.baseY;
   pickup.bobPhase = 0;
   pickup.active = true;
+  playSfx_briefcaseAppear();                                     // N — shimmer when briefcase appears
 }
 
 function spawnFirstPickup() {
@@ -2034,6 +2518,7 @@ function updatePickup(dt) {
     addScore(BRIEFCASE_SCORE, true, pickup.x, pickup.y - 20, '#88ff88');
     multiplier = Math.min(multiplier + MULT_ADD, MULT_MAX);
     multiplierT = MULT_DURATION;
+    playSfx_briefcasePickup();                                  // N — powerup chime on collect
     triggerHelperSpawn('briefcase');
     pickup.active = false;
     pickupSpawnTimer = 0;
@@ -2180,6 +2665,7 @@ function updateHelpers(dt) {
             h.ragdollPhase = 'phase2';
             h.ragdollPhaseT = 0;
             spawnRagdollBurst(h.x, h.y - h.h * 0.5, DEATH_DEBRIS_COUNT);
+            playSfx_antifaSplat();                            // N — splat on Antifa landing
           }
         } else {
           // phase2 — Antifa sprite suppressed in drawHelpers; debris IS the visual. After
@@ -2266,6 +2752,7 @@ function updateHelpers(dt) {
         stats.helperKillCount++;
         addScore(HELPER_KILL_SCORE, true, c.x, c.y - 20, '#ff88ff');
         capsules.splice(ci, 1);
+        playSfx_helperKill();                                  // N — pop on helper kill
         if (h.type === 'ZOMBIE') { helperKilled = true; break; }
       }
     }
@@ -2371,6 +2858,7 @@ function updateSS(dt) {
           a.deathVy        = SS_THROW_VY;
           a.deathRotation  = 0;
           a.grabbed        = false;
+          playSfx_antifaThrown();                              // N — yeet whoosh on throw
         }
         u.state = 'IDLE';
         u.stateT = 0;
@@ -2413,6 +2901,7 @@ function triggerHelperSpawn(reason) {
   if (Math.random() < 0.5) {
     spawnAntifaWave();
     fireAntifaSpawnTaunt();                                       // M — contextual 'RADICAL LEFT MOB!' taunt
+    playSfx_antifaSpawn();                                        // N — alarm sting on Antifa wave
   } else {
     spawnZombieWave();
   }
@@ -2580,6 +3069,7 @@ function updatePelosi(dt) {
         const ci = capsules.indexOf(pelosi.targetCapsule);
         if (ci >= 0) capsules.splice(ci, 1);
         spawnPelosiGlassShatter(pelosi.x, pelosi.y - PELOSI_HEIGHT * 0.55);
+        playSfx_pelosiSlam();                                  // N — glass shatter on slam
         pelosi.phase = 'SLAM';
         pelosi.phaseT = 0;
         break;
@@ -2612,6 +3102,7 @@ function updatePelosi(dt) {
         const baseY = pelosi.y - PELOSI_HEIGHT * 0.55;
         tornPieces.push({ x: pelosi.x - 6, y: baseY, vx: -180, vy: -240, rot: 0, rotV:  6, t: 0 });
         tornPieces.push({ x: pelosi.x + 6, y: baseY, vx:  180, vy: -260, rot: 0, rotV: -6, t: 0 });
+        playSfx_pelosiTear();                                  // N — paper rip + low rumble
         // H2 — Pelosi tear → +500 × multiplier (was flat 500). pelosiFlash overlay still shown.
         stats.pelosiCount++;
         addScore(PELOSI_BONUS, true, pelosi.x, pelosi.y - PELOSI_HEIGHT, '#ffcc00');
@@ -2786,6 +3277,7 @@ const STAIR_MID_X = W / 2 - 10; // where he stops before climbing
 
 // Arm raise for taunt
 let tauntArm = 0, tauntBubble = 0;
+let introTauntSfxFired = false;     // N — one-shot guard for FAKE NEWS! intro SFX
 
 // Shatter progress
 let shatterT = 0, rampReveal = 0, buildingFade = 1;
@@ -3580,6 +4072,17 @@ function applyTouchState() {
 canvas.addEventListener('pointerdown', e => {
   e.preventDefault();
   ensureAudioContext();                                          // L — first-input audio gate (mobile primary path)
+  // N — speaker + pause icon hit-test (canvas-pixel coords). Icons render top-right; tap-zones
+  // checked BEFORE state routing so the toggles work in any state where the icons are visible
+  // (audio: any state; pause: only in pausable states, but the icon is rendered then).
+  {
+    const rN = canvas.getBoundingClientRect();
+    const txN = (e.clientX - rN.left) / scale, tyN = (e.clientY - rN.top) / scale;
+    if (pointInIconBox(txN, tyN, SPEAKER_BOX)) { toggleAudio(); return; }
+    if (pointInIconBox(txN, tyN, PAUSE_BOX))   { togglePause(); return; }
+  }
+  // N — PAUSED eats canvas taps (icon taps already handled above).
+  if (state === 'PAUSED') return;
   // I1 — cutscene tap routes through cutsceneAdvance (per-state advance rules).
   // WIN_FREEZE / CUTSCENE_FADE_IN eat input; intro states skipToGame; GAMEPLAY = normal.
   // J — DEATH_REACTION eats input. GAME_OVER tap = restartFromGameOver (full reset).
@@ -3622,6 +4125,18 @@ canvas.addEventListener('touchstart', e=>{
                         // so cutsceneAdvance / restart paths don't double-fire per tap.
                         // Listener registered with {passive:false} below to honor preventDefault.
   ensureAudioContext(); // L — first-input audio gate (iOS Safari fallback path)
+  // N — speaker + pause icon hit-test before state routing.
+  {
+    const r0 = canvas.getBoundingClientRect();
+    const t0N = e.changedTouches[0];
+    if (t0N) {
+      const txN = (t0N.clientX - r0.left) / scale, tyN = (t0N.clientY - r0.top) / scale;
+      if (pointInIconBox(txN, tyN, SPEAKER_BOX)) { toggleAudio(); return; }
+      if (pointInIconBox(txN, tyN, PAUSE_BOX))   { togglePause(); return; }
+    }
+  }
+  // N — PAUSED eats canvas taps.
+  if (state === 'PAUSED') return;
   // I1 — cutscene tap routes through cutsceneAdvance (per-state advance rules).
   // WIN_FREEZE / CUTSCENE_FADE_IN eat input; intro states skipToGame; GAMEPLAY = normal.
   // J — DEATH_REACTION eats input. GAME_OVER tap = restartFromGameOver (full reset).
@@ -4423,7 +4938,8 @@ function drawGameplay(shake) {
   drawHUD();
   drawTicker();
   drawDpad();
-
+  // N — icons + pause overlay drawn at outer-loop level (after the state switch) so they're
+  // always on top regardless of which state's case body rendered.
 }
 
 
@@ -4461,7 +4977,12 @@ function loop(ts) {
 
   // M — taunt timer ticks every frame; the function gates internally on state==='GAMEPLAY' +
   // dance-not-active + bubble-not-active so it's a no-op during intros/cutscenes/dance/etc.
+  // N — also gates on state==='PAUSED' (state==='GAMEPLAY' check excludes PAUSED implicitly).
   tickTaunts(dt);
+
+  // N — BGM scheduler. Internally gates on bgmActive + state==='PAUSED' check; no-op when
+  // BGM is stopped (intros, GAME_OVER, etc.). Schedules notes ahead by BGM_LOOKAHEAD seconds.
+  tickBGM();
 
   // K — initials-entry "INITIALS SAVED" confirmation timer ticks here so the 1.0s display
   // shows even if the GAME_OVER case re-renders from scratch each frame.
@@ -4546,7 +5067,7 @@ function loop(ts) {
           // Reached target — hold briefly then transition
           stairsX = targetX;
           if (stairsT > 1.2) {       // 1.2s at top before taunt
-            state='INTRO_TAUNT'; stateT=0; tauntArm=0; tauntBubble=0;
+            state='INTRO_TAUNT'; stateT=0; tauntArm=0; tauntBubble=0; introTauntSfxFired=false;
           }
         }
       }
@@ -4561,6 +5082,11 @@ function loop(ts) {
       } else {
         tauntArm = Math.min((stateT-2.5)/0.9, 1);
         tauntBubble = stateT > 3.2 ? Math.min((stateT-3.2)/0.5, 1) : 0;
+        // N — fire FAKE NEWS! intro-taunt SFX once when the bubble starts to appear (stateT=3.2).
+        if (!introTauntSfxFired && stateT > 3.2) {
+          playSfx_introTaunt();
+          introTauntSfxFired = true;
+        }
       }
       if(stateT > 6.0){
         state='INTRO_SHATTER';stateT=0;shatterT=0;rampReveal=0;buildingFade=1;
@@ -4593,7 +5119,7 @@ function loop(ts) {
       // Shake on first hit
       if(shatterT>0.5&&shatterT<0.55){ shakeAmt=10; boom(W/2,500,28,true); }
       if(shatterT>1.2&&shatterT<1.25){ shakeAmt=8; }
-      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjAnimState='IDLE'; dtjAnimT=0; dtjAnimX=DTJ_GAMEPLAY_X; helpers.length=0; player.lives=3; player.invulnT=0; player.platformsReached=new Set([0]); playerScore=0; multiplier=MULT_BASE; multiplierT=0; levelStartTime=totalT; scoreFloats.length=0; resetStats(); pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); pelosi.active=false; pelosi.phase='IDLE'; pelosi.phaseT=0; pelosi.timer=PELOSI_INTERVAL_MIN+Math.random()*(PELOSI_INTERVAL_MAX-PELOSI_INTERVAL_MIN); pelosi.facing=-1; pelosi.targetCapsule=null; pelosiFlash.active=false; tornPieces.length=0; introHasPlayed=true; /* K — single set-site for skip-intro gate */ }
+      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjAnimState='IDLE'; dtjAnimT=0; dtjAnimX=DTJ_GAMEPLAY_X; helpers.length=0; player.lives=3; player.invulnT=0; player.platformsReached=new Set([0]); playerScore=0; multiplier=MULT_BASE; multiplierT=0; levelStartTime=totalT; scoreFloats.length=0; resetStats(); pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); pelosi.active=false; pelosi.phase='IDLE'; pelosi.phaseT=0; pelosi.timer=PELOSI_INTERVAL_MIN+Math.random()*(PELOSI_INTERVAL_MAX-PELOSI_INTERVAL_MIN); pelosi.facing=-1; pelosi.targetCapsule=null; pelosiFlash.active=false; tornPieces.length=0; introHasPlayed=true; /* K — single set-site for skip-intro gate */ startBGM(); /* N — BGM starts on first GAMEPLAY entry; resetForGameOver stops it; resumes via this same path on next intro→GAMEPLAY */ }
       break;
   }
 
@@ -4907,6 +5433,7 @@ function loop(ts) {
           deathPhase = 'phase2';
           // K — burst spawn delegated to shared spawnRagdollBurst (also used by Antifa splat).
           spawnRagdollBurst(player.x, player.y - 24, DEATH_DEBRIS_COUNT);
+          playSfx_burst();                                      // N — pop+fzzt on phase2 trigger
         }
       }
       // K — debris physics ticks every frame in the main loop's tickRagdollDebris(); local
@@ -4945,6 +5472,7 @@ function loop(ts) {
           // Helpers / Pelosi / SS / pickup INTENTIONALLY LEFT IN PLACE — mid-action entities
           // continue across the respawn (funny). Platforms-reached re-seeded inside the helper.
           resetForRespawn();
+          playSfx_respawn();                                   // N — ready ding on respawn
           state = 'GAMEPLAY';
           stateT = 0;
         }
@@ -4974,7 +5502,12 @@ function loop(ts) {
           initialsLetters[1]  = 'A';
           initialsLetters[2]  = 'A';
           initialsConfirmedT  = 0;
+          playSfx_newHighScore();                                  // N — chime ladder on new high
         }
+        // N — BGM stops on GAME_OVER entry. resetForGameOver also handles this defensively for
+        // the tap-to-restart path. Resumes on next INTRO_SHATTER → GAMEPLAY (line ~5066).
+        stopBGM();
+        playSfx_gameOver();                                       // N — sad horn on overlay reveal
         state = 'GAME_OVER';
         stateT = 0;
       }
@@ -5104,6 +5637,7 @@ function loop(ts) {
           combo.x = DTJ_STAGE_X;
           combo.y = STAGE_FLOOR_Y;                       // foot anchor — combo bottom == DTJ bottom
           pushCaption('DJT', 'THANK YOU PATRIOTS!', 2.0);
+          playSfx_eagleScreech();                        // N — eagle screech at hard-cut moment
         }
         dtjStageMode = 'NONE';
         comboActive  = true;
@@ -5217,6 +5751,20 @@ function loop(ts) {
       break;
     }
   }
+
+  // N — PAUSED case is its own state; render gameplay underneath frozen + overlay on top.
+  if (state === 'PAUSED') {
+    // Draw last-known gameplay frame underneath the dim overlay. drawGameplay's update calls
+    // are skipped because we're not in GAMEPLAY case, but the world entities are stationary
+    // (they don't tick during PAUSED), so re-rendering the static scene is correct.
+    drawGameplay(false);
+    drawPauseOverlay();
+  }
+  // N — global icons render OUTSIDE the state switch so they're always visible (audio always
+  // togglable; pause icon visible during GAMEPLAY + PAUSED only — gated inside drawPauseIcon
+  // call here via state check). Drawn LAST so they sit on top of overlays.
+  drawAudioIcon();
+  if (isPausableState() || state === 'PAUSED') drawPauseIcon();
 }
 
 requestAnimationFrame(ts=>{ lastT=ts; requestAnimationFrame(loop); });
