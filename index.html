@@ -454,6 +454,192 @@ function scoreMakesTop5(score) {
 
 highScores = loadHighScores();
 
+// ─────────────────────────────────────────────
+//  L — DTJ YMCA DEATH DANCE
+// ─────────────────────────────────────────────
+// L1 — DTJ performs a 6-pose YMCA dance whenever the player loses a life or the game ends.
+// Plays simultaneously with the player ragdoll+burst (Block J) and Antifa splat (K). DTJ stays
+// on TOP, no gating. 200ms trigger delay after the capsule hit (lets the player ragdoll start
+// first so the dance kicks in once the death is visually established).
+//
+// CYCLES — 1 if the player will respawn (lives > 1 at hit-time, since lives decrements at end
+// of DEATH_REACTION); 2 if this is the last life (game-over). Cycle = 3.0s.
+//
+// SPEECH BUBBLE — Cycle 1: random pick of LOSER!/SAD!. Cycle 2 (game-over only): swap to
+// 'GREATEST WIN EVER!'. Each bubble: hold 1.5s + fade 0.5s = 2.0s on screen (1.0s gap before
+// cycle ends).
+//
+// AUDIO — 130 BPM YMCA-shaped descending arpeggio (E5, D5, C5, G4) on square+triangle oscillators
+// detuned +7 cents. Loops while DANCING; clean stop on dance end.
+//
+// TAUNT GATE — Block M's planned gameplay-taunt system MUST check `dtjDanceState !== 'IDLE'`
+// before firing a taunt. The dance owns DTJ's render slot exclusively while active.
+const DTJ_DANCE_POSES = [
+  { sprite: 'djt1', duration: 0.4 },     // 1: standing neutral, arms loose (intro)
+  { sprite: 'djt6', duration: 1.0 },     // 2: right arm raised high (hero pose, the "Y") — held longest
+  { sprite: 'djt2', duration: 0.4 },     // 3: strutting, arm across chest (swagger)
+  { sprite: 'djt5', duration: 0.4 },     // 4: hands at tie, eyes closed laughing
+  { sprite: 'djt3', duration: 0.4 },     // 5: hands clasped at chest, walking forward
+  { sprite: 'djt4', duration: 0.4 },     // 6: striding with arms swinging out (finale)
+];
+const DTJ_DANCE_CYCLE_DURATION = 3.0;    // sum of pose durations; verified at boot below
+const DTJ_DANCE_TRIGGER_DELAY  = 0.2;    // 200ms after hit before dance starts
+let   dtjDanceState     = 'IDLE';        // 'IDLE' | 'DANCING'
+let   dtjDanceT         = 0;             // elapsed time within the dance (0..totalDuration)
+let   dtjDanceCycles    = 1;             // 1 (respawn) or 2 (game-over)
+let   dtjDanceTrigger   = false;         // pending trigger flag set on capsule hit
+let   dtjDanceTriggerT  = 0;             // countdown to dance start (s)
+
+function getDtjDancePose(tWithinCycle) {
+  let elapsed = 0;
+  for (const pose of DTJ_DANCE_POSES) {
+    if (tWithinCycle < elapsed + pose.duration) return pose.sprite;
+    elapsed += pose.duration;
+  }
+  return DTJ_DANCE_POSES[DTJ_DANCE_POSES.length - 1].sprite;     // safety: end-of-cycle edge
+}
+
+// L — dance speech bubble state. Single global at a time.
+//   text: current bubble text
+//   t:    elapsed time on screen
+//   life: total visible duration (hold + fade = 2.0s)
+let danceBubble = { text: '', t: 0, life: 0, active: false };
+const DTJ_DANCE_BUBBLE_HOLD = 1.5;
+const DTJ_DANCE_BUBBLE_FADE = 0.5;
+const DTJ_DANCE_BUBBLE_LIFE = DTJ_DANCE_BUBBLE_HOLD + DTJ_DANCE_BUBBLE_FADE;
+const DTJ_DANCE_BUBBLE_CYCLE1_TEXTS = ['LOSER!', 'SAD!'];
+const DTJ_DANCE_BUBBLE_CYCLE2_TEXT  = 'GREATEST WIN EVER!';
+
+function spawnDanceBubble(text) {
+  danceBubble.text = text;
+  danceBubble.t = 0;
+  danceBubble.life = DTJ_DANCE_BUBBLE_LIFE;
+  danceBubble.active = true;
+}
+
+function tickDanceBubble(dt) {
+  if (!danceBubble.active) return;
+  danceBubble.t += dt;
+  if (danceBubble.t >= danceBubble.life) danceBubble.active = false;
+}
+
+// ─────────────────────────────────────────────
+//  L — AUDIO CONTEXT + YMCA SYNTH
+// ─────────────────────────────────────────────
+// Web Audio is gated by user-gesture init. First user input on any state primes the context.
+// Subsequent calls are idempotent. iOS Safari requires the context's resume() inside a touch
+// handler too, otherwise it stays in 'suspended' state. ensureAudioContext() handles both.
+let audioContext = null;
+
+function ensureAudioContext() {
+  if (!audioContext) {
+    try {
+      const Ctor = window.AudioContext || window.webkitAudioContext;
+      if (Ctor) audioContext = new Ctor();
+    } catch (e) {
+      audioContext = null;                                       // fallback: silent game
+    }
+  }
+  if (audioContext && audioContext.state === 'suspended') {
+    try { audioContext.resume(); } catch (e) {}
+  }
+}
+
+// L — YMCA synth. 130 BPM descending arpeggio (E5, D5, C5, G4) per locked spec. Each note:
+// square + triangle oscillators, triangle detuned +7 cents for chorus. Per-note ADSR envelope
+// (attack 5ms, decay 80ms to sustain 0.3, release 50ms). Notes scheduled via setInterval at
+// the per-note duration (60/130 ≈ 0.4615s). startYmca() idempotent; stopYmca() clears the
+// scheduler; running notes finish their tail naturally via the envelope.
+const YMCA_MELODY    = [659.25, 587.33, 523.25, 392.00];         // E5, D5, C5, G4
+const YMCA_BPM       = 130;
+const YMCA_NOTE_DUR  = 60 / YMCA_BPM;                            // seconds per note
+const YMCA_DETUNE    = 1.00405;                                  // +7 cents = 2^(7/1200)
+let   ymcaSchedulerId = null;
+let   ymcaNoteIdx     = 0;
+
+function playYmcaNote(freq) {
+  if (!audioContext) return;
+  const now = audioContext.currentTime;
+  const osc1 = audioContext.createOscillator();
+  osc1.type = 'square';
+  osc1.frequency.setValueAtTime(freq, now);
+  const osc2 = audioContext.createOscillator();
+  osc2.type = 'triangle';
+  osc2.frequency.setValueAtTime(freq * YMCA_DETUNE, now);
+  const gain = audioContext.createGain();
+  // ADSR: attack 5ms → 0.08, decay 80ms → 0.024 (sustain 0.3 of peak), release 50ms → 0.
+  const peak = 0.08;
+  const sustain = peak * 0.3;
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(peak, now + 0.005);
+  gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, sustain), now + 0.085);
+  gain.gain.setValueAtTime(sustain, now + 0.32);
+  gain.gain.linearRampToValueAtTime(0.0001, now + 0.37);
+  osc1.connect(gain);
+  osc2.connect(gain);
+  gain.connect(audioContext.destination);
+  osc1.start(now);
+  osc2.start(now);
+  osc1.stop(now + 0.4);
+  osc2.stop(now + 0.4);
+}
+
+function startYmca() {
+  if (!audioContext) return;
+  if (ymcaSchedulerId !== null) return;                          // already playing
+  ymcaNoteIdx = 0;
+  playYmcaNote(YMCA_MELODY[ymcaNoteIdx]);
+  ymcaNoteIdx = (ymcaNoteIdx + 1) % YMCA_MELODY.length;
+  ymcaSchedulerId = setInterval(() => {
+    playYmcaNote(YMCA_MELODY[ymcaNoteIdx]);
+    ymcaNoteIdx = (ymcaNoteIdx + 1) % YMCA_MELODY.length;
+  }, YMCA_NOTE_DUR * 1000);
+}
+
+function stopYmca() {
+  if (ymcaSchedulerId !== null) {
+    clearInterval(ymcaSchedulerId);
+    ymcaSchedulerId = null;
+  }
+}
+
+// L — dance tick. Handles trigger countdown → dance start, then dance progression. Called from
+// main loop every frame regardless of state so a dance survives state transitions cleanly
+// (e.g. DEATH_REACTION → GAMEPLAY respawn while dance still playing on TOP).
+function tickDtjDance(dt) {
+  if (dtjDanceTrigger) {
+    dtjDanceTriggerT -= dt;
+    if (dtjDanceTriggerT <= 0) {
+      // L — start the dance. Cycles based on lives at trigger time: lives>1 means after the
+      // pending decrement the player will still have a life → 1 cycle. lives===1 means
+      // game-over after decrement → 2 cycles.
+      dtjDanceState  = 'DANCING';
+      dtjDanceT      = 0;
+      dtjDanceCycles = (player.lives > 1) ? 1 : 2;
+      dtjDanceTrigger = false;
+      // Cycle 1 bubble: random LOSER!/SAD!.
+      const c1 = DTJ_DANCE_BUBBLE_CYCLE1_TEXTS[Math.floor(Math.random() * DTJ_DANCE_BUBBLE_CYCLE1_TEXTS.length)];
+      spawnDanceBubble(c1);
+      startYmca();
+    }
+  }
+  if (dtjDanceState === 'DANCING') {
+    const prevT = dtjDanceT;
+    dtjDanceT += dt;
+    // L — cycle 2 bubble swap: at exactly t=3.0s (start of cycle 2) for game-over dances.
+    if (dtjDanceCycles === 2 && prevT < DTJ_DANCE_CYCLE_DURATION && dtjDanceT >= DTJ_DANCE_CYCLE_DURATION) {
+      spawnDanceBubble(DTJ_DANCE_BUBBLE_CYCLE2_TEXT);
+    }
+    const totalDuration = DTJ_DANCE_CYCLE_DURATION * dtjDanceCycles;
+    if (dtjDanceT >= totalDuration) {
+      dtjDanceState = 'IDLE';
+      dtjDanceT = 0;
+      stopYmca();
+    }
+  }
+  tickDanceBubble(dt);
+}
+
 // I1 — cutscene input: route a tap to the next phase based on current state.
 //   CUTSCENE_PHASE1 / CUTSCENE_PHASE3 with cutsceneT >= 10s: skip straight to SCORE
 //   CUTSCENE_SCORE: advance to BETWEEN
@@ -520,6 +706,7 @@ const GAME_KEYS = new Set(['ArrowLeft','ArrowRight','Space','KeyA','KeyZ']);
 window.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (GAME_KEYS.has(e.code)) e.preventDefault();
+  ensureAudioContext();                                          // L — first-input audio gate (PC keyboard path)
   // I1 — cutscene states route through cutsceneAdvance (which honors per-state rules).
   // WIN_FREEZE eats input (still in pause). Intro states bounce to GAMEPLAY via skipToGame.
   // J — DEATH_REACTION eats input. GAME_OVER tap = restartFromGameOver — full reset.
@@ -1212,16 +1399,23 @@ function hit(source, capsule) {
   player.deathRotation = 0;                               // degrees, accumulates at 720°/s
   player.vx = 0;
   player.vy = 0;
+  // L — schedule the YMCA dance to start 200ms after the hit so the player ragdoll lifts off
+  // first. Cycle count decided at trigger time inside tickDtjDance based on player.lives.
+  dtjDanceTrigger  = true;
+  dtjDanceTriggerT = DTJ_DANCE_TRIGGER_DELAY;
 }
 
-// J — respawn the player at the FLOOR start position with i-frames. Score / multiplier /
-// briefcase count / etc. PERSIST across the respawn (only platforms-reached resets so the
-// +500 reach bonus is re-earnable per life, matching pre-J behavior).
-function respawnPlayer() {
+// L — per-respawn reset (renamed from J's respawnPlayer + extended). Lives already decremented
+// by the DEATH_REACTION end-of-reaction transition. Score PERSISTS across respawn. Multiplier
+// and briefcase-derived stats RESET (Q-multiplier-on-respawn=B per L spec — streak loss is a
+// real penalty). Capsules CLEARED for clean restart. Helpers / Pelosi / Secret Service /
+// briefcase pickups all LEFT IN PLACE — seeing them mid-action when DNC respawns is funny.
+function resetForRespawn() {
   player.x = FLOOR.x + 60;
   player.y = FLOOR.y - 1;
   player.vx = 0;
   player.vy = 0;
+  player.facing = 1;
   player.onLadder = false;
   player.onGround = true;
   player.ladderCooldown = 0;
@@ -1229,6 +1423,16 @@ function respawnPlayer() {
   player.lastGroundedPlat = FLOOR;                        // D3
   player.platformsReached = new Set([0]);                 // H2 — re-earnable per life
   player.invulnT = 1.0;                                   // i-frames after respawn
+  player.shakeT = 0;                                      // K addendum — clear any leftover shake
+  // L — multiplier + briefcase reset (streak loss penalty per Q spec).
+  multiplier  = MULT_BASE;
+  multiplierT = 0;
+  // L — clear capsules so the world reads clean on respawn. Helpers (Antifa/Zombie),
+  // Pelosi state machine, SS state, and pickup are intentionally LEFT ALONE — mid-action
+  // entities continue across the respawn for visual continuity (and gag value).
+  capsules.length    = 0;
+  capsuleSpawnT      = 0;
+  capsuleSpawnInterval = 2.5 + Math.random() * 2.0;
 }
 
 // K-FIX-3 — split the K-core single-helper restartLevel(skipIntro) into TWO distinct functions
@@ -1843,24 +2047,23 @@ function updateHelpers(dt) {
     if (h.type === 'ANTIFA') {
       // K — Antifa RAGDOLL state: thrown by Secret Service. Mirrors player DEATH_REACTION
       // physics. h.ragdollPhase: 'phase1' (spin) | 'phase2' (burst, ~0.4s, debris IS visual).
+      // L — Q9 fix: PASS THROUGH P1-P4 during phase 1 (no platform-collision check). Only the
+      // FLOOR triggers landing. Antifa get the full-height fall before splat — much funnier
+      // than mid-air landings on intermediate platforms. Off-screen-bottom + 0.8s timeout
+      // safeties retained.
       if (h.state === 'RAGDOLL') {
         h.ragdollT += dt;
         if (h.ragdollPhase === 'phase1') {
-          // Track surface for landed-on-platform detection (any platform crossing flips phase2).
           const prevY = h.y;
           h.x += h.deathVx * dt;
           h.y += h.deathVy * dt;
           h.deathVy += GRAVITY * dt;
           h.deathRotation += 720 * dt;
-          // Did we cross any platform surface this frame? Only count if traveling downward —
-          // upward arc shouldn't trigger landing.
+          // L — FLOOR-only landing detection (replaces K's any-platform check). Crossing
+          // FLOOR.y while traveling downward triggers phase 2.
           let landed = false;
-          if (h.deathVy > 0) {
-            for (const plat of platforms) {
-              if (h.x < plat.x - 4 || h.x > plat.x + plat.w + 4) continue;
-              const surfaceY = getPlatY(plat, h.x);
-              if (prevY <= surfaceY && h.y >= surfaceY) { landed = true; break; }
-            }
+          if (h.deathVy > 0 && prevY <= FLOOR.y && h.y >= FLOOR.y) {
+            landed = true;
           }
           const fellThrough = h.y > FLOOR.y + DEATH_BURST_FALL_TRIGGER;
           const cappedOut   = h.ragdollT >= DEATH_PHASE1_MAX_DURATION;
@@ -3263,6 +3466,7 @@ function applyTouchState() {
 
 canvas.addEventListener('pointerdown', e => {
   e.preventDefault();
+  ensureAudioContext();                                          // L — first-input audio gate (mobile primary path)
   // I1 — cutscene tap routes through cutsceneAdvance (per-state advance rules).
   // WIN_FREEZE / CUTSCENE_FADE_IN eat input; intro states skipToGame; GAMEPLAY = normal.
   // J — DEATH_REACTION eats input. GAME_OVER tap = restartFromGameOver (full reset).
@@ -3304,6 +3508,7 @@ canvas.addEventListener('touchstart', e=>{
   e.preventDefault();   // K-FIX-2 — also suppresses synthesized pointerdown on iOS Safari
                         // so cutsceneAdvance / restart paths don't double-fire per tap.
                         // Listener registered with {passive:false} below to honor preventDefault.
+  ensureAudioContext(); // L — first-input audio gate (iOS Safari fallback path)
   // I1 — cutscene tap routes through cutsceneAdvance (per-state advance rules).
   // WIN_FREEZE / CUTSCENE_FADE_IN eat input; intro states skipToGame; GAMEPLAY = normal.
   // J — DEATH_REACTION eats input. GAME_OVER tap = restartFromGameOver (full reset).
@@ -3621,13 +3826,20 @@ function drawScoreBreakdown(opts) {
       ctx.textAlign = 'center';
       ctx.fillText('TOP 5', W/2, y);
       y += 16;
+      // L — column-aligned monospace rows. padStart on rank (2 chars) and score (6 chars),
+      // padEnd on initials (3 chars, raw spaces preserved — list context, no underscoring).
+      // Render all rows centered on W/2 with the SAME monospace font so column positions line
+      // up across rows. Pre-L rendered " 1. BA  4325" with manual concatenation; the score
+      // column drifted right when initials had different trailing-space counts.
       ctx.font = '14px monospace';
       ctx.textAlign = 'center';
       for (let i = 0; i < board.length; i++) {
         const e = board[i];
         ctx.fillStyle = (i === 0) ? '#ffcc00' : '#dddddd';
-        const line = (i + 1) + '. ' + e.initials + '  ' + Math.floor(e.score);
-        ctx.fillText(line, W/2, y);
+        const rankStr  = String(i + 1).padStart(2, ' ') + '. ';     // ' 1. ' or '10. '
+        const iniStr   = e.initials.padEnd(3, ' ');                 // exactly 3 chars
+        const scoreStr = String(Math.floor(e.score)).padStart(6, ' '); // ' 12235' or '  8141'
+        ctx.fillText(rankStr + iniStr + ' ' + scoreStr, W/2, y);
         y += 18;
       }
     }
@@ -3932,7 +4144,24 @@ function drawGameplay(shake) {
   //   THROW_COCK:    dtj_throw at BARREL_X, flip=false   (wind-up, arm pulled right)
   //   THROW_RELEASE: dtj_throw at BARREL_X, flip=true    (follow-through, arm extended left)
   //   WALK_BACK:     dtj_walk(2) cycle, x interpolates BARREL_X → DTJ_GAMEPLAY_X (flip=true)
-  if (dtjAnimState === 'IDLE') {
+  // L — DTJ render: dance overrides the throw-anim state machine. While dancing, DTJ is locked
+  // to DTJ_GAMEPLAY_X (no walk-to-barrel motion) and the pose cycles through DTJ_DANCE_POSES.
+  // The throw machine still ticks underneath (capsules continue to spawn on schedule), but the
+  // render slot is owned by the dance.
+  if (dtjDanceState === 'DANCING') {
+    const tWithinCycle = dtjDanceT % DTJ_DANCE_CYCLE_DURATION;
+    const danceSprite  = getDtjDancePose(tWithinCycle);
+    drawSprite(danceSprite, DTJ_GAMEPLAY_X, TOP.y, 110, false, 1.0);
+    // L — dance speech bubble (LOSER!/SAD! cycle 1, GREATEST WIN EVER! cycle 2). Drawn just
+    // above DTJ's head. Hold 1.5s + fade 0.5s.
+    if (danceBubble.active) {
+      const fadeStart = DTJ_DANCE_BUBBLE_HOLD;
+      const alpha = danceBubble.t < fadeStart
+        ? 1
+        : Math.max(0, 1 - (danceBubble.t - fadeStart) / DTJ_DANCE_BUBBLE_FADE);
+      drawBubble(DTJ_GAMEPLAY_X, TOP.y - 110, danceBubble.text, alpha);
+    }
+  } else if (dtjAnimState === 'IDLE') {
     drawSprite('dtj_idle', DTJ_GAMEPLAY_X, TOP.y, 110, false, 1.0);
   } else if (dtjAnimState === 'THROW_COCK') {
     drawSprite('dtj_throw', dtjAnimX, TOP.y, 110, false, 1.0);
@@ -4026,6 +4255,11 @@ function loop(ts) {
   // K — ragdoll debris ticks every frame regardless of state so items drain naturally even if
   // state changes mid-burst (e.g. player wins to cutscene with Antifa debris still in flight).
   tickRagdollDebris(dt);
+
+  // L — DTJ dance ticks every frame so it survives DEATH_REACTION → GAMEPLAY respawn
+  // transitions cleanly. Trigger countdown + dance progression + speech bubble lifecycle
+  // + YMCA synth scheduling are all owned by tickDtjDance.
+  tickDtjDance(dt);
 
   // K — initials-entry "INITIALS SAVED" confirmation timer ticks here so the 1.0s display
   // shows even if the GAME_OVER case re-renders from scratch each frame.
@@ -4511,9 +4745,11 @@ function loop(ts) {
           state = 'GAME_OVER';
           stateT = 0;
         } else {
-          // Score / multiplier / briefcase count / etc. PERSIST. Only platforms-reached resets
-          // (handled inside respawnPlayer for re-earnable +500 bonus per life).
-          respawnPlayer();
+          // L — score PERSISTS across respawn (lives already decremented). Multiplier and
+          // briefcase reset (streak loss penalty). Capsules cleared for clean restart.
+          // Helpers / Pelosi / SS / pickup INTENTIONALLY LEFT IN PLACE — mid-action entities
+          // continue across the respawn (funny). Platforms-reached re-seeded inside the helper.
+          resetForRespawn();
           state = 'GAMEPLAY';
           stateT = 0;
         }
