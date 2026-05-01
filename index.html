@@ -3842,7 +3842,7 @@ function drawCutsceneSky(dt) {
 //     total,         // numeric total to display (already-final score)
 //     prompt,        // pulsing prompt text, e.g. 'TAP TO CONTINUE' or 'TAP TO RESTART'
 //     pulseT,        // time used for the prompt pulse (CUTSCENE_SCORE uses stateT, GAME_OVER same)
-//     showHighScore, // bool — when true, render a HIGH SCORE row + TOP 5 list + (optional) NEW HIGH SCORE!
+//     showHighScore, // bool — L-FIX-3: render TOP 5 list + (optional) NEW HIGH SCORE! line. The standalone HIGH SCORE summary row was removed (TOP 5 rank #1 in gold conveys the same info).
 //     highScores,    // K-FIX-5 — array of {initials, score} (the top-5 leaderboard, may be empty)
 //     isNewHigh,     // bool — when true, render 'NEW HIGH SCORE!' line (only used if showHighScore)
 //     showCredit,    // bool — when true, render 'Created by Brian Albert' subtle line at very bottom
@@ -3897,29 +3897,17 @@ function drawScoreBreakdown(opts) {
   y += ROW;
 
   // J — high-score block (GAME_OVER only). K-FIX-5 — now sources from opts.highScores array
-  // (top-5 leaderboard). HIGH SCORE row shows top entry's initials + score (or '---' when
-  // empty). NEW HIGH SCORE! line still gates on opts.isNewHigh. Leaderboard rows render below
-  // when opts.highScores has at least one entry.
+  // (top-5 leaderboard). L-FIX-3 — DELETED the standalone "HIGH SCORE: BRI 4325" summary row
+  // that used to live here. The TOP 5 list below already shows the top entry as rank #1 in
+  // gold ("1. BRI 4325") with its score column right-aligned at LB_SCORE_X=360, so the summary
+  // row was redundant. The summary row used valueX=410 which sat 50px right of the TOP 5 score
+  // column — that mismatch was the misalignment Brian kept seeing. Removing the row eliminates
+  // both the redundancy and the visual misalignment in one move. NEW HIGH SCORE! line still
+  // gates on opts.isNewHigh. Leaderboard rows render below when opts.highScores has at least
+  // one entry.
   if (opts.showHighScore) {
     y += 14;
     const board = opts.highScores || [];
-    // HIGH SCORE row (top entry summary)
-    ctx.font = 'bold 16px monospace';
-    ctx.fillStyle = '#cccccc';
-    ctx.textAlign = 'left';
-    ctx.fillText('HIGH SCORE:', labelX, y + 18);
-    ctx.fillStyle = opts.isNewHigh ? '#aaffaa' : '#ffcc00';
-    ctx.font = 'bold 18px monospace';
-    ctx.textAlign = 'right';
-    if (board.length === 0) {
-      ctx.fillText('---', valueX, y + 18);
-    } else {
-      const top = board[0];
-      const trimmed = top.initials.replace(/\s+$/, '');
-      const label = trimmed ? (trimmed + ' ' + Math.floor(top.score)) : String(Math.floor(top.score));
-      ctx.fillText(label, valueX, y + 18);
-    }
-    y += 26;
     if (opts.isNewHigh) {
       ctx.fillStyle = '#aaffaa';
       ctx.font = 'bold 14px monospace';
@@ -5007,7 +4995,8 @@ function loop(ts) {
         pulseT:        stateT,
         showHighScore: true,
         // K-FIX-5 — pass the leaderboard array (top-5). drawScoreBreakdown uses it to render
-        // the HIGH SCORE row + TOP 5 list. Empty array → 'HIGH SCORE: ---' + hidden TOP 5.
+        // the TOP 5 list (L-FIX-3 removed the standalone HIGH SCORE summary row above it).
+        // Empty array → TOP 5 hidden entirely; (optional) NEW HIGH SCORE! line still renders.
         highScores:    highScores,
         isNewHigh:     highScoreNew,
         showCredit:    true,                              // J — creator credit at very bottom
