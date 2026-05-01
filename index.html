@@ -37,6 +37,73 @@
 <body>
 <canvas id="c"></canvas>
 <script>
+// AUDIO-3-SIMPLIFY-BUGHUNT-2 — monkey-patch Howl.prototype.{stop,play,once,off} BEFORE
+// SOUND_LIBRARY is constructed. Pure logging, every method delegates to the original after
+// printing the call site context. Captures Howl lifecycle events that are otherwise opaque:
+// every stop/play call (with seek + Howler ctx state), every once registration (with the
+// callback wrapped to log when it fires), every off detach. Catches "leftover handler
+// firing after a reset" (candidate 2) and "unexpected play/stop calls undoing a reset"
+// patterns. Helper resolves the Howl-instance back to its SOUND_LIBRARY key for readability.
+if (typeof Howl !== 'undefined') {
+  const _resolveHowlName = function(howlInst) {
+    if (typeof SOUND_LIBRARY === 'undefined') return 'pre-lib';
+    for (const k of Object.keys(SOUND_LIBRARY)) {
+      if (SOUND_LIBRARY[k] === howlInst) return k;
+    }
+    return 'unknown';
+  };
+  const _origStop = Howl.prototype.stop;
+  const _origPlay = Howl.prototype.play;
+  const _origOnce = Howl.prototype.once;
+  const _origOff  = Howl.prototype.off;
+  Howl.prototype.stop = function() {
+    const name = _resolveHowlName(this);
+    let wasPlaying = false, seekBefore = -1;
+    try { wasPlaying = this.playing(); } catch (e) {}
+    try { seekBefore = this.seek(); } catch (e) {}
+    console.log('[BGM:howl-stop]', {
+      howl: name, wasPlaying: wasPlaying, seekBefore: seekBefore,
+      t: performance.now().toFixed(0),
+    });
+    return _origStop.apply(this, arguments);
+  };
+  Howl.prototype.play = function() {
+    const name = _resolveHowlName(this);
+    let seekBefore = -1;
+    try { seekBefore = this.seek(); } catch (e) {}
+    console.log('[BGM:howl-play]', {
+      howl: name, seekBefore: seekBefore,
+      howlerCtxState: (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx.state : 'no-ctx',
+      t: performance.now().toFixed(0),
+    });
+    return _origPlay.apply(this, arguments);
+  };
+  Howl.prototype.once = function(event, fn) {
+    const name = _resolveHowlName(this);
+    console.log('[BGM:howl-once-register]', {
+      howl: name, event: event, t: performance.now().toFixed(0),
+    });
+    const wrappedFn = function() {
+      console.log('[BGM:howl-once-fire]', {
+        howl: name, event: event,
+        state: (typeof state !== 'undefined') ? state : 'no-state',
+        currentMusic: (typeof currentMusic !== 'undefined') ? currentMusic : 'no-cm',
+        t: performance.now().toFixed(0),
+      });
+      return fn.apply(this, arguments);
+    };
+    const args = Array.prototype.slice.call(arguments);
+    args[1] = wrappedFn;
+    return _origOnce.apply(this, args);
+  };
+  Howl.prototype.off = function(event) {
+    const name = _resolveHowlName(this);
+    console.log('[BGM:howl-off]', {
+      howl: name, event: event || 'all', t: performance.now().toFixed(0),
+    });
+    return _origOff.apply(this, arguments);
+  };
+}
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
@@ -1110,7 +1177,28 @@ function transitionToMusic(newMusic) {
     sound.off('end');                                 // detach any rotation-end handler
     sound.fade(sound.volume(), 0, FADE_MS);
     const isRotation = ROTATION_SONGS_SET.has(stopRef);
+    // AUDIO-3-SIMPLIFY-BUGHUNT-2 LOG POINT 3 — the only audio-music setTimeout in the
+    // codebase. Schedules a .pause() (rotation) or .stop() (one-shot) 250ms after the fade
+    // starts. Captures schedule + fire moments to catch "zombie timer fires after a reset"
+    // (candidate 3): if a [BGM:settimeout-fire] appears AFTER a [BGM:reset-howler-snapshot],
+    // the fire's stop/pause is silently undoing the reset's clean slate by either re-stopping
+    // (no harm) or re-pausing (preserves stale seek for resumption later).
+    console.log('[BGM:settimeout-schedule]', {
+      purpose: isRotation ? 'fade-then-pause' : 'fade-then-stop',
+      delay: FADE_MS + 50,
+      stopRef: stopRef,
+      state: state,
+      currentMusic: currentMusic,
+      t: performance.now().toFixed(0),
+    });
     setTimeout(() => {
+      console.log('[BGM:settimeout-fire]', {
+        purpose: isRotation ? 'fade-then-pause' : 'fade-then-stop',
+        stopRef: stopRef,
+        state: state,
+        currentMusic: currentMusic,
+        t: performance.now().toFixed(0),
+      });
       if (isRotation) sound.pause();                  // preserve seek for resumption
       else            sound.stop();                   // one-shots: reset to start
     }, FADE_MS + 50);
@@ -2488,6 +2576,18 @@ function resetForLevelTransition() {
     })(),
     t: performance.now().toFixed(0),
   });
+  // AUDIO-3-SIMPLIFY-BUGHUNT-2 LOG POINT 4 — capture Howler global state at the reset
+  // moment. autoUnlocked + ctx.state + global mute reveal whether Howler internals are
+  // healthy after the rapid .stop() sequence above. If autoUnlocked goes from true→false,
+  // or ctx.state regresses from 'running'→'suspended', that's candidate 1 confirmed.
+  console.log('[BGM:reset-howler-snapshot]', {
+    resetType: 'level-transition',
+    howlerCtxState: (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx.state : 'no-ctx',
+    howlerVolume:   (typeof Howler !== 'undefined') ? Howler.volume() : 'no-howler',
+    howlerMuted:    (typeof Howler !== 'undefined') ? Howler._muted : 'no-howler',
+    autoUnlocked:   (typeof Howler !== 'undefined') ? Howler._autoUnlocked : 'no-howler',
+    t: performance.now().toFixed(0),
+  });
   state  = 'GAMEPLAY';
   stateT = 0;
 }
@@ -2537,6 +2637,18 @@ function resetForGameOver() {
       }
       return playing;
     })(),
+    t: performance.now().toFixed(0),
+  });
+  // AUDIO-3-SIMPLIFY-BUGHUNT-2 LOG POINT 4 — Howler global state snapshot at game-over
+  // reset. Pair with the level-reset snapshot to compare Howler health across the two
+  // reset paths. If autoUnlocked or ctx.state differ between them, that explains why one
+  // reset works and the other doesn't.
+  console.log('[BGM:reset-howler-snapshot]', {
+    resetType: 'gameover',
+    howlerCtxState: (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx.state : 'no-ctx',
+    howlerVolume:   (typeof Howler !== 'undefined') ? Howler.volume() : 'no-howler',
+    howlerMuted:    (typeof Howler !== 'undefined') ? Howler._muted : 'no-howler',
+    autoUnlocked:   (typeof Howler !== 'undefined') ? Howler._autoUnlocked : 'no-howler',
     t: performance.now().toFixed(0),
   });
   state  = 'INTRO_BLACK';
