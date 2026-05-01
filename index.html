@@ -1153,6 +1153,18 @@ function stopBGM() {
 function tickBGM() {
   if (!audioContext || !bgmChannel) return;
   if (state === 'PAUSED') return;
+  // N-FIX-5 — Macho Man branch takes priority over BGM rotation while an Antifa wave is
+  // active. The crossfade in/out is handled by start/stopMachoMan; this branch only handles
+  // the loop boundary (re-schedule next 16-bar block).
+  if (machoManActive) {
+    const elapsedMM = audioContext.currentTime - machoManLoopT;
+    if (elapsedMM >= MACHO_MAN_DUR - BGM_LOOKAHEAD && elapsedMM < MACHO_MAN_DUR) {
+      const nextStart = machoManLoopT + MACHO_MAN_DUR;
+      _bgmScheduleMachoMan(nextStart);
+      machoManLoopT = nextStart;
+    }
+    return;
+  }
   // Lazy-start: when audio infrastructure is ready and gameplay is active, start the BGM
   // rotation. This is the BUG #1 fix from the bug-hunt report.
   if (!bgmActive && state === 'GAMEPLAY') {
@@ -1172,6 +1184,96 @@ function tickBGM() {
     const nextIdx = (bgmCurrentSongIdx + 1) % 3;
     startBGMSong(nextIdx, bgmSongStartTime + songDur);
   }
+}
+
+// ─────────────────────────────────────────────
+//  N-FIX-5 — MACHO MAN (Village People) Antifa-wave music
+// ─────────────────────────────────────────────
+// Replaces BGM rotation while an Antifa wave is active. F major, 120 BPM 4/4, 8-bar loop
+// (16s). Square melody (brass-like) + triangle bass (root + fifth) + filtered-noise hi-hat
+// shuffle on every 8th. Crossfade in/out on start/stop. BGM rotation position is saved on
+// start so it resumes from the same point post-stop.
+const MACHO_MAN_DUR = 16;                                 // 8 bars × 2.0s = 16s
+let   machoManActive   = false;
+let   machoManLoopT    = 0;                               // audioContext.currentTime when current 16-bar block started
+let   bgmSavedSongIdx  = 0;
+let   bgmSavedElapsed  = 0;
+
+function _bgmScheduleMachoMan(t0) {
+  if (!audioContext || !bgmChannel) return;
+  const beat = 60 / 120;                                  // 0.5s
+  const bar  = 4 * beat;                                  // 2.0s
+  // F major: F2=87.31, C3=130.81, F3=174.61, A3=220.00, C4=261.63, F4=349.23, G4=392.00,
+  //          A4=440.00, Bb4=466.16, C5=523.25, F5=698.46
+  // Bass: F-C alternating root/fifth on every quarter (4 notes per bar, 8 bars × 4 = 32 notes)
+  for (let bIdx = 0; bIdx < 8; bIdx++) {
+    for (let b = 0; b < 4; b++) {
+      const f = (b % 2 === 0) ? 87.31 : 130.81;            // F2 / C3
+      _bgmScheduleNoteAt(t0 + bIdx * bar + b * beat, f, beat * 0.85, 'triangle', bgmChannel, 0.07);
+    }
+  }
+  // "Macho! Macho! Man!" hook — fires on bars 0, 2, 4, 6 (every other bar). 5-note phrase:
+  // F4 - F4 - A4 - C5 - F4(hold). Square wave, brass-stab feel.
+  for (let bIdx = 0; bIdx < 8; bIdx += 2) {
+    const cycleT = t0 + bIdx * bar;
+    _bgmScheduleNoteAt(cycleT + 0.0,        349.23, beat * 0.4, 'square', bgmChannel, 0.09); // F4
+    _bgmScheduleNoteAt(cycleT + beat * 0.5, 349.23, beat * 0.4, 'square', bgmChannel, 0.09); // F4
+    _bgmScheduleNoteAt(cycleT + beat * 1.0, 440.00, beat * 0.4, 'square', bgmChannel, 0.10); // A4
+    _bgmScheduleNoteAt(cycleT + beat * 1.5, 523.25, beat * 0.4, 'square', bgmChannel, 0.10); // C5
+    _bgmScheduleNoteAt(cycleT + beat * 2.0, 349.23, beat * 1.5, 'square', bgmChannel, 0.08); // F4 hold
+    _bgmScheduleNoteAt(cycleT + beat * 3.5, 523.25, beat * 0.3, 'square', bgmChannel, 0.10); // C5 stab on '4-and'
+  }
+  // Response melody — bars 1, 3, 5, 7. Descending C5-A4-G4-F4 (one note per beat).
+  for (let bIdx = 1; bIdx < 8; bIdx += 2) {
+    const cycleT = t0 + bIdx * bar;
+    _bgmScheduleNoteAt(cycleT + beat * 0,   523.25, beat * 0.5, 'square', bgmChannel, 0.07); // C5
+    _bgmScheduleNoteAt(cycleT + beat * 1,   440.00, beat * 0.5, 'square', bgmChannel, 0.07); // A4
+    _bgmScheduleNoteAt(cycleT + beat * 2,   392.00, beat * 0.5, 'square', bgmChannel, 0.07); // G4
+    _bgmScheduleNoteAt(cycleT + beat * 3,   349.23, beat * 1.0, 'square', bgmChannel, 0.07); // F4 hold
+  }
+  // Hi-hat shuffle — every 8th note across all 8 bars.
+  for (let bIdx = 0; bIdx < 8; bIdx++) {
+    for (let eighth = 0; eighth < 8; eighth++) {
+      _bgmScheduleSnareBurst(t0 + bIdx * bar + eighth * (beat / 2), 0.04, 0.025);
+    }
+  }
+}
+
+function startMachoMan() {
+  if (!audioContext || !bgmChannel) return;
+  if (machoManActive) return;
+  if (typeof console !== 'undefined') console.log('AUDIO TRACE: startMachoMan called', { t: performance.now(), state, helpersCount: (typeof helpers !== 'undefined' ? helpers.length : 'n/a') });
+  // Save BGM rotation position so we can resume from where we left off.
+  bgmSavedSongIdx = bgmCurrentSongIdx;
+  bgmSavedElapsed = audioContext.currentTime - bgmSongStartTime;
+  // Halt rotation scheduler (already-scheduled notes will tail naturally; channel fade silences them).
+  bgmActive = false;
+  bgmFadeOut(0.2);
+  setTimeout(() => {
+    if (!audioContext || !bgmChannel) return;
+    bgmFadeIn(0.05);
+    machoManActive = true;
+    machoManLoopT = audioContext.currentTime;
+    _bgmScheduleMachoMan(machoManLoopT);
+  }, 200);
+}
+
+function stopMachoMan() {
+  if (!machoManActive) return;
+  if (typeof console !== 'undefined') console.log('AUDIO TRACE: stopMachoMan called', { t: performance.now(), state });
+  bgmFadeOut(0.5);
+  setTimeout(() => {
+    if (!audioContext || !bgmChannel) return;
+    machoManActive = false;
+    // Resume BGM rotation from saved song idx. The per-song schedule fns assume t0 == song
+    // start, so we restart the saved song from the top rather than try to splice into the
+    // middle (would require past-time scheduling). User-perceived behavior: "the song
+    // restarts" instead of "the song picks up where it left off" — acceptable trade-off.
+    bgmCurrentSongIdx = bgmSavedSongIdx;
+    bgmActive = true;
+    startBGMSong(bgmCurrentSongIdx, audioContext.currentTime);
+    bgmFadeIn(0.2);
+  }, 500);
 }
 
 // ─────────────────────────────────────────────
@@ -1196,6 +1298,10 @@ let nessunDormaScheduled    = false;
 // Hook (4 bars): E - D - G - F# repeated with kick/snare backbeat.
 // Plays once per INTRO_ESCALATOR scene (~12s). Self-stops.
 function playEscalatorMusic() {
+  // N-FIX-5 BUG 2 diagnostic — log every entry so we can see if audioContext is null at the
+  // call moment (the BUG 2 root cause: INTRO_BLACK auto-advance fired BEFORE first user
+  // gesture, audioContext was null, this function bailed silently).
+  if (typeof console !== 'undefined') console.log('AUDIO TRACE: playEscalatorMusic called, audioContext =', !!audioContext, 'state =', state, 'escalatorMusicScheduled =', escalatorMusicScheduled, 't =', performance.now());
   if (!audioContext || !bgmChannel || escalatorMusicScheduled) return;
   escalatorMusicScheduled = true;
   const t0 = audioContext.currentTime;
@@ -1331,8 +1437,16 @@ function stopNessunDorma() {
 // N — BGM ducking on dance start/end. 200ms linear ramp via bgmChannel.gain. Synth (YMCA)
 // continues at full volume on synthChannel — only BGM ducks because YMCA is the focal audio
 // during the death dance.
+//
+// N-FIX-5 BUG 1 fix — death-mute precedence flag. The dance fires on EVERY capsule hit (both
+// "lose a life" and "lose last life" paths). Without this flag, hit() bgmFadeOut(0.1) would
+// ramp gain to 0, then 200ms later tickDtjDance fires duckBGM() which cancelScheduledValues
+// and ramps gain back UP to 0.5. Net effect: BGM is at 50% during the death dance instead
+// of muted. This flag locks duck/unduck out while a death-mute is in effect.
+let bgmDeathMuted = false;
 function duckBGM() {
   if (!audioContext || !bgmChannel) return;
+  if (bgmDeathMuted) return;             // N-FIX-5 — death-mute takes precedence over dance-duck
   bgmDuckLevel = 0.5;
   const t = audioContext.currentTime;
   bgmChannel.gain.cancelScheduledValues(t);
@@ -1341,6 +1455,7 @@ function duckBGM() {
 }
 function unduckBGM() {
   if (!audioContext || !bgmChannel) return;
+  if (bgmDeathMuted) return;             // N-FIX-5 — death-mute persists past dance-end (until respawn)
   bgmDuckLevel = 1.0;
   const t = audioContext.currentTime;
   bgmChannel.gain.cancelScheduledValues(t);
@@ -1632,6 +1747,12 @@ window.addEventListener('keydown', e => {
   }
   if (state === 'GAME_OVER') { restartFromGameOver(); return; }
   if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
+  // N-FIX-5 BUG 2 — first gesture during INTRO_BLACK only primes audioContext (already done
+  // above via ensureAudioContext) and lets the natural state machine advance to INTRO_TITLE
+  // with audio. Skipping to GAMEPLAY here would short-circuit the intro entirely — Brian
+  // wants the intro music audible, which requires the user to gesture early enough to prime
+  // audioContext but NOT skip past the music scheduling.
+  if (state === 'INTRO_BLACK') return;
   if (state !== 'GAMEPLAY') skipToGame();
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
@@ -2293,9 +2414,18 @@ function hit(source, capsule) {
   // N-FIX-4 — mute BGM during death reaction + dance. YMCA owns the audio space here.
   // Distinct from duckBGM (50%) — full mute (0). Restored on respawn (DEATH_REACTION → GAMEPLAY).
   // On game over, stays muted until next intro→GAMEPLAY (lazy-start handles).
+  // N-FIX-5 BUG 1 — set bgmDeathMuted BEFORE bgmFadeOut so any dance-duck that fires 200ms
+  // later (tickDtjDance) bails immediately and the mute survives. Cleared on respawn /
+  // resetForGameOver / resetForLevelTransition.
+  bgmDeathMuted = true;
   bgmFadeOut(0.1);
   // N-FIX-4 — AUDIO TRACE: DEATH_REACTION entry (capsule hit moment).
   if (typeof console !== 'undefined') console.log('AUDIO TRACE: DEATH_REACTION entered', { t: performance.now(), state, lives: player.lives });
+  // N-FIX-5 BUG 1 diagnostic — capture bgmChannel.gain.value RIGHT AFTER bgmFadeOut to verify
+  // the ramp scheduled. value is read post-cancelScheduledValues + setValueAtTime so it should
+  // be 1.0 (start of ramp). The ramp completes at t+0.1s. If the dance-duck overrides at +0.2s
+  // we'll see gain climb back to 0.5 in subsequent log entries.
+  if (typeof console !== 'undefined' && bgmChannel) console.log('AUDIO TRACE: bgmFadeOut called from hit, gain =', bgmChannel.gain.value, 't =', performance.now());
   // K — ragdollDebris is now a SHARED pool (player + Antifa). DON'T clear it on hit() — leftover
   // Antifa debris from prior splats keeps draining naturally. Burst flash is a one-frame state.
   ragdollBurstFlashT = 0;
@@ -2438,6 +2568,7 @@ function resetForLevelTransition() {
   _resetEntitiesAndPerLevel();
   // N-FIX-4 — defensive: bgmChannel may be at 0 if a death-mute or cutscene-mute is still
   // applied. Restore to 1.0 so the next BGM rotation (lazy-started by tickBGM) is audible.
+  bgmDeathMuted = false;                          // N-FIX-5 — defensive clear (death-mute could leak from prior life)
   bgmFadeIn(0.05);
   state  = 'GAMEPLAY';
   stateT = 0;
@@ -2457,6 +2588,7 @@ function resetForGameOver() {
   // N-FIX-4 — un-mute bgmChannel so the next intro escalator/stairs music + GAMEPLAY BGM
   // rotation are audible. Without this, a death-mute applied during the prior life persists
   // through the restart and the entire next intro plays silently.
+  bgmDeathMuted = false;                          // N-FIX-5 — defensive: clear flag so the next intro/GAMEPLAY isn't silenced by stale mute
   bgmFadeIn(0.05);
   state  = 'INTRO_BLACK';
   stateT = 0;
@@ -2919,6 +3051,10 @@ function findNearestUpLadder(plat, fromX) {
 
 function spawnAntifaWave() {
   const n = 5 + Math.floor(Math.random() * 6);   // 5–10
+  // N-FIX-5 — kick Macho Man synth on every Antifa wave. start* is idempotent (machoManActive
+  // guard), so a second wave triggered before the first ends is a no-op (existing wave keeps
+  // playing). stopMachoMan fires from updateHelpers when the last ANTIFA leaves helpers[].
+  startMachoMan();
   for (let i = 0; i < n; i++) {
     if (helpers.length >= MAX_HELPERS) break;
     const x = FLOOR.x + 20 + Math.random() * (FLOOR.w - 40);
@@ -3088,6 +3224,15 @@ function updateHelpers(dt) {
       }
     }
     if (helperKilled) helpers.splice(i, 1);
+  }
+  // N-FIX-5 — wave-end detection for Macho Man. When the last ANTIFA leaves helpers[]
+  // (killed by SS, capsule death, life-timer expiry, or ragdoll splat), fade out the synth
+  // and resume BGM rotation. Other helper types (ZOMBIE, etc.) don't keep Macho Man running.
+  // Idempotent — stopMachoMan early-returns if !machoManActive.
+  if (machoManActive) {
+    let antifaCount = 0;
+    for (const h of helpers) { if (h.type === 'ANTIFA') { antifaCount++; break; } }
+    if (antifaCount === 0) stopMachoMan();
   }
 }
 
@@ -4427,6 +4572,7 @@ canvas.addEventListener('pointerdown', e => {
   }
   if (state === 'GAME_OVER') { restartFromGameOver(); return; }
   if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
+  if (state === 'INTRO_BLACK') return;                     // N-FIX-5 BUG 2 — prime audio only, don't skip intro
   if (state !== 'GAMEPLAY') { skipToGame(); return; }
   canvas.setPointerCapture(e.pointerId);
   const r=canvas.getBoundingClientRect();
@@ -4481,6 +4627,7 @@ canvas.addEventListener('touchstart', e=>{
   }
   if (state === 'GAME_OVER') { restartFromGameOver(); return; }
   if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
+  if (state === 'INTRO_BLACK') return;                     // N-FIX-5 BUG 2 — prime audio only, don't skip intro
   if (state !== 'GAMEPLAY') { skipToGame(); return; }
   for (const t of e.changedTouches) {
     const r=canvas.getBoundingClientRect();
@@ -5337,7 +5484,18 @@ function loop(ts) {
   // State transitions
   switch(state) {
     case 'INTRO_BLACK':
-      if(stateT>1.4){state='INTRO_TITLE';stateT=0; playEscalatorMusic(); /* N-FIX-4 — earlier start: song plays under DNC vs DJT title card, runs through escalator */ } break;
+      // N-FIX-5 BUG 2 — gate auto-advance on audioContext existing. INTRO_BLACK shows the
+      // "INSERT QUARTER" prompt; the page sits there until the user gestures (which both
+      // primes audioContext and triggers the advance below). Without this gate, INTRO_BLACK
+      // auto-advances at 1.4s post-page-load — BEFORE any user gesture, while audioContext
+      // is still null — and playEscalatorMusic bails on its !audioContext guard. Result was:
+      // entire intro ran silently. With the gate, the user MUST gesture before the song
+      // schedules; that gesture also creates audioContext.
+      if(stateT>1.4 && audioContext){state='INTRO_TITLE';stateT=0; playEscalatorMusic(); /* N-FIX-4 — earlier start: song plays under DNC vs DJT title card, runs through escalator */ }
+      // N-FIX-5 BUG 2 — fallback: if user never gestures (e.g. silent test rig), still
+      // advance after 5s so the intro doesn't deadlock. Music will be silent in that case.
+      else if(stateT>5.0 && !audioContext){state='INTRO_TITLE';stateT=0; /* silent advance — no audio gesture */ }
+      break;
 
     case 'INTRO_TITLE':
       if(stateT>2.8){state='INTRO_ESCALATOR';stateT=0;esc={x:W+60,y:H-80,phase:'walk',t:0,progress:0,armSwing:0}; /* N-FIX-4 — escalator music continues from INTRO_TITLE; no re-trigger here */ } break;
@@ -5818,6 +5976,7 @@ function loop(ts) {
           // continue across the respawn (funny). Platforms-reached re-seeded inside the helper.
           resetForRespawn();
           playSfx_respawn();                                   // N — ready ding on respawn
+          bgmDeathMuted = false;                               // N-FIX-5 — clear before fade-in so tickDtjDance unduck (if dance is still active) can run normally
           bgmFadeIn(0.2);                                      // N-FIX-4 — un-mute BGM rotation (was 0 from DEATH_REACTION entry)
           state = 'GAMEPLAY';
           stateT = 0;
