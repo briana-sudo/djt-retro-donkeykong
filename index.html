@@ -1184,6 +1184,18 @@ function selfHealBgm() {
   if (!audioOn) return;
   if (state === 'PAUSED') return;
   if (typeof Howler === 'undefined' || !Howler.ctx || Howler.ctx.state !== 'running') return;
+  // AUDIO-3-MUSIC-UX-2 — only self-heal in stable states where BGM should clearly be
+  // playing. Skip during transitional/cutscene/death states where transitions are mid-flight
+  // (DEATH_REACTION's lives-gate eval, WIN_FREEZE's pre-cutscene moment, the entire
+  // CUTSCENE_* chain which has its own music routing). Without this allowlist, self-heal
+  // could fire mid-transition and double-play or play the wrong song.
+  const STABLE_STATES = new Set([
+    'GAMEPLAY',
+    'INTRO_BLACK', 'INTRO_TITLE', 'INTRO_ESCALATOR', 'INTRO_STAIRS',
+    'INTRO_TAUNT', 'INTRO_SHATTER',
+    'GAMEOVER_PENDING', 'GAME_OVER',
+  ]);
+  if (!STABLE_STATES.has(state)) return;
   const desired = computeDesiredMusic();
   if (desired === MUSIC_STATES.SILENT) return;
   let isPlaying = false;
