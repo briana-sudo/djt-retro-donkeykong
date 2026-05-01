@@ -929,7 +929,7 @@ const SOUND_LIBRARY = {
   // free_world (12s INTRO_TITLE+ESCALATOR), ave_maria (10s INTRO_STAIRS), nessun_dorma
   // (35s CUTSCENE_PHASE3+SCORE+BETWEEN). loop=true on variable-duration scenes:
   // macho_man (Antifa wave length varies), greenwood/queen/brown (BGM rotation slots).
-  ymca:         new Howl({ src: ['audio/ymca.mp3'],         loop: false, volume: 0.7 }),
+  ymca:         new Howl({ src: ['audio/ymca.mp3'],         loop: true,  volume: 0.7 }), // AUDIO-3d — loop so YMCA covers indefinite GAME_OVER high-score entry until tap-to-continue
   macho_man:    new Howl({ src: ['audio/macho_man.mp3'],    loop: true,  volume: 0.7 }),
   // AUDIO-3g — loop: false so Howler's 'end' event fires; startBgmRotation's once('end') handler
   // advances bgmRotationIdx and plays the next track. With loop: true (AUDIO-1/2/3a default)
@@ -967,11 +967,12 @@ let currentMusic = MUSIC_STATES.SILENT;
 // Map state → desired music. Single source of truth. tickBGM compares against currentMusic
 // and calls transitionToMusic on mismatch.
 function computeDesiredMusic() {
-  // AUDIO-1 — death dance plays YMCA whenever the dance is DANCING, regardless of game state.
-  // Highest priority (overrides DEATH_REACTION/PENDING/GAMEPLAY/etc.). When dance ends, the
-  // normal state-based mapping resumes — restoring BGM_ROTATION on respawn or SILENT on
-  // game-over. This single rule replaces the bgmDeathMuted flag from N-FIX-5/6.
-  if (typeof dtjDanceState !== 'undefined' && dtjDanceState === 'DANCING') {
+  // AUDIO-3d — YMCA-on-DANCING gated to game-over dance only (cycles >= 3 set by tickDtjDance
+  // when player.lives === 1 at trigger time, post AUDIO-3c). Non-final-life dance (cycles=1)
+  // falls through to the DEATH_REACTION → SILENT rule below — BGM goes silent for the 3s
+  // dance and resumes after respawn (Brian's Option 1 from the AUDIO-3d-BUGHUNT report).
+  if (typeof dtjDanceState !== 'undefined' && dtjDanceState === 'DANCING' &&
+      typeof dtjDanceCycles !== 'undefined' && dtjDanceCycles >= 3) {
     return MUSIC_STATES.YMCA;
   }
   // Cutscenes — Nessun Dorma plays through PHASE3 / SCORE / BETWEEN; silent during the
@@ -982,10 +983,19 @@ function computeDesiredMusic() {
   if (state === 'CUTSCENE_FADE_IN' || state === 'CUTSCENE_PHASE1') {
     return MUSIC_STATES.SILENT;
   }
-  // WIN_FREEZE / GAME_OVER / GAMEOVER_PENDING — silent (when dance not active; dance is
-  // gated above). DEATH_REACTION — silent until dance triggers, then YMCA via the rule above.
-  if (state === 'WIN_FREEZE' || state === 'GAME_OVER' || state === 'GAMEOVER_PENDING' ||
-      state === 'DEATH_REACTION') {
+  // AUDIO-3d — GAMEOVER_PENDING + GAME_OVER continue YMCA (looping per the loop:true Howl
+  // flag) so the song plays from dance-start at hit+0.2s, through the 9s dance, through the
+  // ~1s PENDING tail buffer, through the GAME_OVER overlay + high-score entry, until the
+  // player taps to continue. On tap, resetForGameOver flips state→INTRO_BLACK; next tickBGM
+  // sees ESCALATOR is desired and stops YMCA cleanly with the standard 200ms fade.
+  if (state === 'GAMEOVER_PENDING' || state === 'GAME_OVER') {
+    return MUSIC_STATES.YMCA;
+  }
+  // WIN_FREEZE — silent (the win moment, before cutscene fade-in).
+  // DEATH_REACTION — silent until dance triggers (200ms after hit), then either YMCA via the
+  // cycles>=3 gate above (game-over death) or stays SILENT for cycles=1 (non-final-life
+  // death, BGM resumes when state→GAMEPLAY at respawn).
+  if (state === 'WIN_FREEZE' || state === 'DEATH_REACTION') {
     return MUSIC_STATES.SILENT;
   }
   // Intro chain. ESCALATOR music plays under INTRO_BLACK / INTRO_TITLE / INTRO_ESCALATOR.
