@@ -731,6 +731,18 @@ function ensureAudioContext() {
       }
     } catch (e) { /* old-style synchronous resume threw — ignore, retry next gesture */ }
   }
+  // AUDIO-3e Fix C — explicit Howler.ctx.resume() on the same user gesture. Howler.js does
+  // attach its own auto-unlock listeners, but they can fail to fire if a competing handler
+  // calls e.preventDefault() on the same event (the keydown handler does this for game keys
+  // at L1353 — Arrow/Space/A/Z). Explicitly resuming Howler's context here guarantees both
+  // the SFX context (above) AND the music context (Howler) unlock together on first gesture,
+  // eliminating the "music doesn't play until you tap mute" symptom.
+  if (typeof Howler !== 'undefined' && Howler.ctx && Howler.ctx.state === 'suspended') {
+    try {
+      const r = Howler.ctx.resume();
+      if (r && typeof r.then === 'function') r.catch(() => { /* retry next gesture */ });
+    } catch (e) { /* ignore, retry next gesture */ }
+  }
   // iOS Safari warm-up blips — N-FIX-8 layered fix. Some iOS versions need TWO warm-ups
   // to fully unlock Web Audio: blip 1 is a silent default-frequency oscillator (wakes the
   // graph), blip 2 is an explicit 440Hz oscillator at gain=0 (older iOS versions only
@@ -992,11 +1004,22 @@ function computeDesiredMusic() {
     return MUSIC_STATES.YMCA;
   }
   // WIN_FREEZE — silent (the win moment, before cutscene fade-in).
-  // DEATH_REACTION — silent until dance triggers (200ms after hit), then either YMCA via the
-  // cycles>=3 gate above (game-over death) or stays SILENT for cycles=1 (non-final-life
-  // death, BGM resumes when state→GAMEPLAY at respawn).
-  if (state === 'WIN_FREEZE' || state === 'DEATH_REACTION') {
+  if (state === 'WIN_FREEZE') {
     return MUSIC_STATES.SILENT;
+  }
+  // AUDIO-3e Fix B — DEATH_REACTION split by lives:
+  //   - Final-life death (lives <= 1 pre-decrement): SILENT so the YMCA dance gate above
+  //     can fire when dance triggers at hit+0.2s with cycles=3.
+  //   - Non-final death (lives >= 2): BGM_ROTATION — equals currentMusic (since GAMEPLAY
+  //     was BGM_ROTATION), so transitionToMusic early-returns. Howler is NOT stopped, the
+  //     current song's playback position is NOT reset. BGM continues seamlessly underneath
+  //     the death + dance + respawn. Antifa wave still wins via state===GAMEPLAY → MACHO_MAN
+  //     after respawn (state machine handles via natural transitions).
+  if (state === 'DEATH_REACTION') {
+    if (typeof player !== 'undefined' && player.lives <= 1) {
+      return MUSIC_STATES.SILENT;
+    }
+    return MUSIC_STATES.BGM_ROTATION;
   }
   // Intro chain. ESCALATOR music plays under INTRO_BLACK / INTRO_TITLE / INTRO_ESCALATOR.
   // INTRO_STAIRS swaps to AVE_MARIA. SHATTER and TAUNT are silent (crash SFX dominates).
@@ -1033,13 +1056,25 @@ function computeDesiredMusic() {
 function transitionToMusic(newMusic) {
   if (newMusic === currentMusic) return;
   const FADE_MS = 200;
-  // Stop current sound with fade.
+  // AUDIO-3e Fix D — rotation songs (greenwood/queen/brown) get .pause() instead of .stop().
+  // .pause() preserves Howler's internal seek position; .stop() resets seek to 0. So when the
+  // BGM rotation is interrupted (e.g. by WIN_FREEZE → SILENT for cutscene), the song's
+  // playback position survives. Note: Fix A advances bgmRotationIdx on level transition so
+  // the same paused song doesn't get re-played at the next level — the NEXT song plays. The
+  // pause-preserved seek matters for rare cases like Antifa wave end → BGM resume.
+  // One-shot songs (free_world/ave_maria/nessun_dorma/macho_man/ymca) keep .stop() so they
+  // always restart from the beginning when the scene next triggers them.
+  const ROTATION_SONGS_SET = new Set(['greenwood', 'queen', 'brown']);
   if (currentlyPlayingSound && SOUND_LIBRARY[currentlyPlayingSound]) {
     const stopRef = currentlyPlayingSound;
     const sound   = SOUND_LIBRARY[stopRef];
     sound.off('end');                                 // detach any rotation-end handler
     sound.fade(sound.volume(), 0, FADE_MS);
-    setTimeout(() => sound.stop(), FADE_MS + 50);
+    const isRotation = ROTATION_SONGS_SET.has(stopRef);
+    setTimeout(() => {
+      if (isRotation) sound.pause();                  // preserve seek for resumption
+      else            sound.stop();                   // one-shots: reset to start
+    }, FADE_MS + 50);
   }
   currentMusic = newMusic;
   currentlyPlayingSound = null;
@@ -1068,6 +1103,12 @@ function transitionToMusic(newMusic) {
   if (soundKey && SOUND_LIBRARY[soundKey]) {
     const sound = SOUND_LIBRARY[soundKey];
     sound.off('end');
+    // AUDIO-3e Fix D — every song dispatched via SOUND_MAP is a one-shot (BGM rotation
+    // takes its own startBgmRotation path above). Seek to 0 first so it always plays from
+    // the beginning — defensive against any stray paused state from prior runs (e.g. if a
+    // future code path were to .pause() one of these). Without this, a paused one-shot
+    // would resume mid-track on next play() instead of starting fresh.
+    sound.seek(0);
     sound.volume(0);
     sound.play();
     sound.fade(0, SOUND_DEFAULT_VOLUMES[soundKey] || 0.7, FADE_MS);
@@ -2200,9 +2241,12 @@ function resetForLevelTransition() {
   // PRESERVED: playerScore, player.lives, highScores, introHasPlayed,
   //            gameOverFinalScore, highScoreNew (no game-over here — this is a win restart).
   _resetEntitiesAndPerLevel();
-  // AUDIO-1 — state-driven: state→GAMEPLAY maps to BGM_ROTATION via computeDesiredMusic;
-  // transitionToMusic plays the saved-position rotation song through Howler. No flag reset
-  // needed (bgmDeathMuted no longer exists).
+  // AUDIO-3e Fix A — advance bgmRotationIdx by 1 (with wrap) so each new level opens with
+  // the song AFTER whatever was current at the prior win. Within a level the once('end')
+  // handler still advances naturally. Without this, the at-win song would replay from 0:00
+  // on every level (previously bgmRotationIdx was only advanced by once('end'), which gets
+  // detached at WIN_FREEZE→SILENT — so idx was frozen across the cutscene chain).
+  bgmRotationIdx = (bgmRotationIdx + 1) % BGM_ROTATION_SONGS.length;
   state  = 'GAMEPLAY';
   stateT = 0;
 }
