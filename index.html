@@ -3827,26 +3827,32 @@ function drawScoreBreakdown(opts) {
       ctx.fillText('TOP 5', W/2, y);
       y += 16;
       // L-FIX-1 — column-aligned via THREE fillText calls per row at fixed canvas-pixel x
-      // positions, NOT via padStart/padEnd string concatenation. The pre-L-FIX-1 approach
-      // assumed monospace font but the deployed canvas font wasn't reliably monospace, so
-      // padding via spaces drifted. Now: rank LEFT-aligned at LB_RANK_X, initials LEFT-aligned
-      // at LB_INITIALS_X, score RIGHT-aligned at LB_SCORE_X. Column positions are
-      // canvas-pixel exact regardless of font metrics or initials whitespace.
+      // positions, NOT via padStart/padEnd string concatenation. L-FIX-2 — extracted into a
+      // single shared drawLeaderboardRow inline-helper so rank #1's gold-row render is
+      // STRUCTURALLY identical to rows 2-5 (only ctx.fillStyle differs). Pre-L-FIX-2 the
+      // gold/white split lived inside the loop body and could drift if any future edit
+      // accidentally introduced a per-rank font/align divergence; the helper makes that
+      // structurally impossible.
       const LB_ROW_W       = 240;                          // visual width of leaderboard column
       const LB_LEFT        = (W - LB_ROW_W) / 2;           // = 120; centers the column
       const LB_RANK_X      = LB_LEFT + 0;                  // left edge for "1."
       const LB_INITIALS_X  = LB_LEFT + 50;                 // left edge for initials
       const LB_SCORE_X     = LB_LEFT + LB_ROW_W;           // right edge for score
-      ctx.font = '14px monospace';
-      for (let i = 0; i < board.length; i++) {
-        const e = board[i];
-        ctx.fillStyle = (i === 0) ? '#ffcc00' : '#dddddd';
+      const LB_FONT        = '14px monospace';             // single font value for all 5 rows
+      function drawLeaderboardRow(rank, entry, rowY) {
+        // Identical layout for every rank. The ONLY per-rank difference is fillStyle (gold for
+        // rank 1, white for 2-5). Font, x positions, and alignment are constants.
+        ctx.font = LB_FONT;
+        ctx.fillStyle = (rank === 1) ? '#ffcc00' : '#dddddd';
         ctx.textAlign = 'left';
-        ctx.fillText((i + 1) + '.', LB_RANK_X, y);
+        ctx.fillText(rank + '.', LB_RANK_X, rowY);
         ctx.textAlign = 'left';
-        ctx.fillText(e.initials, LB_INITIALS_X, y);
+        ctx.fillText(entry.initials, LB_INITIALS_X, rowY);
         ctx.textAlign = 'right';
-        ctx.fillText(String(Math.floor(e.score)), LB_SCORE_X, y);
+        ctx.fillText(String(Math.floor(entry.score)), LB_SCORE_X, rowY);
+      }
+      for (let i = 0; i < board.length; i++) {
+        drawLeaderboardRow(i + 1, board[i], y);
         y += 18;
       }
       ctx.textAlign = 'left';                              // restore default
