@@ -939,9 +939,9 @@ const SOUND_LIBRARY = {
   // an 11+ LU gap). Fixed at the file level via two-pass ffmpeg loudnorm to -16 LUFS.
   // Howl volumes now uniform at 0.6 since the files themselves are pre-balanced.
   // Originals preserved in /audio_pre_loudnorm/ (gitignored).
-  greenwood:    new Howl({ src: ['audio/greenwood.mp3'],    loop: false, volume: 0.3 }), // AUDIO-3i — uniform 0.3 (50% drop, background-level)
-  queen:        new Howl({ src: ['audio/queen.mp3'],        loop: false, volume: 0.3 }), // AUDIO-3i — uniform 0.3 (50% drop, background-level)
-  brown:        new Howl({ src: ['audio/brown.mp3'],        loop: false, volume: 0.3 }), // AUDIO-3i — uniform 0.3 (50% drop, background-level)
+  greenwood:    new Howl({ src: ['audio/greenwood.mp3'],    loop: false, volume: 0.15 }), // AUDIO-3j — uniform 0.15 (another 50% drop for SFX clarity)
+  queen:        new Howl({ src: ['audio/queen.mp3'],        loop: false, volume: 0.15 }), // AUDIO-3j — uniform 0.15
+  brown:        new Howl({ src: ['audio/brown.mp3'],        loop: false, volume: 0.15 }), // AUDIO-3j — uniform 0.15
   free_world:   new Howl({ src: ['audio/free_world.mp3'],   loop: false, volume: 0.6 }),
   ave_maria:    new Howl({ src: ['audio/ave_maria.mp3'],    loop: false, volume: 0.7 }),
   nessun_dorma: new Howl({ src: ['audio/nessun_dorma.mp3'], loop: false, volume: 0.7 }),
