@@ -925,12 +925,16 @@ function playSfx_eagleScreech() { _sfxSweep(1400, 600, 'sawtooth', 0.50, 0.07); 
 // Looping songs (BGM rotation, escalator, Macho Man, YMCA) loop indefinitely; one-shot songs
 // (Ave Maria, Nessun Dorma) play to end and stop.
 const SOUND_LIBRARY = {
-  ymca:         new Howl({ src: ['audio/ymca.mp3'],         loop: true,  volume: 0.7 }),
+  // AUDIO-2 — loop=false on scene-bounded clips: ymca (14s death dance one-shot),
+  // free_world (12s INTRO_TITLE+ESCALATOR), ave_maria (10s INTRO_STAIRS), nessun_dorma
+  // (35s CUTSCENE_PHASE3+SCORE+BETWEEN). loop=true on variable-duration scenes:
+  // macho_man (Antifa wave length varies), greenwood/queen/brown (BGM rotation slots).
+  ymca:         new Howl({ src: ['audio/ymca.mp3'],         loop: false, volume: 0.7 }),
   macho_man:    new Howl({ src: ['audio/macho_man.mp3'],    loop: true,  volume: 0.7 }),
   greenwood:    new Howl({ src: ['audio/greenwood.mp3'],    loop: true,  volume: 0.6 }),
   queen:        new Howl({ src: ['audio/queen.mp3'],        loop: true,  volume: 0.6 }),
   brown:        new Howl({ src: ['audio/brown.mp3'],        loop: true,  volume: 0.6 }),
-  free_world:   new Howl({ src: ['audio/free_world.mp3'],   loop: true,  volume: 0.6 }),
+  free_world:   new Howl({ src: ['audio/free_world.mp3'],   loop: false, volume: 0.6 }),
   ave_maria:    new Howl({ src: ['audio/ave_maria.mp3'],    loop: false, volume: 0.7 }),
   nessun_dorma: new Howl({ src: ['audio/nessun_dorma.mp3'], loop: false, volume: 0.7 }),
 };

@@ -1,0 +1,9 @@
+# AUDIO-2 — local-only backup of pre-trim MP3 files (~51 MB). Kept on disk in case
+# re-trimming is needed but excluded from the repo to avoid doubling the audio payload.
+audio_full_backup/
+
+# Local commit-message scratchpad used by some workflows.
+.commit-msg.txt
+
+# Workspace-specific Claude Code state.
+.claude/
