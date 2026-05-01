@@ -651,7 +651,12 @@ let bgmChannel     = null;
 let sfxChannel     = null;
 let synthChannel   = null;
 let audioOn        = true;             // boot default; loaded from localStorage below
-const AUDIO_ON_KEY = 'djt_audio_on';
+// N-FIX-3 — bumped key from 'djt_audio_on' to 'djt_audio_on_v2'. Old key may be stuck at
+// 'false' for any user who pressed M during N-FIX-2 (or an earlier deploy where audio was
+// suspect), which sets masterChannel.gain.value=0 and silences EVERYTHING including the
+// new BGM rotation, intro music cues, and Nessun Dorma. Bumping the key forces a one-time
+// fresh boot so audioOn defaults to true; user can re-mute with M if they want.
+const AUDIO_ON_KEY = 'djt_audio_on_v2';
 
 // Boot — read persisted toggle state. try/catch wraps Safari private mode.
 try {
@@ -925,6 +930,13 @@ let   bgmActive          = false;
 let   bgmCurrentSongIdx  = 0;                                    // 0=greenwood, 1=queen, 2=brown
 let   bgmSongStartTime   = 0;                                    // audioContext.currentTime when current song started
 let   bgmDuckLevel       = 1.0;                                  // 1.0 normal, 0.5 ducked
+// N-FIX-3 — declared alongside above for diagnostic-console-query friendliness. The shipped
+// N-FIX-2 scheduler is per-song (entire song scheduled at startBGMSong time), so these two
+// are not on the hot path. Kept as live state so `typeof bgmStartCurrentTime` returns
+// 'number' and `bgmScheduledUntil` returns a numeric value during gameplay. Both mirror
+// bgmSongStartTime + BGM_SONG_DUR[idx] (i.e. when the current song's last note ends).
+let   bgmStartCurrentTime = 0;
+let   bgmScheduledUntil   = 0;
 
 // N-FIX-2 — schedule a single song's notes starting at t0 on the bgmChannel. Each song's
 // scheduleFn handles its own tempo, time signature, melody, bass, percussion. Notes are
@@ -933,6 +945,12 @@ function startBGMSong(songIdx, t0) {
   if (!audioContext || !bgmChannel) return;
   bgmCurrentSongIdx = ((songIdx % 3) + 3) % 3;                   // wrap
   bgmSongStartTime  = t0;
+  // N-FIX-3 — mirror state for diagnostic console queries. bgmStartCurrentTime tracks the
+  // last song-start absolute time (== bgmSongStartTime); bgmScheduledUntil tracks the
+  // moment the current song's last note finishes. Both are read-only mirrors; the per-song
+  // scheduler doesn't depend on them.
+  bgmStartCurrentTime = t0;
+  bgmScheduledUntil   = t0 + BGM_SONG_DUR[bgmCurrentSongIdx];
   if      (bgmCurrentSongIdx === 0) _bgmScheduleGreenwood(t0);
   else if (bgmCurrentSongIdx === 1) _bgmScheduleQueen(t0);
   else                              _bgmScheduleBrown(t0);
@@ -1044,6 +1062,21 @@ function _bgmScheduleBrown(t0) {
     }
   }
 }
+
+// N-FIX-3 — diagnostic-friendly aliases. The shipped functions are named
+// _bgmScheduleGreenwood/Queen/Brown (per-song full schedule). N-FIX-3 spec referred to
+// them as _bgmGreenwoodBar/_bgmQueenBar/_bgmBrownBar (per-bar dispatch from an earlier
+// design). Both names point at the same function so console queries and any future
+// per-bar callers both resolve. BGM_SONGS array provided for the same reason — Brian's
+// spec referred to it; the live dispatcher uses a switch but these are equivalent.
+const _bgmGreenwoodBar = _bgmScheduleGreenwood;
+const _bgmQueenBar     = _bgmScheduleQueen;
+const _bgmBrownBar     = _bgmScheduleBrown;
+const BGM_SONGS = [
+  { name: 'Greenwood',  scheduleFn: _bgmScheduleGreenwood, durSec: BGM_SONG_DUR[0] },
+  { name: 'Queen',      scheduleFn: _bgmScheduleQueen,     durSec: BGM_SONG_DUR[1] },
+  { name: 'JamesBrown', scheduleFn: _bgmScheduleBrown,     durSec: BGM_SONG_DUR[2] },
+];
 
 // Snare-like noise burst helper (extracted from the old _bgmScheduleBar). Used by all songs.
 function _bgmScheduleSnareBurst(t, dur, peak) {
