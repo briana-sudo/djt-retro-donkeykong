@@ -395,19 +395,31 @@ function saveHighScore(score) {
   try { localStorage.setItem(HIGH_SCORE_KEY, String(Math.floor(score))); }
   catch (e) { if (typeof console !== 'undefined') console.warn('saveHighScore failed:', e); }
 }
-// K — high-score initials (3-char A-Z). Malformed payloads (non-string, wrong length, non-A-Z
-// chars) treated as empty so HUD falls back to "HI: ---" cleanly.
+// K — high-score initials (3-char string). Malformed payloads (non-string, wrong length, or
+// chars outside the allowed set) treated as empty so HUD falls back gracefully.
+// K-FIX-4 — allowed character set extended from /^[A-Z]{3}$/ to /^[A-Z ]{3}$/ to permit spaces
+// (e.g. 'B  ', 'BA ', ' A '). Storage stores raw 3-char string with spaces; HUD trims trailing
+// spaces at display time. Lowercase, digits, punctuation still rejected.
 function loadHighScoreInitials() {
   try {
     const raw = localStorage.getItem(HIGH_SCORE_INITIALS_KEY);
     if (typeof raw !== 'string') return '';
     if (raw.length !== 3) return '';
-    if (!/^[A-Z]{3}$/.test(raw)) return '';
+    if (!/^[A-Z ]{3}$/.test(raw)) return '';
     return raw;
   } catch (e) { return ''; }
 }
 function saveHighScoreInitials(initials) {
-  try { localStorage.setItem(HIGH_SCORE_INITIALS_KEY, String(initials)); }
+  // K-FIX-4 — belt-and-suspenders save-time validation. Input paths (cycleInitialsLetter,
+  // setInitialsLetter) are already constrained to A-Z + space, but a save-time regex prevents
+  // any future code path from accidentally writing a malformed payload. Same regex shape as the
+  // loader (FIX 4): exactly 3 chars from A-Z plus space.
+  const s = String(initials);
+  if (!/^[A-Z ]{3}$/.test(s)) {
+    if (typeof console !== 'undefined') console.warn('saveHighScoreInitials rejected malformed value:', s);
+    return;
+  }
+  try { localStorage.setItem(HIGH_SCORE_INITIALS_KEY, s); }
   catch (e) { if (typeof console !== 'undefined') console.warn('saveHighScoreInitials failed:', e); }
 }
 highScore         = loadHighScore();
@@ -484,18 +496,21 @@ window.addEventListener('keydown', e => {
   // J — DEATH_REACTION eats input. GAME_OVER tap = restartFromGameOver — full reset.
   if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_REACTION') return;
   // K — INITIALS_ENTRY input intercept (must precede GAME_OVER tap-to-restart).
-  //   ArrowUp / W       → cycle current letter forward (A→B→...→Z→A)
+  // K-FIX-4 — cycle extended to A-Z + ' '. Spacebar rerouted from confirm to set-space.
+  //   ArrowUp / W       → cycle current letter forward (A→B→...→Z→' '→A)
   //   ArrowDown / S     → cycle backward
-  //   ArrowRight / D / Enter / Space → confirm + advance (3rd confirm submits)
+  //   ArrowRight / D / Enter → confirm + advance (3rd confirm submits)  [Spacebar removed]
+  //   Spacebar          → K-FIX-4: set ' ' (space) in active slot, auto-advance like a letter key
   //   ArrowLeft         → backspace (move cursor back, doesn't clear)
   //   Letter keys A-Z   → direct-set current letter, auto-advance (3rd direct-set submits)
   if (state === 'GAME_OVER' && initialsEntryActive) {
     e.preventDefault();
     if (e.code === 'ArrowUp'    || e.code === 'KeyW') { cycleInitialsLetter(+1); return; }
     if (e.code === 'ArrowDown'  || e.code === 'KeyS') { cycleInitialsLetter(-1); return; }
-    if (e.code === 'ArrowRight' || e.code === 'KeyD' || e.code === 'Enter' || e.code === 'Space') {
+    if (e.code === 'ArrowRight' || e.code === 'KeyD' || e.code === 'Enter') {
       confirmInitialsLetter(); return;
     }
+    if (e.code === 'Space') { setInitialsLetter(' '); return; }          // K-FIX-4 — direct-set space
     if (e.code === 'ArrowLeft') { backspaceInitials(); return; }
     if (/^Key[A-Z]$/.test(e.code)) { setInitialsLetter(e.code.charAt(3)); return; }
     return;                                                              // eat all other input
@@ -1301,15 +1316,24 @@ function restartFromGameOver() {
 
 // K — initials entry input helpers. Used by both keyboard handler (in window.keydown) and the
 // touch-zone handler in pointerdown.
+// K-FIX-4 — cycle now A-Z + ' ' (space). 27 positions. Up at 'Z' goes to ' ', up at ' ' wraps
+// to 'A'. Down at 'A' goes to ' ', down at ' ' goes to 'Z'. Space stored literally (' '),
+// rendered as '_' in the slot UI (see drawInitialsEntryUI), trimmed at HUD display time.
+const INITIALS_CYCLE = ['A','B','C','D','E','F','G','H','I','J','K','L','M',
+                        'N','O','P','Q','R','S','T','U','V','W','X','Y','Z',' '];
 function cycleInitialsLetter(delta) {
   if (!initialsEntryActive) return;
-  const code = initialsLetters[initialsCursor].charCodeAt(0) - 65;       // 0..25
-  const next = ((code + delta) % 26 + 26) % 26;
-  initialsLetters[initialsCursor] = String.fromCharCode(65 + next);
+  const idx  = INITIALS_CYCLE.indexOf(initialsLetters[initialsCursor]);
+  const safe = idx < 0 ? 0 : idx;                                        // defensive: unknown char → reset to 'A'
+  const len  = INITIALS_CYCLE.length;
+  const next = ((safe + delta) % len + len) % len;
+  initialsLetters[initialsCursor] = INITIALS_CYCLE[next];
 }
 function setInitialsLetter(ch) {
   if (!initialsEntryActive) return;
-  if (!/^[A-Z]$/.test(ch)) return;
+  // K-FIX-4 — accepts A-Z OR space. Space is set via Spacebar in keydown handler (rerouted from
+  // its prior "confirm+advance" binding). Letter keys still write A-Z and auto-advance.
+  if (!/^[A-Z ]$/.test(ch)) return;
   initialsLetters[initialsCursor] = ch;
   if (initialsCursor < 2) initialsCursor++;
   else submitInitialsEntry();                                            // typing on slot 3 auto-submits
@@ -1374,12 +1398,14 @@ function drawInitialsEntryUI() {
     ctx.strokeStyle = (i === initialsCursor) ? '#ffcc00' : 'rgba(255,255,255,0.5)';
     ctx.lineWidth = 2;
     ctx.strokeRect(cx - INI_SLOT_W/2, slotTop, INI_SLOT_W, INI_SLOT_H);
-    // Letter
+    // Letter. K-FIX-4 — space character renders as '_' so the slot doesn't look empty. Storage
+    // and HUD logic operate on the literal ' ', the underscore is display-only.
     ctx.fillStyle = '#ffffff';
     ctx.font = 'bold 36px monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(initialsLetters[i], cx, INI_SLOT_Y);
+    const slotChar = initialsLetters[i] === ' ' ? '_' : initialsLetters[i];
+    ctx.fillText(slotChar, cx, INI_SLOT_Y);
     // Cursor blink under active slot (2Hz)
     if (i === initialsCursor && Math.floor(stateT * 4) % 2 === 0) {
       ctx.fillStyle = '#ffcc00';
@@ -3530,13 +3556,19 @@ function drawHUD() {
   //   highScore == 0                          → 'HI ---'  (no score recorded)
   //   highScore > 0  AND initials empty       → 'HI 4325' (legacy J-save: score but no initials)
   //   highScore > 0  AND initials set         → 'HI BRI 4325'
-  // The middle case lets pre-K Block-J localStorage entries display their score immediately
-  // without forcing the player to beat their own prior high before the HUD shows anything.
+  // K-FIX-4 — initials may now contain spaces (e.g. 'B  ', 'BA '). Trim TRAILING spaces only at
+  // display time so 'B  ' renders as 'HI B 4325' (one space gap) instead of 'HI B   4325' (raw
+  // gap). Leading and embedded spaces preserved (' A ' → ' A' before the score). All-blank
+  // initials trim to '' and fall through to the integer-only display (matches J-save fallback).
   ctx.fillStyle='#aaccff'; ctx.font='bold 11px monospace';
   let hiText;
-  if (highScore <= 0)          hiText = 'HI ---';
-  else if (!highScoreInitials) hiText = 'HI ' + Math.floor(highScore);
-  else                         hiText = 'HI ' + highScoreInitials + ' ' + Math.floor(highScore);
+  if (highScore <= 0) {
+    hiText = 'HI ---';
+  } else {
+    const trimmed = (highScoreInitials || '').replace(/\s+$/, '');
+    if (!trimmed) hiText = 'HI ' + Math.floor(highScore);
+    else          hiText = 'HI ' + trimmed + ' ' + Math.floor(highScore);
+  }
   ctx.fillText(hiText, W-8, HUD_Y + 22);
 
   // Block D — multiplier badge. E2 corrected — badge placed flush BELOW the HUD bar (in the
@@ -4560,22 +4592,32 @@ function loop(ts) {
       // I-CORR-3 — DTJ caption rotation lives in the top-of-canvas strip. The 3 lines are
       // pushed in cutsceneAdvance (SCORE→BETWEEN). renderCutsceneCaption() draws current.
 
-      // I6 — at t=5.0s reveal LEVEL 2 COMING SOON header + TAP TO RESTART prompt.
-      // J — creator credit subtitle below the prompt, matches GAME_OVER overlay style.
+      // I6 — end card revealed at t >= 5.0s.
+      // K-FIX-4 — wording updated to win-state language. Was "LEVEL 2 COMING SOON" + "TAP TO
+      // RESTART". Now four lines: "LEVEL 1 COMPLETE!" hero header in gold + "LEVEL 2 COMING
+      // SOON" subtitle + "TAP TO CONTINUE" action prompt + creator credit. "RESTART" wording
+      // sounded like game-over language; "CONTINUE" reads as forward progress (which is what
+      // K-FIX-3 made it — score and lives carry through). GAME_OVER overlay still uses
+      // "TAP TO RESTART" because that IS a restart.
       if (stateT >= 5.0) {
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 26px monospace';
+        // Line 1 — hero header (gold, larger weight matching breakdown TOTAL styling).
+        ctx.fillStyle = '#ffcc00';
+        ctx.font = 'bold 28px monospace';
         ctx.textAlign = 'center';
-        ctx.fillText('LEVEL 2 COMING SOON', W/2, 220);
+        ctx.fillText('LEVEL 1 COMPLETE!', W/2, 200);
+        // Line 2 — subtitle (white, current size from prior reveal).
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 22px monospace';
+        ctx.fillText('LEVEL 2 COMING SOON', W/2, 240);
+        // Line 3 — pulsing action prompt.
         const pulseB = 0.5 + 0.5 * Math.sin(stateT * 4);
         ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulseB).toFixed(3) + ')';
         ctx.font = 'bold 14px monospace';
-        ctx.fillText('TAP TO RESTART', W/2, 260);
-        // K-FIX-3 — dark gold full-opacity credit (was subtle gray 0.6 alpha; too faint against
-        // the light blue sky background of CUTSCENE_BETWEEN). Same font + position.
+        ctx.fillText('TAP TO CONTINUE', W/2, 278);
+        // Line 4 — K-FIX-3 dark gold credit (unchanged).
         ctx.fillStyle = '#9a7a00';
         ctx.font = '10px monospace';
-        ctx.fillText('Created by Brian Albert', W/2, 290);
+        ctx.fillText('Created by Brian Albert', W/2, 308);
       }
 
       // I-CORR-3 — caption strip flush above sky horizon.
