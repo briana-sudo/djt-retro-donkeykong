@@ -499,28 +499,134 @@ function getDtjDancePose(tWithinCycle) {
   return DTJ_DANCE_POSES[DTJ_DANCE_POSES.length - 1].sprite;     // safety: end-of-cycle edge
 }
 
-// L — dance speech bubble state. Single global at a time.
-//   text: current bubble text
-//   t:    elapsed time on screen
-//   life: total visible duration (hold + fade = 2.0s)
-let danceBubble = { text: '', t: 0, life: 0, active: false };
+// L — speech bubble state (single global at a time). M — generalized to drive BOTH dance
+// bubbles (Block L) AND gameplay taunt bubbles (Block M). Per-bubble hold/fade durations live
+// on the struct so each spawn picks its own timing.
+//   text:  current bubble text
+//   t:     elapsed time on screen
+//   holdT: hold-at-full-alpha duration
+//   fadeT: fade-out duration after hold
+//   active: visibility flag
+let bubble = { text: '', t: 0, holdT: 0, fadeT: 0, active: false };
 const DTJ_DANCE_BUBBLE_HOLD = 1.5;
 const DTJ_DANCE_BUBBLE_FADE = 0.5;
-const DTJ_DANCE_BUBBLE_LIFE = DTJ_DANCE_BUBBLE_HOLD + DTJ_DANCE_BUBBLE_FADE;
 const DTJ_DANCE_BUBBLE_CYCLE1_TEXTS = ['LOSER!', 'SAD!'];
 const DTJ_DANCE_BUBBLE_CYCLE2_TEXT  = 'GREATEST WIN EVER!';
 
-function spawnDanceBubble(text) {
-  danceBubble.text = text;
-  danceBubble.t = 0;
-  danceBubble.life = DTJ_DANCE_BUBBLE_LIFE;
-  danceBubble.active = true;
+// Generic spawn — used by both dance (1.5s + 0.5s) and taunt (1.0s + 0.5s) callers.
+function spawnBubble(text, holdSec, fadeSec) {
+  bubble.text = text;
+  bubble.t = 0;
+  bubble.holdT = holdSec;
+  bubble.fadeT = fadeSec;
+  bubble.active = true;
 }
 
-function tickDanceBubble(dt) {
-  if (!danceBubble.active) return;
-  danceBubble.t += dt;
-  if (danceBubble.t >= danceBubble.life) danceBubble.active = false;
+// Block L back-compat thin wrapper — dance callers continue to use spawnDanceBubble.
+function spawnDanceBubble(text) {
+  spawnBubble(text, DTJ_DANCE_BUBBLE_HOLD, DTJ_DANCE_BUBBLE_FADE);
+}
+
+function tickBubble(dt) {
+  if (!bubble.active) return;
+  bubble.t += dt;
+  if (bubble.t >= bubble.holdT + bubble.fadeT) bubble.active = false;
+}
+
+function getBubbleAlpha() {
+  if (!bubble.active) return 0;
+  if (bubble.t < bubble.holdT) return 1;
+  return Math.max(0, 1 - (bubble.t - bubble.holdT) / bubble.fadeT);
+}
+
+// M — interrupt the current bubble (used by Antifa spawn taunt to cancel-and-replace any
+// in-progress regular taunt or dance bubble — though dance bubble cancel is unlikely since
+// taunts are gated against dancing state).
+function cancelBubble() {
+  bubble.active = false;
+  bubble.text = '';
+}
+
+// ─────────────────────────────────────────────
+//  M — DTJ GAMEPLAY TAUNTS
+// ─────────────────────────────────────────────
+// DTJ taunts the player during gameplay via right-side speech bubbles (same component as
+// Block L dance bubbles). Random pool of 8 phrases + 1 contextual phrase tied to Antifa spawn.
+// Triggers on a randomized 8-15s timer AND on platform-reach events. Silent in M (audio
+// added in Block N). Gated to GAMEPLAY-only + dance-not-active + bubble-not-active.
+const TAUNT_POOL = [
+  'CROOKED DEMS!',
+  'WEAK! VERY WEAK!',
+  'NASTY!',
+  'WORST EVER!',
+  'DISGRACEFUL!',
+  'PATHETIC LOSERS!',
+  'TOTALLY CORRUPT!',
+  'DEMOCRATS HATE AMERICA!',
+];
+const ANTIFA_TAUNT = 'RADICAL LEFT MOB!';     // contextual — fires on Antifa spawn only, NOT in TAUNT_POOL
+const TAUNT_INTERVAL_MIN = 8.0;
+const TAUNT_INTERVAL_MAX = 15.0;
+const TAUNT_HOLD = 1.0;
+const TAUNT_FADE = 0.5;
+let lastTauntIndex = -1;
+let tauntTimer = TAUNT_INTERVAL_MIN + Math.random() * (TAUNT_INTERVAL_MAX - TAUNT_INTERVAL_MIN);
+
+function pickTaunt() {
+  // No-repeat-last from the general pool. Antifa contextual phrase doesn't participate.
+  let idx;
+  if (TAUNT_POOL.length <= 1) {
+    idx = 0;
+  } else {
+    do {
+      idx = Math.floor(Math.random() * TAUNT_POOL.length);
+    } while (idx === lastTauntIndex);
+  }
+  lastTauntIndex = idx;
+  return TAUNT_POOL[idx];
+}
+
+function fireTaunt(phrase) {
+  spawnBubble(phrase, TAUNT_HOLD, TAUNT_FADE);
+}
+
+function resetTauntTimer() {
+  tauntTimer = TAUNT_INTERVAL_MIN + Math.random() * (TAUNT_INTERVAL_MAX - TAUNT_INTERVAL_MIN);
+}
+
+// M — call on every platform reach (the existing platformsReached.add + +500 reach bonus
+// scoring sites). Fires a random-pool taunt + resets the regular timer so the player doesn't
+// get stacked bubbles.
+function firePlatformReachTaunt() {
+  if (state !== 'GAMEPLAY') return;
+  if (dtjDanceState !== 'IDLE') return;
+  if (bubble.active) return;                                      // don't stack bubbles
+  fireTaunt(pickTaunt());
+  resetTauntTimer();
+}
+
+// M — call on Antifa spawn (inside triggerHelperSpawn → spawnAntifaWave path). Cancels any
+// in-progress bubble, fires the contextual ANTIFA_TAUNT, resets the regular timer.
+function fireAntifaSpawnTaunt() {
+  if (state !== 'GAMEPLAY') return;
+  if (dtjDanceState !== 'IDLE') return;
+  cancelBubble();                                                 // cancel-and-replace
+  fireTaunt(ANTIFA_TAUNT);
+  resetTauntTimer();
+}
+
+// M — taunt timer tick. Called from main loop top with a state guard. Only ticks during
+// GAMEPLAY (not intros, not cutscenes, not death/game-over states), only when no dance is
+// running, and only when no bubble is currently displayed (regular taunt waits its turn).
+function tickTaunts(dt) {
+  if (state !== 'GAMEPLAY') return;
+  if (dtjDanceState !== 'IDLE') return;
+  if (bubble.active) return;
+  tauntTimer -= dt;
+  if (tauntTimer <= 0) {
+    fireTaunt(pickTaunt());
+    resetTauntTimer();
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -637,7 +743,7 @@ function tickDtjDance(dt) {
       stopYmca();
     }
   }
-  tickDanceBubble(dt);
+  tickBubble(dt);
 }
 
 // I1 — cutscene input: route a tap to the next phase based on current state.
@@ -932,6 +1038,7 @@ function updatePlayer(dt) {
             player.platformsReached.add(idx);
             stats.platformCount++;
             addScore(PLATFORM_REACH_BONUS, true, player.x, player.y - 40, '#88ddff');
+            firePlatformReachTaunt();                              // M — DTJ taunts on each new platform
           }
         }
         // H1 — top of ladder[5] (P4 → TOP) is the win trigger. Fires on the same tick the player
@@ -968,6 +1075,7 @@ function updatePlayer(dt) {
             player.platformsReached.add(idx);
             stats.platformCount++;
             addScore(PLATFORM_REACH_BONUS, true, player.x, player.y - 40, '#88ddff');
+            firePlatformReachTaunt();                              // M — DTJ taunts on each new platform
           }
         }
         player.ladderCooldown = 0.2;
@@ -1066,6 +1174,7 @@ function updatePlayer(dt) {
         player.platformsReached.add(idx);
         stats.platformCount++;
         addScore(PLATFORM_REACH_BONUS, true, player.x, player.y - 40, '#88ddff');
+        firePlatformReachTaunt();                                  // M — DTJ taunts on each new platform
       }
     }
     break;
@@ -2301,8 +2410,12 @@ function drawSS() {
 
 // Block E — populated. Random pick: Antifa wave or Zombie Voter wave on each briefcase collect.
 function triggerHelperSpawn(reason) {
-  if (Math.random() < 0.5) spawnAntifaWave();
-  else                     spawnZombieWave();
+  if (Math.random() < 0.5) {
+    spawnAntifaWave();
+    fireAntifaSpawnTaunt();                                       // M — contextual 'RADICAL LEFT MOB!' taunt
+  } else {
+    spawnZombieWave();
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -4246,13 +4359,9 @@ function drawGameplay(shake) {
     // L-FIX-1 — routed through drawSideBandBubble (right-side empty band, x=300/y=50). Block L
     // had this calling drawBubble at y=TOP.y-110=30 which placed the bubble BEHIND the news
     // ticker (ticker bottom at y=18, original bubble top at y=-38 — completely off-canvas).
-    if (danceBubble.active) {
-      const fadeStart = DTJ_DANCE_BUBBLE_HOLD;
-      const alpha = danceBubble.t < fadeStart
-        ? 1
-        : Math.max(0, 1 - (danceBubble.t - fadeStart) / DTJ_DANCE_BUBBLE_FADE);
-      drawSideBandBubble(danceBubble.text, alpha);
-    }
+    // L-FIX-1 / M — bubble render moved out of the dance-only branch; now drawn at the end of
+    // drawGameplay so it renders for BOTH dance bubbles (during DANCING) and taunt bubbles
+    // (during GAMEPLAY). Single render call site below before drawHUD.
   } else if (dtjAnimState === 'IDLE') {
     drawSprite('dtj_idle', DTJ_GAMEPLAY_X, TOP.y, 110, false, 1.0);
   } else if (dtjAnimState === 'THROW_COCK') {
@@ -4318,6 +4427,11 @@ function drawGameplay(shake) {
   // expire (life=0.4s); shared global pool, no per-entity tracking.
   renderRagdollDebrisAndFlash();
 
+  // M — bubble render (right-side empty band) drawn AFTER all gameplay sprites + debris so it
+  // sits visually on top of the world, but BEFORE drawHUD so HUD score/HI text never get
+  // covered. Single render path used by both Block L dance bubbles and Block M taunt bubbles.
+  if (bubble.active) drawSideBandBubble(bubble.text, getBubbleAlpha());
+
   drawHUD();
   drawTicker();
   drawDpad();
@@ -4356,6 +4470,10 @@ function loop(ts) {
   // transitions cleanly. Trigger countdown + dance progression + speech bubble lifecycle
   // + YMCA synth scheduling are all owned by tickDtjDance.
   tickDtjDance(dt);
+
+  // M — taunt timer ticks every frame; the function gates internally on state==='GAMEPLAY' +
+  // dance-not-active + bubble-not-active so it's a no-op during intros/cutscenes/dance/etc.
+  tickTaunts(dt);
 
   // K — initials-entry "INITIALS SAVED" confirmation timer ticks here so the 1.0s display
   // shows even if the GAME_OVER case re-renders from scratch each frame.
@@ -4830,7 +4948,7 @@ function loop(ts) {
           // L-FIX-1 — was: state='GAME_OVER' immediately + trigger initials entry here.
           // Now: state='GAMEOVER_PENDING' so the DTJ dance + bubbles play in full before the
           // overlay covers them. Initials-entry trigger MOVED to the GAMEOVER_PENDING →
-          // GAME_OVER transition (when dtjDanceState === 'IDLE' && !danceBubble.active).
+          // GAME_OVER transition (when dtjDanceState === 'IDLE' && !bubble.active).
           state = 'GAMEOVER_PENDING';
           stateT = 0;
         } else {
@@ -4850,7 +4968,7 @@ function loop(ts) {
     // GAME_OVER overlay. Player is dead (drawGameplay's player-render block checks for this
     // state and suppresses the player). World keeps living: capsules/helpers/Pelosi/SS keep
     // ticking so mid-action chaos plays out underneath the dance. Transition to GAME_OVER
-    // when both dtjDanceState === 'IDLE' AND !danceBubble.active. Initials-entry trigger
+    // when both dtjDanceState === 'IDLE' AND !bubble.active. Initials-entry trigger
     // moved here from DEATH_REACTION end so it fires at the moment the overlay actually
     // appears (and not during the dance).
     case 'GAMEOVER_PENDING': {
@@ -4860,7 +4978,7 @@ function loop(ts) {
       updatePelosi(dt);
       updateSS(dt);
       drawGameplay(false);
-      if (dtjDanceState === 'IDLE' && !danceBubble.active) {
+      if (dtjDanceState === 'IDLE' && !bubble.active) {
         if (highScoreNew) {
           initialsEntryActive = true;
           initialsCursor      = 0;
