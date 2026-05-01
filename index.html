@@ -287,12 +287,18 @@ let   deathPhase                = 'phase1';// 'phase1' | 'phase2'
 let   ragdollBurstFlashT        = 0;       // ticks down from 1 across one frame after any burst
 const ragdollDebris             = [];     // K — shared between player + Antifa bursts
 let   gameOverFinalScore        = 0;
-let   highScore                 = 0;
-let   highScoreNew              = false;   // true on game over if final beat the prior high
-let   highScoreInitials         = '';      // K — 3-char A-Z, persisted in localStorage
+let   highScoreNew              = false;   // true on game over if final qualified for the top-5 board
 let   introHasPlayed            = false;   // K — set true at INTRO_SHATTER end; per-session, not persisted
-const HIGH_SCORE_KEY            = 'djt_high_score';
-const HIGH_SCORE_INITIALS_KEY   = 'djt_high_score_initials';
+// K-FIX-5 — replaced single highScore + highScoreInitials with a top-5 leaderboard array.
+// Storage key 'djt_high_scores' (plural). Each entry: { initials: 'BRI', score: 5799 }. Sorted
+// descending by score. Maximum 5 entries. Empty leaderboard = []. The K-FIX-2 legacy single
+// keys (HIGH_SCORE_KEY / HIGH_SCORE_INITIALS_KEY) remain on disk and serve as the migration
+// source for first-boot under K-FIX-5.
+let   highScores                = [];      // top-5 leaderboard
+const HIGH_SCORES_KEY           = 'djt_high_scores';
+const HIGH_SCORE_KEY            = 'djt_high_score';            // legacy J/K key — read for migration only
+const HIGH_SCORE_INITIALS_KEY   = 'djt_high_score_initials';   // legacy K-FIX-4 key — read for migration only
+const LEADERBOARD_MAX           = 5;
 
 // K — shared debris-burst spawn. Used by both player DEATH_REACTION phase2 and Antifa RAGDOLL
 // phase2. Each item: 4-6px square, random vx [-150,150], vy [-300,-100], gravity, rotates,
@@ -375,55 +381,78 @@ const ss = {
   ],
 };
 
-// K — initials entry sub-state of GAME_OVER. Shows when (highScoreNew) OR (highScore===0 AND
-// playerScore > 0). UI renders ON TOP of the score breakdown, between the totals row and the
-// TAP TO RESTART prompt. Submit on 3rd confirm writes initials to localStorage.
+// K — initials entry sub-state of GAME_OVER. K-FIX-5 — trigger now `scoreMakesTop5(playerScore)`
+// (replaces K's wasNewHigh OR wasFirstScore). UI renders ON TOP of the score breakdown.
+// Submit on 3rd confirm pushes the entry into highScores and saves the array.
 let   initialsEntryActive   = false;
 let   initialsCursor        = 0;
 const initialsLetters       = ['A', 'A', 'A'];
 let   initialsConfirmedT    = 0;                          // post-submit "INITIALS SAVED" timer (s)
 const INITIALS_CONFIRM_DURATION = 1.0;
-function loadHighScore() {
+
+// K-FIX-5 — leaderboard storage. Replaces K's single highScore + highScoreInitials pair.
+// loadHighScores: read 'djt_high_scores' JSON array. Validate each entry (3-char A-Z+space
+// initials, non-negative integer score). Sort descending, slice to top 5. On miss/parse error,
+// fall back to migrateLegacyOrEmpty.
+function loadHighScores() {
   try {
-    const raw = localStorage.getItem(HIGH_SCORE_KEY);
-    if (raw == null) return 0;
-    const n = parseInt(raw, 10);
-    return (isFinite(n) && n >= 0) ? n : 0;
-  } catch (e) { return 0; }                // Safari private mode etc — silently default to 0
-}
-function saveHighScore(score) {
-  try { localStorage.setItem(HIGH_SCORE_KEY, String(Math.floor(score))); }
-  catch (e) { if (typeof console !== 'undefined') console.warn('saveHighScore failed:', e); }
-}
-// K — high-score initials (3-char string). Malformed payloads (non-string, wrong length, or
-// chars outside the allowed set) treated as empty so HUD falls back gracefully.
-// K-FIX-4 — allowed character set extended from /^[A-Z]{3}$/ to /^[A-Z ]{3}$/ to permit spaces
-// (e.g. 'B  ', 'BA ', ' A '). Storage stores raw 3-char string with spaces; HUD trims trailing
-// spaces at display time. Lowercase, digits, punctuation still rejected.
-function loadHighScoreInitials() {
-  try {
-    const raw = localStorage.getItem(HIGH_SCORE_INITIALS_KEY);
-    if (typeof raw !== 'string') return '';
-    if (raw.length !== 3) return '';
-    if (!/^[A-Z ]{3}$/.test(raw)) return '';
-    return raw;
-  } catch (e) { return ''; }
-}
-function saveHighScoreInitials(initials) {
-  // K-FIX-4 — belt-and-suspenders save-time validation. Input paths (cycleInitialsLetter,
-  // setInitialsLetter) are already constrained to A-Z + space, but a save-time regex prevents
-  // any future code path from accidentally writing a malformed payload. Same regex shape as the
-  // loader (FIX 4): exactly 3 chars from A-Z plus space.
-  const s = String(initials);
-  if (!/^[A-Z ]{3}$/.test(s)) {
-    if (typeof console !== 'undefined') console.warn('saveHighScoreInitials rejected malformed value:', s);
-    return;
+    const raw = localStorage.getItem(HIGH_SCORES_KEY);
+    if (raw == null) return migrateLegacyOrEmpty();
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return migrateLegacyOrEmpty();
+    const valid = arr.filter(e =>
+      e && typeof e.initials === 'string' &&
+      /^[A-Z ]{3}$/.test(e.initials) &&
+      typeof e.score === 'number' && e.score >= 0
+    );
+    return valid.sort((a, b) => b.score - a.score).slice(0, LEADERBOARD_MAX);
+  } catch (err) {
+    return migrateLegacyOrEmpty();
   }
-  try { localStorage.setItem(HIGH_SCORE_INITIALS_KEY, s); }
-  catch (e) { if (typeof console !== 'undefined') console.warn('saveHighScoreInitials failed:', e); }
 }
-highScore         = loadHighScore();
-highScoreInitials = loadHighScoreInitials();
+
+// K-FIX-5 — first-boot under leaderboard system: read the K-FIX-4-era single keys
+// (djt_high_score + djt_high_score_initials) and bootstrap a 1-entry leaderboard if a legacy
+// score exists. Old keys are LEFT IN PLACE (defensive — never delete user data). Subsequent
+// boots read the new key and ignore the legacy ones.
+function migrateLegacyOrEmpty() {
+  try {
+    const oldRaw = localStorage.getItem(HIGH_SCORE_KEY);
+    if (oldRaw == null) return [];
+    const oldScore = parseInt(oldRaw, 10);
+    if (!isFinite(oldScore) || oldScore <= 0) return [];
+    const oldInitialsRaw = localStorage.getItem(HIGH_SCORE_INITIALS_KEY);
+    const initials = (typeof oldInitialsRaw === 'string' && /^[A-Z ]{3}$/.test(oldInitialsRaw))
+      ? oldInitialsRaw
+      : '   ';                                              // legacy J-save with no initials → 3 spaces (HUD trims)
+    return [{ initials: initials, score: oldScore }];
+  } catch (e) { return []; }
+}
+
+function saveHighScores(arr) {
+  try {
+    const trimmed = arr.slice(0, LEADERBOARD_MAX);
+    localStorage.setItem(HIGH_SCORES_KEY, JSON.stringify(trimmed));
+  } catch (e) {
+    if (typeof console !== 'undefined') console.warn('saveHighScores failed:', e);
+  }
+}
+
+// K-FIX-5 — convenience accessors. Used by HUD render + GAME_OVER overlay where Block J/K code
+// previously read `highScore` / `highScoreInitials` directly. Single read site means future
+// leaderboard schema changes don't ripple through the codebase.
+function getTopScore()    { return highScores.length > 0 ? highScores[0].score    : 0;  }
+function getTopInitials() { return highScores.length > 0 ? highScores[0].initials : ''; }
+
+// K-FIX-5 — initials-entry trigger predicate. Score makes top 5 if the leaderboard isn't full
+// OR the score beats the lowest entry. Empty signature guard: score must be > 0.
+function scoreMakesTop5(score) {
+  if (score <= 0) return false;
+  if (highScores.length < LEADERBOARD_MAX) return true;
+  return score > highScores[highScores.length - 1].score;
+}
+
+highScores = loadHighScores();
 
 // I1 — cutscene input: route a tap to the next phase based on current state.
 //   CUTSCENE_PHASE1 / CUTSCENE_PHASE3 with cutsceneT >= 10s: skip straight to SCORE
@@ -1207,14 +1236,14 @@ function respawnPlayer() {
 // (private factoring helper) and is called by both top-level functions.
 //
 //   resetForLevelTransition()   — CUTSCENE_BETWEEN tap-to-restart.
-//                                  PRESERVES playerScore, player.lives, highScore,
-//                                  highScoreInitials, introHasPlayed.
+//                                  PRESERVES playerScore, player.lives, highScores (top-5
+//                                  leaderboard array, persisted via localStorage), introHasPlayed.
 //                                  Transitions state = 'GAMEPLAY' (intro skipped, always).
 //   resetForGameOver()          — GAME_OVER tap-to-restart.
 //                                  WIPES playerScore=0, player.lives=3.
 //                                  Transitions state = 'INTRO_BLACK' (intro replays in full).
-//                                  highScore + highScoreInitials still PERSIST (localStorage,
-//                                  written at game-over moment, never touched here).
+//                                  highScores still PERSISTS (localStorage, written by
+//                                  submitInitialsEntry, never touched here).
 //
 // introHasPlayed is preserved by both — it's session-scoped, set once at end of INTRO_SHATTER
 // (L3987), never touched anywhere else. Page refresh resets it to false. K-FIX-3 routing is
@@ -1222,7 +1251,7 @@ function respawnPlayer() {
 // future blocks could re-introduce a gate.
 
 // Private factoring helper — per-level state + entity wipe. Does NOT touch playerScore,
-// player.lives, highScore, highScoreInitials, introHasPlayed, gameOverFinalScore, or `state`.
+// player.lives, highScores, introHasPlayed, gameOverFinalScore, or `state`.
 // Called by both top-level reset functions; each then sets `state` to its own destination.
 function _resetEntitiesAndPerLevel() {
   player.invulnT = 0;
@@ -1289,7 +1318,7 @@ function _resetEntitiesAndPerLevel() {
 // CUTSCENE_BETWEEN tap. Carry score + lives forward into the new level. Skip intro (always —
 // no introHasPlayed gate). state = 'GAMEPLAY'.
 function resetForLevelTransition() {
-  // PRESERVED: playerScore, player.lives, highScore, highScoreInitials, introHasPlayed,
+  // PRESERVED: playerScore, player.lives, highScores, introHasPlayed,
   //            gameOverFinalScore, highScoreNew (no game-over here — this is a win restart).
   _resetEntitiesAndPerLevel();
   state  = 'GAMEPLAY';
@@ -1347,12 +1376,62 @@ function backspaceInitials() {
   if (!initialsEntryActive) return;
   if (initialsCursor > 0) initialsCursor--;
 }
+
+// K-FIX-5 — arrow tap debounce + hold-to-repeat. Canvas-based UI (no DOM buttons), so
+// startInitialsArrowHold is called from handleInitialsTap on arrow-zone hits, and
+// endInitialsArrowHold is called from pointerup/pointercancel/touchend/touchcancel handlers
+// when initials entry is active. Two purposes:
+//   1. DEDUPE: pointerdown + touchstart both fire on iOS Safari per tap. If the same arrow is
+//      already being held, the second call no-ops. So one physical tap = one cycle step (not 2).
+//   2. HOLD-TO-REPEAT: 400ms initial delay after first step, then 100ms per step while held.
+//      Matches arcade-style entry pace.
+let initialsArrowHeld         = null;        // 'up' | 'down' | null
+let initialsArrowDelayTimerId = null;
+let initialsArrowRepeatTimerId = null;
+const INITIALS_HOLD_INITIAL_DELAY  = 400;    // ms before repeat starts
+const INITIALS_HOLD_REPEAT_INTERVAL = 100;   // ms per step while held
+
+function startInitialsArrowHold(arrow) {
+  if (!initialsEntryActive) return;
+  if (initialsArrowHeld === arrow) return;   // dedupe (pointerdown after touchstart) — already holding
+  endInitialsArrowHold();                    // end any prior different-arrow hold
+  initialsArrowHeld = arrow;
+  // Immediate first step
+  if (arrow === 'up')   cycleInitialsLetter(+1);
+  else if (arrow === 'down') cycleInitialsLetter(-1);
+  // Schedule hold-to-repeat: 400ms delay, then 100ms intervals.
+  initialsArrowDelayTimerId = setTimeout(() => {
+    initialsArrowRepeatTimerId = setInterval(() => {
+      if (initialsArrowHeld === 'up')   cycleInitialsLetter(+1);
+      else if (initialsArrowHeld === 'down') cycleInitialsLetter(-1);
+    }, INITIALS_HOLD_REPEAT_INTERVAL);
+  }, INITIALS_HOLD_INITIAL_DELAY);
+}
+
+function endInitialsArrowHold() {
+  if (initialsArrowDelayTimerId !== null) {
+    clearTimeout(initialsArrowDelayTimerId);
+    initialsArrowDelayTimerId = null;
+  }
+  if (initialsArrowRepeatTimerId !== null) {
+    clearInterval(initialsArrowRepeatTimerId);
+    initialsArrowRepeatTimerId = null;
+  }
+  initialsArrowHeld = null;
+}
 function submitInitialsEntry() {
   if (!initialsEntryActive) return;
   const built = initialsLetters.join('');
-  highScoreInitials = built;
-  saveHighScoreInitials(built);
-  saveHighScore(highScore);                                              // re-save belt-and-suspenders
+  // K-FIX-5 — push into leaderboard (was: highScoreInitials = built; saveHighScore + saveHighScoreInitials).
+  // Belt-and-suspenders regex match here too (input paths are constrained, but defense-in-depth).
+  if (/^[A-Z ]{3}$/.test(built)) {
+    highScores.push({ initials: built, score: Math.floor(gameOverFinalScore) });
+    highScores.sort((a, b) => b.score - a.score);
+    highScores = highScores.slice(0, LEADERBOARD_MAX);
+    saveHighScores(highScores);
+  } else if (typeof console !== 'undefined') {
+    console.warn('submitInitialsEntry rejected malformed value:', built);
+  }
   initialsEntryActive = false;
   initialsConfirmedT  = INITIALS_CONFIRM_DURATION;                       // 1.0s "INITIALS SAVED" display
 }
@@ -1455,15 +1534,17 @@ function handleInitialsTap(tx, ty) {
   const slotCx  = INI_SLOT_CX[cur];
   const slotTop = INI_SLOT_Y - INI_SLOT_H / 2;
   const slotBot = INI_SLOT_Y + INI_SLOT_H / 2;
-  // ▲ button (above active slot)
+  // ▲ button (above active slot). K-FIX-5 — startInitialsArrowHold dedupes (pointerdown +
+  // touchstart double-fire) and arms hold-to-repeat. endInitialsArrowHold called from pointer/
+  // touch end handlers below.
   if (tx >= slotCx - INI_BTN_HALF && tx <= slotCx + INI_BTN_HALF &&
       ty >= slotTop - 50 && ty <= slotTop - 5) {
-    cycleInitialsLetter(+1); return true;
+    startInitialsArrowHold('up'); return true;
   }
   // ▼ button (below active slot)
   if (tx >= slotCx - INI_BTN_HALF && tx <= slotCx + INI_BTN_HALF &&
       ty >= slotBot + 5 && ty <= slotBot + 50) {
-    cycleInitialsLetter(-1); return true;
+    startInitialsArrowHold('down'); return true;
   }
   // OK button
   if (pointInBox(tx, ty, INI_OK_BOX.x, INI_OK_BOX.y, INI_OK_BOX.w, INI_OK_BOX.h)) {
@@ -3215,8 +3296,8 @@ canvas.addEventListener('pointermove', e => {
   activeTouches[e.pointerId]={action:b?b.action:null,box:b};
   applyTouchState();
 });
-canvas.addEventListener('pointerup',     e=>{delete activeTouches[e.pointerId]; applyTouchState();});
-canvas.addEventListener('pointercancel', e=>{delete activeTouches[e.pointerId]; applyTouchState();});
+canvas.addEventListener('pointerup',     e=>{delete activeTouches[e.pointerId]; applyTouchState(); endInitialsArrowHold(); /* K-FIX-5 — release initials arrow hold */});
+canvas.addEventListener('pointercancel', e=>{delete activeTouches[e.pointerId]; applyTouchState(); endInitialsArrowHold();});
 
 // iOS Safari fallback — touch events in case pointer events don't fire
 canvas.addEventListener('touchstart', e=>{
@@ -3251,6 +3332,13 @@ canvas.addEventListener('touchstart', e=>{
 canvas.addEventListener('touchend', e=>{
   e.preventDefault();
   for (const t of e.changedTouches) delete activeTouches['t'+t.identifier];
+  applyTouchState();
+  endInitialsArrowHold();                    // K-FIX-5 — release initials arrow hold on lift
+},{passive:false});
+canvas.addEventListener('touchcancel', e=>{
+  // K-FIX-5 — touchcancel parity. Browser cancels touch (e.g. interrupted by system gesture);
+  // release any held arrow so the cycle stops repeating.
+  endInitialsArrowHold();
   applyTouchState();
 },{passive:false});
 canvas.addEventListener('touchmove', e=>{
@@ -3436,8 +3524,8 @@ function drawCutsceneSky(dt) {
 //     total,         // numeric total to display (already-final score)
 //     prompt,        // pulsing prompt text, e.g. 'TAP TO CONTINUE' or 'TAP TO RESTART'
 //     pulseT,        // time used for the prompt pulse (CUTSCENE_SCORE uses stateT, GAME_OVER same)
-//     showHighScore, // bool — when true, render a HIGH SCORE row + (optional) NEW HIGH SCORE! flag
-//     highScore,     // numeric high score to render (only used if showHighScore)
+//     showHighScore, // bool — when true, render a HIGH SCORE row + TOP 5 list + (optional) NEW HIGH SCORE!
+//     highScores,    // K-FIX-5 — array of {initials, score} (the top-5 leaderboard, may be empty)
 //     isNewHigh,     // bool — when true, render 'NEW HIGH SCORE!' line (only used if showHighScore)
 //     showCredit,    // bool — when true, render 'Created by Brian Albert' subtle line at very bottom
 //   }
@@ -3490,10 +3578,14 @@ function drawScoreBreakdown(opts) {
   ctx.fillText(Math.floor(opts.total).toString(), valueX, y + 22);
   y += ROW;
 
-  // J — high-score block (GAME_OVER only). Renders below the divider+total, above the prompt.
-  // CUTSCENE_SCORE doesn't pass showHighScore so this branch is silently skipped for level-complete.
+  // J — high-score block (GAME_OVER only). K-FIX-5 — now sources from opts.highScores array
+  // (top-5 leaderboard). HIGH SCORE row shows top entry's initials + score (or '---' when
+  // empty). NEW HIGH SCORE! line still gates on opts.isNewHigh. Leaderboard rows render below
+  // when opts.highScores has at least one entry.
   if (opts.showHighScore) {
-    y += 18;
+    y += 14;
+    const board = opts.highScores || [];
+    // HIGH SCORE row (top entry summary)
     ctx.font = 'bold 16px monospace';
     ctx.fillStyle = '#cccccc';
     ctx.textAlign = 'left';
@@ -3501,13 +3593,43 @@ function drawScoreBreakdown(opts) {
     ctx.fillStyle = opts.isNewHigh ? '#aaffaa' : '#ffcc00';
     ctx.font = 'bold 18px monospace';
     ctx.textAlign = 'right';
-    ctx.fillText(Math.floor(opts.highScore).toString(), valueX, y + 18);
+    if (board.length === 0) {
+      ctx.fillText('---', valueX, y + 18);
+    } else {
+      const top = board[0];
+      const trimmed = top.initials.replace(/\s+$/, '');
+      const label = trimmed ? (trimmed + ' ' + Math.floor(top.score)) : String(Math.floor(top.score));
+      ctx.fillText(label, valueX, y + 18);
+    }
+    y += 26;
     if (opts.isNewHigh) {
-      y += ROW;
       ctx.fillStyle = '#aaffaa';
-      ctx.font = 'bold 16px monospace';
+      ctx.font = 'bold 14px monospace';
       ctx.textAlign = 'center';
       ctx.fillText('NEW HIGH SCORE!', W/2, y + 12);
+      y += 22;
+    }
+    // K-FIX-5 — TOP 5 leaderboard. Subheader + up to 5 rows. Format per spec:
+    //   "1. BRI 5799"
+    //   "2. BA  4325"  (initials are 3 chars, spaces preserved here — leaderboard is a list
+    //   "3. B   2200"   context where blank slots read clearly without underscore substitution)
+    // Empty leaderboard hides subheader + rows entirely.
+    if (board.length > 0) {
+      y += 8;
+      ctx.font = 'bold 12px monospace';
+      ctx.fillStyle = '#aaccff';
+      ctx.textAlign = 'center';
+      ctx.fillText('TOP 5', W/2, y);
+      y += 16;
+      ctx.font = '14px monospace';
+      ctx.textAlign = 'center';
+      for (let i = 0; i < board.length; i++) {
+        const e = board[i];
+        ctx.fillStyle = (i === 0) ? '#ffcc00' : '#dddddd';
+        const line = (i + 1) + '. ' + e.initials + '  ' + Math.floor(e.score);
+        ctx.fillText(line, W/2, y);
+        y += 18;
+      }
     }
   }
 
@@ -3552,22 +3674,20 @@ function drawHUD() {
   ctx.fillStyle='#ffcc00'; ctx.font='bold 13px monospace'; ctx.textAlign='right';
   ctx.fillText('SCORE ' + Math.floor(playerScore), W-8, HUD_Y + 11);
   // J — HIGH SCORE display rule: blank dashes when the player has never set a score.
-  // K-FIX-2 — three-way graceful-degradation rule (replaces K's strict-AND condition):
-  //   highScore == 0                          → 'HI ---'  (no score recorded)
-  //   highScore > 0  AND initials empty       → 'HI 4325' (legacy J-save: score but no initials)
-  //   highScore > 0  AND initials set         → 'HI BRI 4325'
-  // K-FIX-4 — initials may now contain spaces (e.g. 'B  ', 'BA '). Trim TRAILING spaces only at
-  // display time so 'B  ' renders as 'HI B 4325' (one space gap) instead of 'HI B   4325' (raw
-  // gap). Leading and embedded spaces preserved (' A ' → ' A' before the score). All-blank
-  // initials trim to '' and fall through to the integer-only display (matches J-save fallback).
+  // K-FIX-5 — sources the top entry from highScores (was: highScore + highScoreInitials globals).
+  // Three-way display preserved from K-FIX-2/4:
+  //   leaderboard empty                       → 'HI ---'
+  //   top entry initials empty (after trim)   → 'HI 4325' (legacy J-save migrated as '   ')
+  //   top entry initials non-empty            → 'HI BRI 4325'  (trailing spaces trimmed)
   ctx.fillStyle='#aaccff'; ctx.font='bold 11px monospace';
   let hiText;
-  if (highScore <= 0) {
+  if (highScores.length === 0) {
     hiText = 'HI ---';
   } else {
-    const trimmed = (highScoreInitials || '').replace(/\s+$/, '');
-    if (!trimmed) hiText = 'HI ' + Math.floor(highScore);
-    else          hiText = 'HI ' + trimmed + ' ' + Math.floor(highScore);
+    const top = highScores[0];
+    const trimmed = (top.initials || '').replace(/\s+$/, '');
+    if (!trimmed) hiText = 'HI ' + Math.floor(top.score);
+    else          hiText = 'HI ' + trimmed + ' ' + Math.floor(top.score);
   }
   ctx.fillText(hiText, W-8, HUD_Y + 22);
 
@@ -4371,21 +4491,16 @@ function loop(ts) {
         deathReactionT = 0;
         deathPhase = 'phase1';
         if (player.lives <= 0) {
-          // Capture final score + commit any new high score to localStorage before transitioning.
+          // Capture final score for the GAME_OVER overlay total + initials-entry trigger.
           gameOverFinalScore = playerScore;
-          // K — capture state BEFORE updating highScore so the trigger logic uses the prior value.
-          const wasNewHigh   = playerScore > highScore;
-          const wasFirstScore = (highScore === 0 && playerScore > 0);
-          if (wasNewHigh) {
-            highScore    = Math.floor(playerScore);
-            highScoreNew = true;
-            saveHighScore(highScore);
-          } else {
-            highScoreNew = false;
-          }
-          // K — initials entry triggers if (new high) OR (first score ever, even if score
-          // matches the 0 baseline). Empty-signature guard: skip if final score is 0.
-          if (playerScore > 0 && (wasNewHigh || wasFirstScore)) {
+          // K-FIX-5 — initials entry trigger replaced. Was: wasNewHigh OR wasFirstScore (top-1
+          // model). Now: scoreMakesTop5(playerScore) (top-5 leaderboard model). highScoreNew is
+          // repurposed: now true if the score qualified for the leaderboard (drives the green
+          // 'NEW HIGH SCORE!' line in drawScoreBreakdown). Actual leaderboard insertion happens
+          // inside submitInitialsEntry after the player picks their initials, NOT here — so a
+          // qualifying score that the player abandons (refresh mid-entry) is NOT persisted.
+          highScoreNew = scoreMakesTop5(playerScore);
+          if (highScoreNew) {
             initialsEntryActive = true;
             initialsCursor      = 0;
             initialsLetters[0]  = 'A';
@@ -4419,7 +4534,9 @@ function loop(ts) {
         prompt:        showRestartPrompt ? 'TAP TO RESTART' : '',
         pulseT:        stateT,
         showHighScore: true,
-        highScore:     highScore,
+        // K-FIX-5 — pass the leaderboard array (top-5). drawScoreBreakdown uses it to render
+        // the HIGH SCORE row + TOP 5 list. Empty array → 'HIGH SCORE: ---' + hidden TOP 5.
+        highScores:    highScores,
         isNewHigh:     highScoreNew,
         showCredit:    true,                              // J — creator credit at very bottom
       });
@@ -4614,10 +4731,24 @@ function loop(ts) {
         ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulseB).toFixed(3) + ')';
         ctx.font = 'bold 14px monospace';
         ctx.fillText('TAP TO CONTINUE', W/2, 278);
-        // Line 4 — K-FIX-3 dark gold credit (unchanged).
+        // K-FIX-5 — auto-continue countdown. 10-second window starts at t=5.0s; at t=15.0s the
+        // level transition fires automatically via resetForLevelTransition() (same path as a
+        // tap). Tap remains available throughout — K-FIX-2 guard in cutsceneAdvance allows tap
+        // from t>=5.0s, so player can skip the countdown by tapping.
+        const elapsedSinceReveal = stateT - 5.0;
+        const secondsLeft = Math.max(0, Math.ceil(10.0 - elapsedSinceReveal));
+        ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        ctx.font = '11px monospace';
+        ctx.fillText('(AUTO-CONTINUE IN ' + secondsLeft + ')', W/2, 296);
+        // Line 4 — K-FIX-3 dark gold credit. Pushed down 4px to clear the countdown line.
         ctx.fillStyle = '#9a7a00';
         ctx.font = '10px monospace';
-        ctx.fillText('Created by Brian Albert', W/2, 308);
+        ctx.fillText('Created by Brian Albert', W/2, 322);
+        // Auto-continue trigger.
+        if (stateT >= 15.0) {
+          resetForLevelTransition();
+          break;
+        }
       }
 
       // I-CORR-3 — caption strip flush above sky horizon.
