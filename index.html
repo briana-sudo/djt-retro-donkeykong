@@ -669,6 +669,13 @@ let bgmChannel     = null;
 let sfxChannel     = null;
 let synthChannel   = null;
 let audioOn        = true;             // boot default; loaded from localStorage below
+// AUDIO-3e-MUSIC-BUTTON — set true after the user taps the dedicated TAP TO START MUSIC
+// button on INTRO_BLACK. Purely UX: the button gives users an explicit one-tap-to-unlock-
+// audio path BEFORE they tap to start the game. Because the music button's tap is its own
+// user gesture, Howler's auto-unlock listeners fire on it cleanly; subsequent tap-to-start
+// runs on a fully-unlocked Howler. Skipping the music button (tapping straight to start)
+// keeps the original behavior — accepted UX trade-off.
+let audioUnlocked  = false;
 // N-FIX-3 — bumped key from 'djt_audio_on' to 'djt_audio_on_v2'. Old key may be stuck at
 // 'false' for any user who pressed M during N-FIX-2 (or an earlier deploy where audio was
 // suspect), which sets masterChannel.gain.value=0 and silences EVERYTHING including the
@@ -1216,6 +1223,10 @@ function drawPauseOverlay() {
 const ICON_Y       = 48;                                          // below HUD bar (HUD ends ~y=42)
 const ICON_SIZE    = 22;
 const SPEAKER_BOX  = { x: W - 30, y: ICON_Y, w: ICON_SIZE, h: ICON_SIZE };
+// AUDIO-3e-MUSIC-BUTTON — large mobile-friendly tap zone for the explicit audio-unlock
+// button. Centered horizontally, positioned below the INSERT QUARTER text. 200×40 px gives
+// plenty of finger area on phones. Rendered only on INTRO_BLACK while !audioUnlocked.
+const MUSIC_BTN_BOX = { x: W / 2 - 100, y: H / 2 + 40, w: 200, h: 40 };
 const PAUSE_BOX    = { x: W - 60, y: ICON_Y, w: ICON_SIZE, h: ICON_SIZE };
 
 function drawAudioIcon() {
@@ -4220,6 +4231,14 @@ canvas.addEventListener('pointerdown', e => {
     const txN = (e.clientX - rN.left) / scale, tyN = (e.clientY - rN.top) / scale;
     if (pointInIconBox(txN, tyN, SPEAKER_BOX)) { toggleAudio(); return; }
     if (pointInIconBox(txN, tyN, PAUSE_BOX))   { togglePause(); return; }
+    // AUDIO-3e-MUSIC-BUTTON — TAP TO START MUSIC hit-test. Only active during INTRO_BLACK
+    // before audio is unlocked. Sets the flag and returns early so the game does NOT advance.
+    // ensureAudioContext above already fired (creates audioContext, calls Howler.ctx.resume,
+    // schedules iOS warm-up blips). The user's next tap (TAP TO START GAME) advances state.
+    if (state === 'INTRO_BLACK' && !audioUnlocked && pointInIconBox(txN, tyN, MUSIC_BTN_BOX)) {
+      audioUnlocked = true;
+      return;
+    }
   }
   // N — PAUSED eats canvas taps (icon taps already handled above).
   if (state === 'PAUSED') return;
@@ -4274,6 +4293,13 @@ canvas.addEventListener('touchstart', e=>{
       const txN = (t0N.clientX - r0.left) / scale, tyN = (t0N.clientY - r0.top) / scale;
       if (pointInIconBox(txN, tyN, SPEAKER_BOX)) { toggleAudio(); return; }
       if (pointInIconBox(txN, tyN, PAUSE_BOX))   { togglePause(); return; }
+      // AUDIO-3e-MUSIC-BUTTON — TAP TO START MUSIC hit-test (iOS touch fallback path).
+      // Same logic as pointerdown handler above. Most relevant on iPhone Safari since this
+      // is where Howler's auto-unlock is finickiest.
+      if (state === 'INTRO_BLACK' && !audioUnlocked && pointInIconBox(txN, tyN, MUSIC_BTN_BOX)) {
+        audioUnlocked = true;
+        return;
+      }
     }
   }
   // N — PAUSED eats canvas taps.
@@ -5293,6 +5319,27 @@ function loop(ts) {
       ctx.globalAlpha=a;
       ctx.fillStyle='#cc0000'; ctx.font='bold 12px monospace'; ctx.textAlign='center';
       ctx.fillText('● INSERT QUARTER ●',W/2,H/2);
+      // AUDIO-3e-MUSIC-BUTTON — explicit audio-unlock button. Visible only while audio
+      // hasn't been unlocked yet. Tapping it calls ensureAudioContext on its own user
+      // gesture (so Howler's auto-unlock listeners fire cleanly) without advancing game
+      // state. After tap, button hides and the user can tap-to-start on a clean unlocked
+      // Howler. Skipping the button (tapping anywhere else) keeps the original
+      // unlock-via-implicit-gesture path — works on PC, less reliable on iPhone Safari.
+      if (!audioUnlocked) {
+        const b = MUSIC_BTN_BOX;
+        // Filled red rect with white border for high visibility against the black backdrop.
+        ctx.fillStyle = '#cc0000';
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 14px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('TAP TO START MUSIC', b.x + b.w / 2, b.y + b.h / 2);
+        ctx.textBaseline = 'alphabetic';   // restore default for downstream renders
+      }
       ctx.globalAlpha=1;
       break;
     }
