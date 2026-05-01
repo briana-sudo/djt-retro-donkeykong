@@ -2,6 +2,10 @@
 # re-trimming is needed but excluded from the repo to avoid doubling the audio payload.
 audio_full_backup/
 
+# AUDIO-3h — local-only backup of pre-loudnorm BGM rotation MP3s (~2.4 MB). Kept in case
+# the loudnorm settings need re-tuning. Excluded from the repo for the same reason.
+audio_pre_loudnorm/
+
 # Local commit-message scratchpad used by some workflows.
 .commit-msg.txt
 

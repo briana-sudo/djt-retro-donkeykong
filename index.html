@@ -934,13 +934,14 @@ const SOUND_LIBRARY = {
   // AUDIO-3g — loop: false so Howler's 'end' event fires; startBgmRotation's once('end') handler
   // advances bgmRotationIdx and plays the next track. With loop: true (AUDIO-1/2/3a default)
   // 'end' never fires, so rotation was dead — only greenwood ever played.
-  // AUDIO-3h — per-track volume balance from Brian's field test of AUDIO-3g rotation.
-  // greenwood was loudest (-50% to land near correct floor), queen ~20% over, brown was right.
-  // Pairs with the L1074 fade-target fix below — startBgmRotation now reads sound.volume()
-  // before overriding, so these per-Howl values actually take effect at fade-in.
-  greenwood:    new Howl({ src: ['audio/greenwood.mp3'],    loop: false, volume: 0.30 }), // AUDIO-3h — was 0.45 (50% drop on field-test loudest)
-  queen:        new Howl({ src: ['audio/queen.mp3'],        loop: false, volume: 0.48 }), // AUDIO-3h — was 0.45 nominal but L1074 forced to 0.6; new = 0.6 - 20%
-  brown:        new Howl({ src: ['audio/brown.mp3'],        loop: false, volume: 0.60 }), // AUDIO-3h — Brian: brown was correct as-is at the (overridden) 0.6
+  // AUDIO-3h (revised) — per-track Howl volumes abandoned. Root cause of the imbalance
+  // was the source MP3s' mastered loudness (greenwood at -8.2 LUFS, brown at -19.7 LUFS,
+  // an 11+ LU gap). Fixed at the file level via two-pass ffmpeg loudnorm to -16 LUFS.
+  // Howl volumes now uniform at 0.6 since the files themselves are pre-balanced.
+  // Originals preserved in /audio_pre_loudnorm/ (gitignored).
+  greenwood:    new Howl({ src: ['audio/greenwood.mp3'],    loop: false, volume: 0.6 }), // AUDIO-3h — uniform 0.6; loudnorm balanced source
+  queen:        new Howl({ src: ['audio/queen.mp3'],        loop: false, volume: 0.6 }), // AUDIO-3h — uniform 0.6; loudnorm balanced source
+  brown:        new Howl({ src: ['audio/brown.mp3'],        loop: false, volume: 0.6 }), // AUDIO-3h — uniform 0.6; loudnorm balanced source
   free_world:   new Howl({ src: ['audio/free_world.mp3'],   loop: false, volume: 0.6 }),
   ave_maria:    new Howl({ src: ['audio/ave_maria.mp3'],    loop: false, volume: 0.7 }),
   nessun_dorma: new Howl({ src: ['audio/nessun_dorma.mp3'], loop: false, volume: 0.7 }),
