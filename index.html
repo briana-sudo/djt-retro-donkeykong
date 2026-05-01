@@ -2451,17 +2451,41 @@ function resetForLevelTransition() {
   // on every level (previously bgmRotationIdx was only advanced by once('end'), which gets
   // detached at WIN_FREEZE→SILENT — so idx was frozen across the cutscene chain).
   bgmRotationIdx = (bgmRotationIdx + 1) % BGM_ROTATION_SONGS.length;
-  // AUDIO-3-SIMPLIFY-FIX-1 — nullify currentMusic so the next state→GAMEPLAY transition
-  // actually fires startBgmRotation. If currentMusic was BGM_ROTATION (from before the win
-  // cutscene chain) and the next computeDesiredMusic also returns BGM_ROTATION, normally
-  // transitionToMusic early-returns at L1075 and the new (advanced-idx) song never starts.
-  // Setting null defeats the early-return — clean handoff to the next-level song. Unlike the
-  // game-over reset, we do NOT .stop() the rotation Howls here; the natural cutscene handoff
-  // already silences them via transitionToMusic(SILENT)→.pause() at WIN_FREEZE entry.
+  // AUDIO-3-SIMPLIFY-FIX-2 — hard-stop every Howl + nullify currentMusic. FIX-1's light-
+  // touch (just currentMusic = null, no .stop() calls) assumed the cutscene chain
+  // (WIN_FREEZE → CUTSCENE_PHASE3 → SCORE → BETWEEN) already cleaned up via
+  // transitionToMusic(SILENT)→.pause(). Field test proved that wrong: scenario B
+  // (Level 1 → Level 2) played random music instead of queen because some Howl was still
+  // running underneath. Worse, B's broken state corrupted A (game-over → restart) so it
+  // also broke after B failed once. Same hard-stop pattern as resetForGameOver: iterate
+  // all 8 Howls, .stop() each, currentMusic = null. Safe because by tap-continue time on
+  // CUTSCENE_BETWEEN no music SHOULD be running anyway — the cutscene scoring overlay and
+  // eagle-flight clip are visual, not audio-driven. If anything IS still playing (the bug),
+  // .stop() ends it cleanly.
+  if (typeof SOUND_LIBRARY !== 'undefined') {
+    for (const songName of BGM_ROTATION_SONGS) {
+      const sound = SOUND_LIBRARY[songName];
+      if (sound) sound.stop();
+    }
+    ['ymca', 'free_world', 'ave_maria', 'nessun_dorma', 'macho_man'].forEach(name => {
+      const sound = SOUND_LIBRARY[name];
+      if (sound) sound.stop();
+    });
+  }
   currentMusic = null;
   console.log('[BGM:level-reset]', {
     rotationIdx: bgmRotationIdx,
     nextSong: BGM_ROTATION_SONGS[bgmRotationIdx],
+    currentMusic: currentMusic,
+    actuallyPlaying: (() => {
+      const playing = [];
+      for (const [name, howl] of Object.entries(SOUND_LIBRARY)) {
+        if (howl && typeof howl.playing === 'function' && howl.playing()) {
+          playing.push(name);
+        }
+      }
+      return playing;
+    })(),
     t: performance.now().toFixed(0),
   });
   state  = 'GAMEPLAY';
