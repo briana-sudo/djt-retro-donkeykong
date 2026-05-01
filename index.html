@@ -902,62 +902,168 @@ function playSfx_introTaunt()   { _sfxNote(200, 'square', 0.30, 0.10); setTimeou
 function playSfx_eagleScreech() { _sfxSweep(1400, 600, 'sawtooth', 0.50, 0.07); }
 
 // ─────────────────────────────────────────────
-//  N — BACKGROUND MUSIC (100 BPM patriotic march)
+//  N-FIX-2 — BACKGROUND MUSIC (3-song Trump rally rotation)
 // ─────────────────────────────────────────────
-// Simple 8-bar loop in C major. Square melody + triangle bass. Each bar is 4/4 at 100 BPM
-// (= 0.6s/beat, 2.4s/bar, 19.2s/loop). Schedule one bar at a time — main-loop tick checks
-// `bgmScheduledUntil < currentTime + LOOKAHEAD` and schedules the next bar's notes.
+// Three-song rotation cycles forever during GAMEPLAY. Each song is fully scheduled at its
+// start time via Web Audio's setValueAtTime/linearRampToValueAtTime — no per-bar dispatch.
+//   1. 'God Bless the U.S.A.' (Lee Greenwood, 1984) — D major, 96 BPM 3/4 waltz
+//   2. 'We Are the Champions' (Queen, 1977)        — F major, 64 BPM 4/4 anthem
+//   3. 'It's a Man's World' (James Brown, 1966)    — D minor, 70 BPM 6/8 slow funk
+// Each song ~30s. Songs play in fixed order, no shuffle. After song 3 completes, loop to song 1.
 //
-// Pause behavior: bgmActive=false stops scheduling. Already-scheduled notes finish their tail
-// (~0.5s max). Resume reschedules from the bar after currentTime — phrase position is lost
-// across pause but the march character resumes seamlessly from a bar boundary.
+// LAZY-START (N-FIX-2 BUG #1 fix): tickBGM auto-starts BGM whenever state==='GAMEPLAY' and
+// audioContext is available. Both intro paths (auto-advance INTRO_SHATTER→GAMEPLAY at L5122
+// where audioContext is null pre-gesture, and skipToGame which never called startBGM) now
+// auto-recover via this lazy-start.
 //
-// Audio toggle (master.gain=0): BGM keeps scheduling so unmute resumes from current position
-// without a phrase reset. BGM and master toggle are independent.
+// CUTSCENE BGM HANDOFF (N-FIX-2): BGM stops on CUTSCENE_FADE_IN entry; Nessun Dorma synth
+// plays through CUTSCENE_PHASE3 + CUTSCENE_BETWEEN; BGM rotation resumes (from bgmCurrentSongIdx
+// where it left off) when player taps to continue from BETWEEN.
 
-// Melody (C major, square wave). Each note: { f: freq, b: beat-offset-in-bar, d: durBeats }.
-// 8 bars stored as an array of arrays. Melody intentionally a bit goofy — parallel-fifth jumps
-// and a "wrong-note" landing on F natural in bar 4 to give it that cartoon-march feel.
-const BGM_MELODY = [
-  // Bar 1: C - C - E - G
-  [{f:523.25,b:0,d:1},{f:523.25,b:1,d:1},{f:659.25,b:2,d:1},{f:783.99,b:3,d:1}],
-  // Bar 2: G - F - E - D
-  [{f:783.99,b:0,d:1},{f:698.46,b:1,d:1},{f:659.25,b:2,d:1},{f:587.33,b:3,d:1}],
-  // Bar 3: C - E - G - C5
-  [{f:523.25,b:0,d:1},{f:659.25,b:1,d:1},{f:783.99,b:2,d:1},{f:1046.50,b:3,d:1}],
-  // Bar 4: C5 - B - G - F (wrong-note feel: F over the bass C)
-  [{f:1046.50,b:0,d:1},{f:987.77,b:1,d:1},{f:783.99,b:2,d:1},{f:698.46,b:3,d:1}],
-  // Bar 5: E - E - G - G
-  [{f:659.25,b:0,d:1},{f:659.25,b:1,d:1},{f:783.99,b:2,d:1},{f:783.99,b:3,d:1}],
-  // Bar 6: A - G - F - E
-  [{f:880.00,b:0,d:1},{f:783.99,b:1,d:1},{f:698.46,b:2,d:1},{f:659.25,b:3,d:1}],
-  // Bar 7: D - D - F - A
-  [{f:587.33,b:0,d:1},{f:587.33,b:1,d:1},{f:698.46,b:2,d:1},{f:880.00,b:3,d:1}],
-  // Bar 8: G - C - C - C  (turnaround back to bar 1)
-  [{f:783.99,b:0,d:1},{f:523.25,b:1,d:1},{f:523.25,b:2,d:1},{f:523.25,b:3,d:1}],
-];
-// Bass — oom-pah pattern, octaves below tonic + dominant.
-const BGM_BASS = [
-  // Bars 1-8: alternating I-V on beats 1-3 / 2-4 (oom-pah pattern simplified to half notes)
-  [{f:130.81,b:0,d:2},{f:196.00,b:2,d:2}],   // C2 - G2
-  [{f:130.81,b:0,d:2},{f:196.00,b:2,d:2}],
-  [{f:130.81,b:0,d:2},{f:196.00,b:2,d:2}],
-  [{f:130.81,b:0,d:2},{f:196.00,b:2,d:2}],
-  [{f:164.81,b:0,d:2},{f:196.00,b:2,d:2}],   // E2 - G2 (vi-V hint)
-  [{f:174.61,b:0,d:2},{f:196.00,b:2,d:2}],   // F2 - G2 (IV-V)
-  [{f:146.83,b:0,d:2},{f:174.61,b:2,d:2}],   // D2 - F2
-  [{f:196.00,b:0,d:2},{f:130.81,b:2,d:2}],   // G2 - C2 (V-I turnaround)
-];
-const BGM_BPM       = 100;
-const BGM_BEAT_SEC  = 60 / BGM_BPM;                              // 0.6s
-const BGM_BAR_SEC   = 4 * BGM_BEAT_SEC;                          // 2.4s
-const BGM_LOOP_BARS = BGM_MELODY.length;                         // 8
-const BGM_LOOP_SEC  = BGM_LOOP_BARS * BGM_BAR_SEC;               // 19.2s
-const BGM_LOOKAHEAD = 0.5;                                       // schedule notes this many sec ahead
+const BGM_LOOKAHEAD = 0.5;
 let   bgmActive          = false;
-let   bgmStartCurrentTime = 0;                                   // audioContext.currentTime when BGM was started
-let   bgmScheduledUntil  = 0;                                    // last contextTime up to which notes are scheduled
+let   bgmCurrentSongIdx  = 0;                                    // 0=greenwood, 1=queen, 2=brown
+let   bgmSongStartTime   = 0;                                    // audioContext.currentTime when current song started
 let   bgmDuckLevel       = 1.0;                                  // 1.0 normal, 0.5 ducked
+
+// N-FIX-2 — schedule a single song's notes starting at t0 on the bgmChannel. Each song's
+// scheduleFn handles its own tempo, time signature, melody, bass, percussion. Notes are
+// scheduled all at once via Web Audio absolute timestamps.
+function startBGMSong(songIdx, t0) {
+  if (!audioContext || !bgmChannel) return;
+  bgmCurrentSongIdx = ((songIdx % 3) + 3) % 3;                   // wrap
+  bgmSongStartTime  = t0;
+  if      (bgmCurrentSongIdx === 0) _bgmScheduleGreenwood(t0);
+  else if (bgmCurrentSongIdx === 1) _bgmScheduleQueen(t0);
+  else                              _bgmScheduleBrown(t0);
+}
+
+// Per-song durations (seconds). Constants here so tickBGM can compute song-end without
+// re-running the full schedule logic.
+const BGM_SONG_DUR = [30, 30, 30];
+
+// SONG 1 — "God Bless the U.S.A." (Lee Greenwood, D major 3/4, 96 BPM)
+// Hook: "And I'm proud to be an American". Square melody + triangle bass + soft snare on beat 2.
+// 16 bars × 1.875s = 30s.
+function _bgmScheduleGreenwood(t0) {
+  const beat = 60 / 96;                                          // 0.625s
+  const bar  = 3 * beat;                                         // 1.875s
+  // D major: D2=73.42, A2=110.00, D4=293.66, F#4=369.99, G4=392.00, A4=440.00, B4=493.88, D5=587.33
+  // Hook melody pattern (4 bars), repeated 4× across 16 bars with light variation.
+  const HOOK = [
+    // bar a: A4 (1 beat) - D5 (2 beats)
+    {b:0, t:0,        f:440.00, d:beat},
+    {b:0, t:beat,     f:587.33, d:beat*2},
+    // bar b: F#4 - A4 - B4
+    {b:1, t:0,        f:369.99, d:beat},
+    {b:1, t:beat,     f:440.00, d:beat},
+    {b:1, t:beat*2,   f:493.88, d:beat},
+    // bar c: A4 - F#4 - E4
+    {b:2, t:0,        f:440.00, d:beat},
+    {b:2, t:beat,     f:369.99, d:beat},
+    {b:2, t:beat*2,   f:329.63, d:beat},
+    // bar d: D4 sustained
+    {b:3, t:0,        f:293.66, d:bar},
+  ];
+  for (let cycle = 0; cycle < 4; cycle++) {
+    const cycleT = t0 + cycle * 4 * bar;
+    for (const n of HOOK) {
+      _bgmScheduleNoteAt(cycleT + n.b * bar + n.t, n.f, n.d, 'square', bgmChannel, 0.05);
+    }
+  }
+  // Bass — D2 / A2 alternating per bar (waltz feel, 1 note per bar held 3 beats)
+  for (let bIdx = 0; bIdx < 16; bIdx++) {
+    const f = (bIdx % 2 === 0) ? 73.42 : 110.00;
+    _bgmScheduleNoteAt(t0 + bIdx * bar, f, bar, 'triangle', bgmChannel, 0.06);
+  }
+  // Soft snare on beat 2 of every bar (3/4 → strong-weak-weak; snare on 2 = comping)
+  for (let bIdx = 0; bIdx < 16; bIdx++) {
+    _bgmScheduleSnareBurst(t0 + bIdx * bar + beat, 0.04, 0.04);
+  }
+}
+
+// SONG 2 — "We Are the Champions" (Queen, F major slow 4/4, 64 BPM, anthemic)
+// Hook: "We are the champions, my friends". Triangle melody + square bass pads. No snare.
+// 8 bars × 3.75s = 30s.
+function _bgmScheduleQueen(t0) {
+  const beat = 60 / 64;                                          // 0.9375s
+  const bar  = 4 * beat;                                         // 3.75s
+  // F major: F2=87.31, C3=130.81, F3=174.61, A3=220.00, Bb3=233.08, C4=261.63, D4=293.66,
+  // E4=329.63, F4=349.23, A4=440.00, Bb4=466.16, C5=523.25
+  // Hook: F - A - C - F - E - D - C - Bb - C - C (8-bar phrase, triangle, sustained)
+  const HOOK = [
+    {b:0, t:0,        f:349.23, d:beat*2},   // F4
+    {b:0, t:beat*2,   f:440.00, d:beat*2},   // A4
+    {b:1, t:0,        f:523.25, d:beat*2},   // C5
+    {b:1, t:beat*2,   f:349.23, d:beat*2},   // F4
+    {b:2, t:0,        f:329.63, d:beat*2},   // E4
+    {b:2, t:beat*2,   f:293.66, d:beat*2},   // D4
+    {b:3, t:0,        f:261.63, d:beat*2},   // C4
+    {b:3, t:beat*2,   f:233.08, d:beat*2},   // Bb3
+    {b:4, t:0,        f:261.63, d:beat*4},   // C4 sustained
+    {b:5, t:0,        f:261.63, d:beat*4},   // C4 sustained
+    {b:6, t:0,        f:349.23, d:beat*2},   // F4
+    {b:6, t:beat*2,   f:329.63, d:beat*2},   // E4
+    {b:7, t:0,        f:349.23, d:beat*4},   // F4 final tonic
+  ];
+  for (const n of HOOK) {
+    _bgmScheduleNoteAt(t0 + n.b * bar + n.t, n.f, n.d, 'triangle', bgmChannel, 0.06);
+  }
+  // Sustained bass pads — F2 / Bb2 / C3 / F2 cycling (I - IV - V - I)
+  const BASS_PROG = [87.31, 116.54, 130.81, 87.31, 87.31, 116.54, 130.81, 87.31];
+  for (let bIdx = 0; bIdx < 8; bIdx++) {
+    _bgmScheduleNoteAt(t0 + bIdx * bar, BASS_PROG[bIdx], bar, 'square', bgmChannel, 0.05);
+  }
+}
+
+// SONG 3 — "It's a Man's World" (James Brown, D minor 6/8 slow funk, 70 BPM)
+// Hook: descending bass riff D-C-Bb-A. Horn-stab synth + filtered noise hi-hat.
+// 16 bars × ~1.71s = ~27.4s (rounded to 30s with 2.6s outro tail).
+function _bgmScheduleBrown(t0) {
+  const beat = 60 / 70;                                          // 0.857s (in 6/8, this is dotted-quarter feel)
+  const bar  = 2 * beat;                                         // 1.714s (2 dotted-quarters per bar in 6/8)
+  // D minor: D2=73.42, A2=110.00, Bb2=116.54, C3=130.81, D3=146.83, F3=174.61, A3=220.00,
+  // Bb3=233.08, C4=261.63, D4=293.66, F4=349.23, A4=440.00
+  // Bass riff: D-C-Bb-A descending (4 bars), repeats × 4 = 16 bars.
+  const BASS_RIFF = [73.42, 130.81, 116.54, 110.00];
+  for (let bIdx = 0; bIdx < 16; bIdx++) {
+    const f = BASS_RIFF[bIdx % 4];
+    _bgmScheduleNoteAt(t0 + bIdx * bar, f, bar, 'triangle', bgmChannel, 0.07);
+  }
+  // Horn stabs on beat 1 of every other bar — square wave hits at A3 + C4 (minor 3rd interval)
+  for (let bIdx = 0; bIdx < 16; bIdx += 2) {
+    _bgmScheduleNoteAt(t0 + bIdx * bar, 220.00, beat * 0.5, 'square', bgmChannel, 0.05);
+    _bgmScheduleNoteAt(t0 + bIdx * bar, 261.63, beat * 0.5, 'square', bgmChannel, 0.04);
+    // Noise burst with the stab for impact
+    _bgmScheduleSnareBurst(t0 + bIdx * bar, beat * 0.3, 0.03);
+  }
+  // Hi-hat shuffle on every beat of every bar
+  for (let bIdx = 0; bIdx < 16; bIdx++) {
+    for (let b = 0; b < 2; b++) {
+      _bgmScheduleSnareBurst(t0 + bIdx * bar + b * beat, 0.04, 0.025);
+    }
+  }
+}
+
+// Snare-like noise burst helper (extracted from the old _bgmScheduleBar). Used by all songs.
+function _bgmScheduleSnareBurst(t, dur, peak) {
+  if (!audioContext || !bgmChannel) return;
+  if (t < audioContext.currentTime - 0.1) return;                // skip past-time
+  const bs = Math.max(1, Math.floor(audioContext.sampleRate * dur));
+  const buf = audioContext.createBuffer(1, bs, audioContext.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bs; i++) data[i] = Math.random() * 2 - 1;
+  const src = audioContext.createBufferSource();
+  src.buffer = buf;
+  const f = audioContext.createBiquadFilter();
+  f.type = 'highpass'; f.frequency.value = 4000;
+  const g = audioContext.createGain();
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(peak, t + 0.003);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(f); f.connect(g); g.connect(bgmChannel);
+  src.start(t); src.stop(t + dur + 0.05);
+}
 
 function _bgmScheduleNoteAt(t, freq, durSec, oscType, channel, peak) {
   const osc = audioContext.createOscillator();
@@ -974,65 +1080,208 @@ function _bgmScheduleNoteAt(t, freq, durSec, oscType, channel, peak) {
   osc.stop(t + durSec + 0.05);
 }
 
-function _bgmScheduleBar(barIdx, barStartTime) {
-  if (!audioContext || !bgmChannel) return;
-  const melody = BGM_MELODY[barIdx];
-  const bass   = BGM_BASS[barIdx];
-  for (const n of melody) {
-    _bgmScheduleNoteAt(barStartTime + n.b * BGM_BEAT_SEC, n.f, n.d * BGM_BEAT_SEC, 'square', bgmChannel, 0.05);
-  }
-  for (const n of bass) {
-    _bgmScheduleNoteAt(barStartTime + n.b * BGM_BEAT_SEC, n.f, n.d * BGM_BEAT_SEC, 'triangle', bgmChannel, 0.06);
-  }
-  // Snare-like noise burst on beats 2 and 4 for march feel.
-  for (let beat = 1; beat <= 3; beat += 2) {
-    const t = barStartTime + beat * BGM_BEAT_SEC;
-    if (t < audioContext.currentTime) continue;
-    const dur = 0.05;
-    const bs = audioContext.sampleRate * dur;
-    const buf = audioContext.createBuffer(1, bs, audioContext.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < bs; i++) data[i] = Math.random() * 2 - 1;
-    const src = audioContext.createBufferSource();
-    src.buffer = buf;
-    const f = audioContext.createBiquadFilter();
-    f.type = 'highpass'; f.frequency.value = 4000;
-    const g = audioContext.createGain();
-    g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(0.04, t + 0.003);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(f); f.connect(g); g.connect(bgmChannel);
-    src.start(t); src.stop(t + dur + 0.05);
-  }
-}
-
+// N-FIX-2 — startBGM marks BGM active and seeds the song-start timestamp. The actual song
+// scheduling is owned by tickBGM (lazy-start) so this function is now mostly a state setter.
+// Kept as a named entry point for the existing INTRO_SHATTER → GAMEPLAY long-line call site
+// and resetForGameOver defensive call. Idempotent — second call no-ops while bgmActive=true.
 function startBGM() {
   if (!audioContext || !bgmChannel) return;
   if (bgmActive) return;
   bgmActive = true;
-  bgmStartCurrentTime = audioContext.currentTime;
-  bgmScheduledUntil = audioContext.currentTime;
+  // Schedule the current song right now so audio starts immediately on first activation.
+  startBGMSong(bgmCurrentSongIdx, audioContext.currentTime);
 }
 
 function stopBGM() {
   bgmActive = false;
-  bgmScheduledUntil = 0;
-  // Already-scheduled notes finish their tail naturally (~0.5s max). No need to disconnect
-  // — BGM channel persists; only scheduling stops.
+  // Already-scheduled notes finish their tail naturally (one song's worth, ~30s). For an
+  // immediate halt we'd need to disconnect bgmChannel — but that breaks the next startBGM.
+  // Acceptable trade-off: brief audio tail after stop while the player transitions to
+  // GAME_OVER overlay or to a cutscene where the BGM is replaced by Nessun Dorma.
+  // bgmCurrentSongIdx PRESERVED so the next startBGM resumes the rotation from where it
+  // left off (per spec: "BGM rotation resumes from current song idx" after cutscene).
 }
 
+// N-FIX-2 — main scheduler. Lazy-starts BGM whenever audio infra is ready and we're in
+// GAMEPLAY (BUG #1 fix). Advances to next song when current song's duration elapses.
+// Both intro paths (auto-advance INTRO_SHATTER → GAMEPLAY at L5122 with audioContext null,
+// and skipToGame which never called startBGM) now auto-recover via this lazy-start.
 function tickBGM() {
-  if (!bgmActive || !audioContext || !bgmChannel) return;
-  if (state === 'PAUSED') return;                                // pause halts scheduling
-  const now = audioContext.currentTime;
-  while (bgmScheduledUntil < now + BGM_LOOKAHEAD) {
-    // Compute which bar to schedule based on elapsed time since start.
-    const elapsed = bgmScheduledUntil - bgmStartCurrentTime;
-    const barIdx  = Math.floor((elapsed / BGM_BAR_SEC)) % BGM_LOOP_BARS;
-    const barStartT = bgmStartCurrentTime + Math.floor(elapsed / BGM_BAR_SEC) * BGM_BAR_SEC;
-    _bgmScheduleBar(barIdx, barStartT);
-    bgmScheduledUntil = barStartT + BGM_BAR_SEC;
+  if (!audioContext || !bgmChannel) return;
+  if (state === 'PAUSED') return;
+  // Lazy-start: when audio infrastructure is ready and gameplay is active, start the BGM
+  // rotation. This is the BUG #1 fix from the bug-hunt report.
+  if (!bgmActive && state === 'GAMEPLAY') {
+    bgmActive = true;
+    startBGMSong(bgmCurrentSongIdx, audioContext.currentTime);
   }
+  if (!bgmActive) return;
+  // Advance to next song when current song's duration elapses (with small overlap for
+  // gapless playback — schedule next song right at boundary so its first note plays when
+  // the previous song's tail decays).
+  const elapsed = audioContext.currentTime - bgmSongStartTime;
+  const songDur = BGM_SONG_DUR[bgmCurrentSongIdx];
+  if (elapsed >= songDur - BGM_LOOKAHEAD && elapsed < songDur) {
+    // We're inside the lookahead window before song-end — schedule the NEXT song so its
+    // first notes are queued when the current song's last notes are still playing. Only
+    // schedule once per boundary (advance idx; subsequent ticks see new idx).
+    const nextIdx = (bgmCurrentSongIdx + 1) % 3;
+    startBGMSong(nextIdx, bgmSongStartTime + songDur);
+  }
+}
+
+// ─────────────────────────────────────────────
+//  N-FIX-2 — INTRO + CUTSCENE MUSIC CUES
+// ─────────────────────────────────────────────
+// Escalator: "Rockin' in the Free World" (Neil Young) synth riff during INTRO_ESCALATOR.
+// Stairs:    "Ave Maria" (Schubert/Pavarotti) reverent ascent during INTRO_STAIRS.
+// Shatter:   4-layer crash SFX at INTRO_SHATTER animation trigger.
+// Nessun Dorma: opera synth during win cutscene (replaces BGM rotation).
+//
+// All cues route through bgmChannel (so master toggle silences them) except the crash which
+// uses sfxChannel (it's a one-shot impact, not music). Each cue tracks its own scheduling
+// state so it can be stopped cleanly without disturbing other audio.
+
+// Track which cue is currently scheduled. Used to prevent double-scheduling on state re-entry
+// (e.g. if INTRO_ESCALATOR is briefly re-entered, the cue doesn't double-up).
+let escalatorMusicScheduled = false;
+let stairsMusicScheduled    = false;
+let nessunDormaScheduled    = false;
+
+// "Rockin' in the Free World" — E minor, ~140 BPM, driving forward riff.
+// Hook (4 bars): E - D - G - F# repeated with kick/snare backbeat.
+// Plays once per INTRO_ESCALATOR scene (~12s). Self-stops.
+function playEscalatorMusic() {
+  if (!audioContext || !bgmChannel || escalatorMusicScheduled) return;
+  escalatorMusicScheduled = true;
+  const t0 = audioContext.currentTime;
+  const beat = 60 / 140;                                         // 0.4286s
+  const bar  = 4 * beat;                                         // 1.7143s
+  // E minor: E2=82.41, B2=123.47, E3=164.81, F#3=185.00, G3=196.00, A3=220.00, B3=246.94, D4=293.66, E4=329.63
+  // Riff: E - D - G - F# (root - flat7 - flat3 - 2)
+  const RIFF = [82.41, 73.42, 98.00, 92.50];                    // octave below for guitar feel
+  for (let bIdx = 0; bIdx < 7; bIdx++) {
+    const f = RIFF[bIdx % 4];
+    // Riff plays as eighth-notes (8 notes per bar, alternating on/off feel)
+    for (let eighth = 0; eighth < 8; eighth++) {
+      const t = t0 + bIdx * bar + eighth * (beat / 2);
+      _bgmScheduleNoteAt(t, f, beat / 2 - 0.02, 'square', bgmChannel, 0.06);
+    }
+  }
+  // Kick on beats 1, 3 every bar
+  for (let bIdx = 0; bIdx < 7; bIdx++) {
+    for (let b of [0, 2]) {
+      _bgmScheduleNoteAt(t0 + bIdx * bar + b * beat, 60, 0.08, 'sine', bgmChannel, 0.10);
+    }
+  }
+  // Snare on beats 2, 4 every bar
+  for (let bIdx = 0; bIdx < 7; bIdx++) {
+    for (let b of [1, 3]) {
+      _bgmScheduleSnareBurst(t0 + bIdx * bar + b * beat, 0.06, 0.06);
+    }
+  }
+  // Auto-clear schedule flag after song ends (~12s) so next escalator scene works.
+  setTimeout(() => { escalatorMusicScheduled = false; }, 12000);
+}
+
+function escalatorMusicStop() {
+  // No active oscillator handles to disconnect — already-scheduled notes finish their tail.
+  // Reset flag so a fresh escalator scene can re-schedule.
+  escalatorMusicScheduled = false;
+}
+
+// "Ave Maria" — B♭ major, slow 6/8, reverent ascent. Triangle melody (warm) + slow drone bass.
+// Plays once per INTRO_STAIRS scene (~10s).
+function playStairsMusic() {
+  if (!audioContext || !bgmChannel || stairsMusicScheduled) return;
+  stairsMusicScheduled = true;
+  const t0 = audioContext.currentTime;
+  // Bb major: Bb2=116.54, F3=174.61, Bb3=233.08, D4=293.66, F4=349.23, Bb4=466.16, D5=587.33
+  // Opening melodic phrase: Bb - F - Bb - D - F (rising). Slow notes, ~1s each.
+  const MELODY = [
+    {t: 0.0, f: 466.16, d: 1.2},        // Bb4
+    {t: 1.2, f: 349.23, d: 1.0},        // F4
+    {t: 2.2, f: 466.16, d: 1.0},        // Bb4
+    {t: 3.2, f: 587.33, d: 1.2},        // D5
+    {t: 4.4, f: 698.46, d: 1.5},        // F5 (climax)
+    {t: 5.9, f: 587.33, d: 1.0},        // D5
+    {t: 6.9, f: 466.16, d: 2.0},        // Bb4 (resolution, sustain)
+  ];
+  for (const n of MELODY) {
+    _bgmScheduleNoteAt(t0 + n.t, n.f, n.d, 'triangle', bgmChannel, 0.07);
+  }
+  // Sustained bass drone on Bb + F (root + fifth)
+  _bgmScheduleNoteAt(t0,       116.54, 9.0, 'square',   bgmChannel, 0.04);   // Bb2
+  _bgmScheduleNoteAt(t0 + 4.5, 174.61, 4.5, 'square',   bgmChannel, 0.04);   // F3 second half
+  setTimeout(() => { stairsMusicScheduled = false; }, 10000);
+}
+
+function stairsMusicStop() {
+  stairsMusicScheduled = false;
+}
+
+// Memorial crash — 4-layer SFX at INTRO_SHATTER moment. Multi-frequency impact + tail.
+function playSfx_memorialCrash() {
+  if (!audioContext || !audioOn) return;
+  const ch = sfxChannel || audioContext.destination;
+  const t = audioContext.currentTime;
+  // Layer 1 — low rumble (filtered noise, lowpass 200Hz, 500ms)
+  _sfxNoise(0.50, 'lowpass', 200, 0.12);
+  // Layer 2 — mid-range crash (square at 80Hz, hard envelope, 200ms)
+  _sfxNote(80, 'square', 0.20, 0.12);
+  // Layer 3 — high shatter (filtered noise, highpass 4000Hz, 150ms) — fire 5ms after impact
+  setTimeout(() => _sfxNoise(0.15, 'highpass', 4000, 0.10), 5);
+  // Layer 4 — settling debris tail (bandpass noise centered 800Hz, 400ms) — fire 100ms after
+  setTimeout(() => _sfxNoise(0.40, 'bandpass', 800, 0.06), 100);
+}
+
+// Nessun Dorma — operatic synth replaces BGM during the win cutscene (CUTSCENE_PHASE3 +
+// CUTSCENE_BETWEEN). Bb major, slow 4/4, building to "Vincerò" climax.
+// Total ~30s — covers PHASE3 (~4.5s) + BETWEEN flight (~10s) + LEVEL 2 reveal hold.
+function playNessunDorma() {
+  if (!audioContext || !bgmChannel || nessunDormaScheduled) return;
+  nessunDormaScheduled = true;
+  const t0 = audioContext.currentTime;
+  // Bb major: F#3/Gb3=185.00, G3=196.00, A3=220.00, Bb3=233.08, D4=293.66, F4=349.23, G4=392.00,
+  // A4=440.00, Bb4=466.16, D5=587.33, F5=698.46, G5=783.99, A5=880.00, Bb5=932.33
+  // Opening "Nessun dorma" phrase + build to "Vincerò" finale.
+  const MELODY = [
+    // Opening: F# - G - A - Bb - A - G - F# (descending rise)
+    {t: 0.0,  f: 369.99, d: 1.5},       // F#4 ("Nes-")
+    {t: 1.5,  f: 392.00, d: 1.0},       // G4  ("-sun")
+    {t: 2.5,  f: 440.00, d: 1.5},       // A4  ("dor-")
+    {t: 4.0,  f: 466.16, d: 2.0},       // Bb4 ("-ma")
+    {t: 6.0,  f: 440.00, d: 1.0},       // A4
+    {t: 7.0,  f: 392.00, d: 1.0},       // G4
+    {t: 8.0,  f: 369.99, d: 1.5},       // F#4 (resolution)
+    // Build to climax — ascending pattern
+    {t: 10.0, f: 392.00, d: 1.5},       // G4
+    {t: 11.5, f: 466.16, d: 1.5},       // Bb4
+    {t: 13.0, f: 587.33, d: 2.0},       // D5
+    // "Vincerò!" finale — sustained high notes
+    {t: 15.0, f: 698.46, d: 2.0},       // F5  ("Vin-")
+    {t: 17.0, f: 783.99, d: 1.5},       // G5  ("-ce-")
+    {t: 18.5, f: 880.00, d: 1.5},       // A5  ("-rò!")
+    {t: 20.0, f: 932.33, d: 4.0},       // Bb5 sustained final tonic
+  ];
+  for (const n of MELODY) {
+    _bgmScheduleNoteAt(t0 + n.t, n.f, n.d, 'triangle', bgmChannel, 0.08);
+  }
+  // Sustained Bb tonic drone underneath the whole phrase
+  _bgmScheduleNoteAt(t0,        116.54, 15.0, 'square',  bgmChannel, 0.04);  // Bb2 first half
+  _bgmScheduleNoteAt(t0 + 15.0, 116.54, 9.0,  'square',  bgmChannel, 0.05);  // Bb2 second half (louder for climax)
+  // Tenor octave-up doubled voice during "Vincerò" climax
+  for (let i = 0; i < 4; i++) {
+    const n = MELODY[10 + i];
+    _bgmScheduleNoteAt(t0 + n.t, n.f * 2, n.d, 'triangle', bgmChannel, 0.05);
+  }
+  setTimeout(() => { nessunDormaScheduled = false; }, 25000);
+}
+
+function stopNessunDorma() {
+  nessunDormaScheduled = false;
+  // Already-scheduled notes finish their tail. The bgmChannel persists, so a subsequent
+  // BGM rotation start is unaffected.
 }
 
 // N — BGM ducking on dance start/end. 200ms linear ramp via bgmChannel.gain. Synth (YMCA)
@@ -1260,6 +1509,7 @@ function cutsceneAdvance() {
     // K-FIX-3 — BETWEEN tap now carries score + lives forward into the new level. Distinct from
     // the GAME_OVER tap (resetForGameOver) which wipes everything. Both BETWEEN and GAME_OVER
     // tap paths are now clearly distinct, no flag-driven shared helper.
+    stopNessunDorma();             // N-FIX-2 — silence operatic synth before BGM resumes via tickBGM lazy-start
     resetForLevelTransition();
     return;
   }
@@ -5009,7 +5259,7 @@ function loop(ts) {
       if(stateT>1.4){state='INTRO_TITLE';stateT=0;} break;
 
     case 'INTRO_TITLE':
-      if(stateT>2.8){state='INTRO_ESCALATOR';stateT=0;esc={x:W+60,y:H-80,phase:'walk',t:0,progress:0,armSwing:0};} break;
+      if(stateT>2.8){state='INTRO_ESCALATOR';stateT=0;esc={x:W+60,y:H-80,phase:'walk',t:0,progress:0,armSwing:0}; playEscalatorMusic(); /* N-FIX-2 */ } break;
                               // INTRO-ESC FIX — walk-phase y was H-110 (744), which floated DTJ
                               // ~30px above the street top. Set to H-80 (774) so feet sit on the
                               // street where lamp pole bases meet the ground (drawNightCity:
@@ -5029,8 +5279,12 @@ function loop(ts) {
         esc.x=ESC_X1+(ESC_X2-ESC_X1)*esc.progress;
         esc.y=ESC_Y1+(ESC_Y2-ESC_Y1)*esc.progress;
         if(esc.progress>=1&&stateT>5.5){
+          escalatorMusicStop();                                  // N-FIX-2 — clear flag for re-entry
           state='INTRO_STAIRS'; stateT=0;
           stairsPhase='walk'; stairsX=-60; stairsY=H-110; stairsT=0;
+          // N-FIX-2 — 200ms intentional silence between escalator and stairs (no immediate
+          // playStairsMusic call; stairs music starts after a brief gap via setTimeout).
+          setTimeout(playStairsMusic, 200);
         }
       }
       break;
@@ -5067,6 +5321,7 @@ function loop(ts) {
           // Reached target — hold briefly then transition
           stairsX = targetX;
           if (stairsT > 1.2) {       // 1.2s at top before taunt
+            stairsMusicStop();                                 // N-FIX-2 — silence beat before TAUNT
             state='INTRO_TAUNT'; stateT=0; tauntArm=0; tauntBubble=0; introTauntSfxFired=false;
           }
         }
@@ -5117,7 +5372,7 @@ function loop(ts) {
       // Platforms/grid reveal — delay until wave 2+ clears (0.5s after start)
       rampReveal=Math.min(Math.max(shatterT-0.4,0)/2.2,1);
       // Shake on first hit
-      if(shatterT>0.5&&shatterT<0.55){ shakeAmt=10; boom(W/2,500,28,true); }
+      if(shatterT>0.5&&shatterT<0.55){ shakeAmt=10; boom(W/2,500,28,true); playSfx_memorialCrash(); /* N-FIX-2 — 4-layer crash on visual shatter */ }
       if(shatterT>1.2&&shatterT<1.25){ shakeAmt=8; }
       if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjAnimState='IDLE'; dtjAnimT=0; dtjAnimX=DTJ_GAMEPLAY_X; helpers.length=0; player.lives=3; player.invulnT=0; player.platformsReached=new Set([0]); playerScore=0; multiplier=MULT_BASE; multiplierT=0; levelStartTime=totalT; scoreFloats.length=0; resetStats(); pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); pelosi.active=false; pelosi.phase='IDLE'; pelosi.phaseT=0; pelosi.timer=PELOSI_INTERVAL_MIN+Math.random()*(PELOSI_INTERVAL_MAX-PELOSI_INTERVAL_MIN); pelosi.facing=-1; pelosi.targetCapsule=null; pelosiFlash.active=false; tornPieces.length=0; introHasPlayed=true; /* K — single set-site for skip-intro gate */ startBGM(); /* N — BGM starts on first GAMEPLAY entry; resetForGameOver stops it; resumes via this same path on next intro→GAMEPLAY */ }
       break;
@@ -5398,6 +5653,7 @@ function loop(ts) {
       });
       ctx.globalAlpha=1;
       if (winFreezeT >= WIN_FREEZE_DURATION) {
+        stopBGM();                 // N-FIX-2 — silence rotation BGM; preserves bgmCurrentSongIdx for resume
         state = 'CUTSCENE_FADE_IN';
         stateT = 0;
         cutsceneT = 0;
@@ -5600,6 +5856,7 @@ function loop(ts) {
       if (stateT >= CUTSCENE_PHASE1_DURATION) {
         state = 'CUTSCENE_PHASE3';
         stateT = 0;
+        playNessunDorma();         // N-FIX-2 — operatic synth rises with eagle descent
       }
       break;
     }
