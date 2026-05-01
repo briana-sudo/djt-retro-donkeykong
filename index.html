@@ -751,9 +751,20 @@ function playYmcaNote(freq) {
 }
 
 function startYmca() {
-  if (!audioContext) return;
-  if (ymcaSchedulerId !== null) return;                          // already playing
+  // N-FIX-4 — AUDIO TRACE: log every entry, including early-return paths, so we can see why
+  // YMCA might fail to play during game-over-dance (Brian's field report: "ymca song didn't
+  // play when game was over"). audioContext null = no user gesture yet; ymcaSchedulerId
+  // non-null = already playing (re-entry during state transition).
+  if (typeof console !== 'undefined') {
+    if (!audioContext)              { console.log('AUDIO TRACE: startYmca early-return — no audioContext', { t: performance.now(), state }); return; }
+    if (ymcaSchedulerId !== null)   { console.log('AUDIO TRACE: startYmca early-return — already playing', { t: performance.now(), state }); return; }
+  } else {
+    if (!audioContext) return;
+    if (ymcaSchedulerId !== null) return;                        // already playing
+  }
   ymcaNoteIdx = 0;
+  // N-FIX-4 — AUDIO TRACE: first YMCA note actually scheduled.
+  if (typeof console !== 'undefined') console.log('AUDIO TRACE: playYmcaNote called', { t: performance.now(), state, dtjDanceState });
   playYmcaNote(YMCA_MELODY[ymcaNoteIdx]);
   ymcaNoteIdx = (ymcaNoteIdx + 1) % YMCA_MELODY.length;
   ymcaSchedulerId = setInterval(() => {
@@ -1337,6 +1348,28 @@ function unduckBGM() {
   bgmChannel.gain.linearRampToValueAtTime(1.0, t + 0.2);
 }
 
+// N-FIX-4 — hard-mute / un-mute helpers for transition cleanup. These ramp bgmChannel.gain
+// to 0 (mute) or back to 1.0 (full) over a configurable duration. Distinct from duckBGM
+// (50%) — these are used for full silence during DEATH_REACTION, escalator→stairs handoff,
+// and the WIN_FREEZE→CUTSCENE_FADE_IN handoff to Nessun Dorma. Already-scheduled notes
+// continue playing through bgmChannel but at the new gain level (which is 0 for fade-out).
+// Use cancelScheduledValues to nuke any pending duck/unduck ramps so the fade applies cleanly.
+function bgmFadeOut(durSec) {
+  if (!audioContext || !bgmChannel) return;
+  const t = audioContext.currentTime;
+  bgmChannel.gain.cancelScheduledValues(t);
+  bgmChannel.gain.setValueAtTime(bgmChannel.gain.value, t);
+  bgmChannel.gain.linearRampToValueAtTime(0.0001, t + Math.max(0.01, durSec));
+}
+function bgmFadeIn(durSec, targetLevel) {
+  if (!audioContext || !bgmChannel) return;
+  const target = (typeof targetLevel === 'number') ? targetLevel : 1.0;
+  const t = audioContext.currentTime;
+  bgmChannel.gain.cancelScheduledValues(t);
+  bgmChannel.gain.setValueAtTime(bgmChannel.gain.value, t);
+  bgmChannel.gain.linearRampToValueAtTime(target, t + Math.max(0.01, durSec));
+}
+
 // ─────────────────────────────────────────────
 //  N — PAUSE STATE
 // ─────────────────────────────────────────────
@@ -1472,6 +1505,8 @@ function tickDtjDance(dt) {
       dtjDanceTrigger = false;
       const c1 = DTJ_DANCE_BUBBLE_CYCLE1_TEXTS[Math.floor(Math.random() * DTJ_DANCE_BUBBLE_CYCLE1_TEXTS.length)];
       spawnDanceBubble(c1);
+      // N-FIX-4 — AUDIO TRACE: dance actually triggered (200ms after capsule hit).
+      if (typeof console !== 'undefined') console.log('AUDIO TRACE: dance triggered', { t: performance.now(), dtjDanceState, dtjDanceCycles });
       startYmca();
       duckBGM();                                                  // N — duck BGM on dance start
     }
@@ -2255,6 +2290,12 @@ function hit(source, capsule) {
   stateT = 0;
   deathReactionT = 0;
   deathPhase = 'phase1';
+  // N-FIX-4 — mute BGM during death reaction + dance. YMCA owns the audio space here.
+  // Distinct from duckBGM (50%) — full mute (0). Restored on respawn (DEATH_REACTION → GAMEPLAY).
+  // On game over, stays muted until next intro→GAMEPLAY (lazy-start handles).
+  bgmFadeOut(0.1);
+  // N-FIX-4 — AUDIO TRACE: DEATH_REACTION entry (capsule hit moment).
+  if (typeof console !== 'undefined') console.log('AUDIO TRACE: DEATH_REACTION entered', { t: performance.now(), state, lives: player.lives });
   // K — ragdollDebris is now a SHARED pool (player + Antifa). DON'T clear it on hit() — leftover
   // Antifa debris from prior splats keeps draining naturally. Burst flash is a one-frame state.
   ragdollBurstFlashT = 0;
@@ -2395,6 +2436,9 @@ function resetForLevelTransition() {
   // PRESERVED: playerScore, player.lives, highScores, introHasPlayed,
   //            gameOverFinalScore, highScoreNew (no game-over here — this is a win restart).
   _resetEntitiesAndPerLevel();
+  // N-FIX-4 — defensive: bgmChannel may be at 0 if a death-mute or cutscene-mute is still
+  // applied. Restore to 1.0 so the next BGM rotation (lazy-started by tickBGM) is audible.
+  bgmFadeIn(0.05);
   state  = 'GAMEPLAY';
   stateT = 0;
 }
@@ -2410,6 +2454,10 @@ function resetForGameOver() {
   // N — defensive BGM stop in case the GAMEOVER_PENDING → GAME_OVER transition was bypassed
   // (shouldn't happen post-L-FIX-1 wait gate, but harmless if BGM is already stopped).
   stopBGM();
+  // N-FIX-4 — un-mute bgmChannel so the next intro escalator/stairs music + GAMEPLAY BGM
+  // rotation are audible. Without this, a death-mute applied during the prior life persists
+  // through the restart and the entire next intro plays silently.
+  bgmFadeIn(0.05);
   state  = 'INTRO_BLACK';
   stateT = 0;
 }
@@ -5289,10 +5337,10 @@ function loop(ts) {
   // State transitions
   switch(state) {
     case 'INTRO_BLACK':
-      if(stateT>1.4){state='INTRO_TITLE';stateT=0;} break;
+      if(stateT>1.4){state='INTRO_TITLE';stateT=0; playEscalatorMusic(); /* N-FIX-4 — earlier start: song plays under DNC vs DJT title card, runs through escalator */ } break;
 
     case 'INTRO_TITLE':
-      if(stateT>2.8){state='INTRO_ESCALATOR';stateT=0;esc={x:W+60,y:H-80,phase:'walk',t:0,progress:0,armSwing:0}; playEscalatorMusic(); /* N-FIX-2 */ } break;
+      if(stateT>2.8){state='INTRO_ESCALATOR';stateT=0;esc={x:W+60,y:H-80,phase:'walk',t:0,progress:0,armSwing:0}; /* N-FIX-4 — escalator music continues from INTRO_TITLE; no re-trigger here */ } break;
                               // INTRO-ESC FIX — walk-phase y was H-110 (744), which floated DTJ
                               // ~30px above the street top. Set to H-80 (774) so feet sit on the
                               // street where lamp pole bases meet the ground (drawNightCity:
@@ -5312,12 +5360,17 @@ function loop(ts) {
         esc.x=ESC_X1+(ESC_X2-ESC_X1)*esc.progress;
         esc.y=ESC_Y1+(ESC_Y2-ESC_Y1)*esc.progress;
         if(esc.progress>=1&&stateT>5.5){
+          // N-FIX-4 — hard mute bgmChannel over 200ms so the still-scheduled escalator notes
+          // become inaudible (was: escalatorMusicStop only cleared a flag, but already-queued
+          // oscillators kept playing → escalator + Ave Maria overlapped at the Lincoln scene).
+          bgmFadeOut(0.2);
           escalatorMusicStop();                                  // N-FIX-2 — clear flag for re-entry
           state='INTRO_STAIRS'; stateT=0;
           stairsPhase='walk'; stairsX=-60; stairsY=H-110; stairsT=0;
-          // N-FIX-2 — 200ms intentional silence between escalator and stairs (no immediate
-          // playStairsMusic call; stairs music starts after a brief gap via setTimeout).
-          setTimeout(playStairsMusic, 200);
+          // N-FIX-4 — 400ms total dead air: 200ms ramp-out + 200ms silent beat. Then ramp the
+          // bgmChannel back to 1.0 (50ms) and start Ave Maria notes. The "sacred → destruction
+          // punchline" contrast Brian asked for sits in this silence window.
+          setTimeout(() => { bgmFadeIn(0.05); playStairsMusic(); }, 400);
         }
       }
       break;
@@ -5687,6 +5740,7 @@ function loop(ts) {
       ctx.globalAlpha=1;
       if (winFreezeT >= WIN_FREEZE_DURATION) {
         stopBGM();                 // N-FIX-2 — silence rotation BGM; preserves bgmCurrentSongIdx for resume
+        bgmFadeOut(0.2);           // N-FIX-4 — actually mute the channel so any scheduled BGM tail goes silent before Nessun Dorma starts
         state = 'CUTSCENE_FADE_IN';
         stateT = 0;
         cutsceneT = 0;
@@ -5755,6 +5809,8 @@ function loop(ts) {
           // GAME_OVER transition (when dtjDanceState === 'IDLE' && !bubble.active).
           state = 'GAMEOVER_PENDING';
           stateT = 0;
+          // N-FIX-4 — AUDIO TRACE: GAMEOVER_PENDING entered (after 3rd life lost, before dance ends).
+          if (typeof console !== 'undefined') console.log('AUDIO TRACE: GAMEOVER_PENDING entered', { t: performance.now() });
         } else {
           // L — score PERSISTS across respawn (lives already decremented). Multiplier and
           // briefcase reset (streak loss penalty). Capsules cleared for clean restart.
@@ -5762,6 +5818,7 @@ function loop(ts) {
           // continue across the respawn (funny). Platforms-reached re-seeded inside the helper.
           resetForRespawn();
           playSfx_respawn();                                   // N — ready ding on respawn
+          bgmFadeIn(0.2);                                      // N-FIX-4 — un-mute BGM rotation (was 0 from DEATH_REACTION entry)
           state = 'GAMEPLAY';
           stateT = 0;
         }
@@ -5799,6 +5856,8 @@ function loop(ts) {
         playSfx_gameOver();                                       // N — sad horn on overlay reveal
         state = 'GAME_OVER';
         stateT = 0;
+        // N-FIX-4 — AUDIO TRACE: GAME_OVER entered (overlay reveal moment, after dance + bubble drained).
+        if (typeof console !== 'undefined') console.log('AUDIO TRACE: GAME_OVER entered', { t: performance.now() });
       }
       break;
     }
@@ -5889,6 +5948,7 @@ function loop(ts) {
       if (stateT >= CUTSCENE_PHASE1_DURATION) {
         state = 'CUTSCENE_PHASE3';
         stateT = 0;
+        bgmFadeIn(0.3);            // N-FIX-4 — restore bgmChannel to 1.0 so Nessun Dorma is audible (channel was muted at WIN_FREEZE→CUTSCENE_FADE_IN)
         playNessunDorma();         // N-FIX-2 — operatic synth rises with eagle descent
       }
       break;
