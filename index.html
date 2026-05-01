@@ -458,16 +458,11 @@ function cutsceneAdvance() {
   if (state === 'CUTSCENE_BETWEEN') {
     // K-FIX-2 — gate restart until LEVEL 2 COMING SOON reveal appears at t=5.0s. Without this
     // guard, a single tap during the 5+ second sky-flight phase bypasses the entire reveal.
-    // K-core removed the 8-second intro-replay buffer that previously masked accidental taps;
-    // this guard restores the protection. The 5.0 threshold matches the existing reveal time
-    // (BETWEEN render case at L4530: `if (stateT >= 5.0) { ... LEVEL 2 COMING SOON ... }`).
-    // `stateT` is the global state-clock declared at L258, reset to 0 on each transition.
     if (stateT < 5.0) return;
-    // K — tap on BETWEEN end card runs the SAME full-reset path as GAME_OVER tap. introHasPlayed
-    // is true here (player won the level → must have completed intro), so restartLevel skips
-    // straight to GAMEPLAY. This avoids replaying the 8-second intro every win cycle. Defensive
-    // false-branch handles the (unreachable) case where we somehow got here without intro.
-    restartLevel(introHasPlayed);
+    // K-FIX-3 — BETWEEN tap now carries score + lives forward into the new level. Distinct from
+    // the GAME_OVER tap (resetForGameOver) which wipes everything. Both BETWEEN and GAME_OVER
+    // tap paths are now clearly distinct, no flag-driven shared helper.
+    resetForLevelTransition();
     return;
   }
 }
@@ -1192,43 +1187,56 @@ function respawnPlayer() {
   player.invulnT = 1.0;                                   // i-frames after respawn
 }
 
-// J — full reset on tap from GAME_OVER. Score / lives / multiplier / briefcase count / all
-// entities cleared. highScore PERSISTS (already saved to localStorage at game-over moment).
-// Transitions to INTRO_BLACK so the intro replays from the top — mirrors the BETWEEN→INTRO_BLACK
-// path in cutsceneAdvance for consistency.
-// K — single shared full-reset helper used by GAME_OVER tap-to-restart AND CUTSCENE_BETWEEN
-// tap-to-restart. If `skipIntro` is true, transitions directly to GAMEPLAY (intro skipped on
-// restart since the player has already seen it this session). Otherwise INTRO_BLACK.
-//   - introHasPlayed gate (set true once at INTRO_SHATTER end) drives the skipIntro arg.
-//   - highScore + highScoreInitials PERSIST (already saved to localStorage at game-over moment
-//     and on initials submit; this function never touches them).
-//   - Refreshing the browser resets introHasPlayed to false so a fresh page load always plays
-//     the intro at least once.
-function restartLevel(skipIntro) {
-  player.lives = 3;
+// K-FIX-3 — split the K-core single-helper restartLevel(skipIntro) into TWO distinct functions
+// with clearly different routing. The shared per-level body lives in _resetEntitiesAndPerLevel
+// (private factoring helper) and is called by both top-level functions.
+//
+//   resetForLevelTransition()   — CUTSCENE_BETWEEN tap-to-restart.
+//                                  PRESERVES playerScore, player.lives, highScore,
+//                                  highScoreInitials, introHasPlayed.
+//                                  Transitions state = 'GAMEPLAY' (intro skipped, always).
+//   resetForGameOver()          — GAME_OVER tap-to-restart.
+//                                  WIPES playerScore=0, player.lives=3.
+//                                  Transitions state = 'INTRO_BLACK' (intro replays in full).
+//                                  highScore + highScoreInitials still PERSIST (localStorage,
+//                                  written at game-over moment, never touched here).
+//
+// introHasPlayed is preserved by both — it's session-scoped, set once at end of INTRO_SHATTER
+// (L3987), never touched anywhere else. Page refresh resets it to false. K-FIX-3 routing is
+// unconditional (no introHasPlayed gate), so the flag is currently informational only —
+// future blocks could re-introduce a gate.
+
+// Private factoring helper — per-level state + entity wipe. Does NOT touch playerScore,
+// player.lives, highScore, highScoreInitials, introHasPlayed, gameOverFinalScore, or `state`.
+// Called by both top-level reset functions; each then sets `state` to its own destination.
+function _resetEntitiesAndPerLevel() {
   player.invulnT = 0;
   player.platformsReached = new Set([0]);
   player.x = FLOOR.x + 60; player.y = FLOOR.y - 1;
   player.vx = 0; player.vy = 0;
+  player.facing = 1;
   player.onGround = true; player.onLadder = false;
   player.ladderCooldown = 0; player.ladderEntryY = 0;
   player.lastGroundedPlat = FLOOR;
-  playerScore        = 0;
-  multiplier         = MULT_BASE;
-  multiplierT        = 0;
-  highScoreNew       = false;
-  gameOverFinalScore = 0;
-  capsules.length    = 0;
-  capsuleSpawnT      = 0;
+  player.shakeT = 0;                                       // K addendum — clear any leftover ladder-eject shake
+  // Per-level state — multiplier and briefcase-derived score reset together.
+  multiplier  = MULT_BASE;
+  multiplierT = 0;
+  // All entity arrays cleared.
+  capsules.length      = 0;
+  capsuleSpawnT        = 0;
   capsuleSpawnInterval = 2.5 + Math.random() * 2.0;
-  helpers.length     = 0;
-  particles          = [];
-  bricks             = [];
-  scoreFloats.length = 0;
+  helpers.length       = 0;
+  particles            = [];
+  bricks               = [];
+  scoreFloats.length   = 0;
+  // Stats reset (briefcaseCount lives inside stats; H2 score floors zero per level).
   resetStats();
+  // Pickup
   pickup.active        = false;
   pickupSpawnTimer     = 0;
   pickupRespawnDelay   = 0;
+  // Pelosi
   pelosi.active        = false;
   pelosi.phase         = 'IDLE';
   pelosi.phaseT        = 0;
@@ -1237,46 +1245,58 @@ function restartLevel(skipIntro) {
   pelosi.targetCapsule = null;
   pelosiFlash.active   = false;
   tornPieces.length    = 0;
-  // Cutscene/caption state cleared so a quick GAME_OVER → restart → win cycle starts clean.
+  // Cutscene + caption + ragdoll-debris state.
   comboActive  = false;
   dtjStageMode = 'NONE';
   clearCaptions();
-  // J — clear any in-flight death reaction state defensively.
-  deathReactionT     = 0;
-  deathPhase         = 'phase1';
-  ragdollBurstFlashT = 0;
+  deathReactionT       = 0;
+  deathPhase           = 'phase1';
+  ragdollBurstFlashT   = 0;
   ragdollDebris.length = 0;
-  // K — initials entry sub-state cleared.
-  initialsEntryActive    = false;
-  initialsConfirmedT     = 0;
-  initialsLetters[0]     = 'A';
-  initialsLetters[1]     = 'A';
-  initialsLetters[2]     = 'A';
-  initialsCursor         = 0;
+  // Initials entry sub-state.
+  initialsEntryActive  = false;
+  initialsConfirmedT   = 0;
+  initialsLetters[0]   = 'A';
+  initialsLetters[1]   = 'A';
+  initialsLetters[2]   = 'A';
+  initialsCursor       = 0;
   // K — Secret Service reset.
   ss.active = false; ss.fadeAlpha = 0; ss.fadeOutTimer = 0;
   for (const u of ss.units) { u.state = 'IDLE'; u.stateT = 0; u.targetAntifa = null; }
-  if (skipIntro) {
-    // Re-init gameplay session state that the INTRO_SHATTER → GAMEPLAY transition normally
-    // sets. Keep parity so a skipped-intro restart starts identical to a fresh-intro restart.
-    dtjAnimState = 'IDLE';
-    dtjAnimT     = 0;
-    dtjAnimX     = DTJ_GAMEPLAY_X;
-    levelStartTime = totalT;
-    spawnFirstPickup();
-    state  = 'GAMEPLAY';
-    stateT = 0;
-  } else {
-    state  = 'INTRO_BLACK';
-    stateT = 0;
-  }
+  // Gameplay session state (mirrors the INTRO_SHATTER → GAMEPLAY transition seeding).
+  dtjAnimState   = 'IDLE';
+  dtjAnimT       = 0;
+  dtjAnimX       = DTJ_GAMEPLAY_X;
+  levelStartTime = totalT;
+  spawnFirstPickup();
 }
 
-// J — wraps restartLevel with the introHasPlayed flag. Kept as a named entry point because
-// input handlers reference it by name; routing through one helper keeps GAME_OVER and BETWEEN
-// tap behavior identical.
+// CUTSCENE_BETWEEN tap. Carry score + lives forward into the new level. Skip intro (always —
+// no introHasPlayed gate). state = 'GAMEPLAY'.
+function resetForLevelTransition() {
+  // PRESERVED: playerScore, player.lives, highScore, highScoreInitials, introHasPlayed,
+  //            gameOverFinalScore, highScoreNew (no game-over here — this is a win restart).
+  _resetEntitiesAndPerLevel();
+  state  = 'GAMEPLAY';
+  stateT = 0;
+}
+
+// GAME_OVER tap. Wipe score and lives, then per-level reset. state = 'INTRO_BLACK' so the
+// intro replays in full ("STARTING" in spec terms — codebase has no separate STARTING state).
+function resetForGameOver() {
+  playerScore        = 0;
+  player.lives       = 3;
+  highScoreNew       = false;
+  gameOverFinalScore = 0;
+  _resetEntitiesAndPerLevel();
+  state  = 'INTRO_BLACK';
+  stateT = 0;
+}
+
+// Named entry point retained because input handlers reference it. Now delegates to
+// resetForGameOver. K-FIX-3 dropped the introHasPlayed branching — GAME_OVER always replays intro.
 function restartFromGameOver() {
-  restartLevel(introHasPlayed);
+  resetForGameOver();
 }
 
 // K — initials entry input helpers. Used by both keyboard handler (in window.keydown) and the
@@ -3474,9 +3494,10 @@ function drawScoreBreakdown(opts) {
     ctx.fillText(opts.prompt, W/2, 780);
   }
 
-  // J — creator credit (GAME_OVER only). Subtle gray, smaller font, very bottom of overlay.
+  // J — creator credit (GAME_OVER only). K-FIX-3 — dark gold full-opacity (was subtle gray
+  // 0.6 alpha; too faint to read against the black GAME_OVER overlay). Same font + position.
   if (opts.showCredit) {
-    ctx.fillStyle = 'rgba(200,200,200,0.6)';
+    ctx.fillStyle = '#9a7a00';
     ctx.font = '10px monospace';
     ctx.textAlign = 'center';
     ctx.fillText('Created by Brian Albert', W/2, 820);
@@ -4550,7 +4571,9 @@ function loop(ts) {
         ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulseB).toFixed(3) + ')';
         ctx.font = 'bold 14px monospace';
         ctx.fillText('TAP TO RESTART', W/2, 260);
-        ctx.fillStyle = 'rgba(200,200,200,0.6)';
+        // K-FIX-3 — dark gold full-opacity credit (was subtle gray 0.6 alpha; too faint against
+        // the light blue sky background of CUTSCENE_BETWEEN). Same font + position.
+        ctx.fillStyle = '#9a7a00';
         ctx.font = '10px monospace';
         ctx.fillText('Created by Brian Albert', W/2, 290);
       }
