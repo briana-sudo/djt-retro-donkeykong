@@ -925,20 +925,42 @@ function playSfx_eagleScreech() { _sfxSweep(1400, 600, 'sawtooth', 0.50, 0.07); 
 // Looping songs (BGM rotation, escalator, Macho Man, YMCA) loop indefinitely; one-shot songs
 // (Ave Maria, Nessun Dorma) play to end and stop.
 const SOUND_LIBRARY = {
-  // AUDIO-2 — loop=false on scene-bounded clips: ymca (14s death dance one-shot),
-  // free_world (12s INTRO_TITLE+ESCALATOR), ave_maria (10s INTRO_STAIRS), nessun_dorma
-  // (35s CUTSCENE_PHASE3+SCORE+BETWEEN). loop=true on variable-duration scenes:
-  // macho_man (Antifa wave length varies), greenwood/queen/brown (BGM rotation slots).
-  ymca:         new Howl({ src: ['audio/ymca.mp3'],         loop: false, volume: 0.7 }),
+  // AUDIO-2/3 — loop:false for scene-bounded one-shots (free_world, ave_maria,
+  // nessun_dorma). loop:true for variable-duration / open-ended scenes:
+  //   - macho_man (Antifa wave length varies)
+  //   - greenwood/queen/brown (BGM rotation; 'end' handler advances idx)
+  //   - ymca (AUDIO-3: now loops through DEATH_REACTION dance + GAMEOVER_PENDING +
+  //     GAME_OVER high-score entry; transitionToMusic stops it on tap-to-continue)
+  // AUDIO-3 — BGM rotation volumes dropped 0.6 → 0.45 (25% quieter per Brian's tuning).
+  // free_world / ave_maria / nessun_dorma / ymca / macho_man volumes UNCHANGED from AUDIO-1.
+  ymca:         new Howl({ src: ['audio/ymca.mp3'],         loop: true,  volume: 0.7 }),
   macho_man:    new Howl({ src: ['audio/macho_man.mp3'],    loop: true,  volume: 0.7 }),
-  greenwood:    new Howl({ src: ['audio/greenwood.mp3'],    loop: true,  volume: 0.6 }),
-  queen:        new Howl({ src: ['audio/queen.mp3'],        loop: true,  volume: 0.6 }),
-  brown:        new Howl({ src: ['audio/brown.mp3'],        loop: true,  volume: 0.6 }),
+  greenwood:    new Howl({ src: ['audio/greenwood.mp3'],    loop: true,  volume: 0.45 }),
+  queen:        new Howl({ src: ['audio/queen.mp3'],        loop: true,  volume: 0.45 }),
+  brown:        new Howl({ src: ['audio/brown.mp3'],        loop: true,  volume: 0.45 }),
   free_world:   new Howl({ src: ['audio/free_world.mp3'],   loop: false, volume: 0.6 }),
   ave_maria:    new Howl({ src: ['audio/ave_maria.mp3'],    loop: false, volume: 0.7 }),
   nessun_dorma: new Howl({ src: ['audio/nessun_dorma.mp3'], loop: false, volume: 0.7 }),
 };
 let currentlyPlayingSound = null;
+
+// AUDIO-3 — Trump catchphrase SFX. Plays on non-final-life death (player.lives > 1) as a
+// short overlay over the continuing BGM rotation. Final-life death (game over) skips this
+// — YMCA takes over the audio space instead. Howl objects are SFX-style: play()-and-forget,
+// no stop tracking, no fade. ~2 second clips trimmed from yt-dlp search results; if any
+// clip is unusable Brian can drop a replacement into /audio/sfx/ with the same filename.
+const TRUMP_SFX = {
+  fired:     new Howl({ src: ['audio/sfx/trump_fired.mp3'],     volume: 0.9 }),
+  wrong:     new Howl({ src: ['audio/sfx/trump_wrong.mp3'],     volume: 0.9 }),
+  sad:       new Howl({ src: ['audio/sfx/trump_sad.mp3'],       volume: 0.9 }),
+  loser:     new Howl({ src: ['audio/sfx/trump_loser.mp3'],     volume: 0.9 }),
+  fake_news: new Howl({ src: ['audio/sfx/trump_fake_news.mp3'], volume: 0.9 }),
+};
+function playTrumpDeathLine() {
+  const lines = ['fired', 'wrong', 'sad', 'loser', 'fake_news'];
+  const pick  = lines[Math.floor(Math.random() * lines.length)];
+  if (TRUMP_SFX[pick]) TRUMP_SFX[pick].play();
+}
 
 // BGM rotation: 3 songs cycle on song-end. bgmRotationIdx persists across cutscene/death
 // transitions so the rotation resumes from where it left off.
@@ -959,12 +981,31 @@ let currentMusic = MUSIC_STATES.SILENT;
 // Map state → desired music. Single source of truth. tickBGM compares against currentMusic
 // and calls transitionToMusic on mismatch.
 function computeDesiredMusic() {
-  // AUDIO-1 — death dance plays YMCA whenever the dance is DANCING, regardless of game state.
-  // Highest priority (overrides DEATH_REACTION/PENDING/GAMEPLAY/etc.). When dance ends, the
-  // normal state-based mapping resumes — restoring BGM_ROTATION on respawn or SILENT on
-  // game-over. This single rule replaces the bgmDeathMuted flag from N-FIX-5/6.
-  if (typeof dtjDanceState !== 'undefined' && dtjDanceState === 'DANCING') {
+  // AUDIO-3 — YMCA plays only on game-over flow, NOT on every life loss. Three-phase
+  // YMCA window: (a) DEATH_REACTION on the final life — detected via dtjDanceCycles >= 3
+  // (set by tickDtjDance when dance triggers and player.lives === 1); (b) GAMEOVER_PENDING;
+  // (c) GAME_OVER (during high-score entry). YMCA Howl is loop:true so the 14s clip cycles
+  // continuously through all three phases. transitionToMusic stops it cleanly on the next
+  // state that doesn't return YMCA (typically tap-to-continue → INTRO_BLACK).
+  if (state === 'GAMEOVER_PENDING' || state === 'GAME_OVER') {
     return MUSIC_STATES.YMCA;
+  }
+  if (state === 'DEATH_REACTION' && typeof dtjDanceState !== 'undefined' &&
+      dtjDanceState === 'DANCING' && typeof dtjDanceCycles !== 'undefined' &&
+      dtjDanceCycles >= 3) {
+    return MUSIC_STATES.YMCA;
+  }
+  // AUDIO-3 — non-final-life DEATH_REACTION: BGM rotation continues seamlessly underneath
+  // the Trump death-line SFX (playTrumpDeathLine fires from hit() when lives > 1). Antifa
+  // wave still overrides if active. This means transitionToMusic doesn't fire — currentMusic
+  // stays BGM_ROTATION (or MACHO_MAN) and the music doesn't blip on respawn.
+  if (state === 'DEATH_REACTION') {
+    let antifaCount = 0;
+    if (typeof helpers !== 'undefined') {
+      for (const h of helpers) { if (h.type === 'ANTIFA') { antifaCount++; break; } }
+    }
+    if (antifaCount > 0) return MUSIC_STATES.MACHO_MAN;
+    return MUSIC_STATES.BGM_ROTATION;
   }
   // Cutscenes — Nessun Dorma plays through PHASE3 / SCORE / BETWEEN; silent during the
   // earlier black/dialogue phases.
@@ -974,10 +1015,8 @@ function computeDesiredMusic() {
   if (state === 'CUTSCENE_FADE_IN' || state === 'CUTSCENE_PHASE1') {
     return MUSIC_STATES.SILENT;
   }
-  // WIN_FREEZE / GAME_OVER / GAMEOVER_PENDING — silent (when dance not active; dance is
-  // gated above). DEATH_REACTION — silent until dance triggers, then YMCA via the rule above.
-  if (state === 'WIN_FREEZE' || state === 'GAME_OVER' || state === 'GAMEOVER_PENDING' ||
-      state === 'DEATH_REACTION') {
+  // WIN_FREEZE — silent (the win moment, before cutscene fade-in).
+  if (state === 'WIN_FREEZE') {
     return MUSIC_STATES.SILENT;
   }
   // Intro chain. ESCALATOR music plays under INTRO_BLACK / INTRO_TITLE / INTRO_ESCALATOR.
@@ -1224,7 +1263,7 @@ function tickDtjDance(dt) {
     if (dtjDanceTriggerT <= 0) {
       dtjDanceState  = 'DANCING';
       dtjDanceT      = 0;
-      dtjDanceCycles = (player.lives > 1) ? 1 : 2;
+      dtjDanceCycles = (player.lives > 1) ? 1 : 3;     // AUDIO-3 — game-over dance now 3 cycles (9.0s) for full YMCA hook
       dtjDanceTrigger = false;
       const c1 = DTJ_DANCE_BUBBLE_CYCLE1_TEXTS[Math.floor(Math.random() * DTJ_DANCE_BUBBLE_CYCLE1_TEXTS.length)];
       spawnDanceBubble(c1);
@@ -1236,8 +1275,8 @@ function tickDtjDance(dt) {
   if (dtjDanceState === 'DANCING') {
     const prevT = dtjDanceT;
     dtjDanceT += dt;
-    if (dtjDanceCycles === 2 && prevT < DTJ_DANCE_CYCLE_DURATION && dtjDanceT >= DTJ_DANCE_CYCLE_DURATION) {
-      spawnDanceBubble(DTJ_DANCE_BUBBLE_CYCLE2_TEXT);
+    if (dtjDanceCycles >= 2 && prevT < DTJ_DANCE_CYCLE_DURATION && dtjDanceT >= DTJ_DANCE_CYCLE_DURATION) {
+      spawnDanceBubble(DTJ_DANCE_BUBBLE_CYCLE2_TEXT);     // AUDIO-3 — fires for cycles>=2 (was ===2; now also fires when cycles=3)
     }
     const totalDuration = DTJ_DANCE_CYCLE_DURATION * dtjDanceCycles;
     if (dtjDanceT >= totalDuration) {
@@ -2026,6 +2065,14 @@ function hit(source, capsule) {
   stateT = 0;
   deathReactionT = 0;
   deathPhase = 'phase1';
+  // AUDIO-3 — random Trump catchphrase SFX on non-final-life death (lives>1, will respawn).
+  // Plays as overlay over the continuing BGM rotation (computeDesiredMusic returns
+  // BGM_ROTATION for DEATH_REACTION when this isn't a game-over). On final-life death
+  // (lives===1, will become 0 at end of DEATH_REACTION), skip — YMCA takes over via the
+  // dtjDanceCycles>=3 rule in computeDesiredMusic.
+  if (player.lives > 1 && typeof playTrumpDeathLine === 'function') {
+    playTrumpDeathLine();
+  }
   // AUDIO-1 — bgmDeathMuted flag + bgmFadeOut call removed. computeDesiredMusic returns
   // SILENT for DEATH_REACTION until dance triggers (200ms later), then YMCA. transitionToMusic
   // fades the prior music out cleanly at the next tickBGM call.
@@ -2169,9 +2216,15 @@ function resetForLevelTransition() {
   // PRESERVED: playerScore, player.lives, highScores, introHasPlayed,
   //            gameOverFinalScore, highScoreNew (no game-over here — this is a win restart).
   _resetEntitiesAndPerLevel();
-  // AUDIO-1 — state-driven: state→GAMEPLAY maps to BGM_ROTATION via computeDesiredMusic;
-  // transitionToMusic plays the saved-position rotation song through Howler. No flag reset
-  // needed (bgmDeathMuted no longer exists).
+  // AUDIO-3 — BGM rotation restarts from greenwood at 0:00 on level transition (was: resumed
+  // from saved bgmRotationIdx). Brian's intent: each new level opens with the same opening
+  // hook. Stop+seek the greenwood Howl so transitionToMusic's startBgmRotation plays it from
+  // the start. Same pattern in resetForGameOver below for the post-GAME_OVER fresh-game path.
+  bgmRotationIdx = 0;
+  if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.greenwood) {
+    SOUND_LIBRARY.greenwood.stop();
+    SOUND_LIBRARY.greenwood.seek(0);
+  }
   state  = 'GAMEPLAY';
   stateT = 0;
 }
@@ -2184,8 +2237,13 @@ function resetForGameOver() {
   highScoreNew       = false;
   gameOverFinalScore = 0;
   _resetEntitiesAndPerLevel();
-  // AUDIO-1 — state-driven: state→INTRO_BLACK maps to ESCALATOR (audible after first user
-  // gesture unlocks Howler's audio context). No flag reset needed (bgmDeathMuted gone).
+  // AUDIO-3 — BGM rotation reset to greenwood 0:00 so the next GAMEPLAY entry (after intro
+  // replay) starts fresh. Same as resetForLevelTransition above.
+  bgmRotationIdx = 0;
+  if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.greenwood) {
+    SOUND_LIBRARY.greenwood.stop();
+    SOUND_LIBRARY.greenwood.seek(0);
+  }
   state  = 'INTRO_BLACK';
   stateT = 0;
 }
@@ -5591,7 +5649,11 @@ function loop(ts) {
       // giving the dance a full second of post-IDLE buffer for YMCA tail to fully decay
       // before the GAME_OVER overlay covers the dance.
       gameOverPendingT += dt;
-      if (gameOverPendingT >= 6.0 && dtjDanceState === 'IDLE' && !bubble.active) {
+      // AUDIO-3 — gate raised 6.0 → 9.0 to match the 9.0s game-over dance (3 cycles × 3.0s).
+      // Math: dance starts at hit+0.2s, ends at hit+9.2s = PENDING+8.0s. Gate at PENDING+9.0s
+      // gives 1.0s of YMCA tail buffer before the GAME_OVER overlay covers the dance area.
+      // YMCA Howl loop:true continues playing through the gate transition into GAME_OVER.
+      if (gameOverPendingT >= 9.0 && dtjDanceState === 'IDLE' && !bubble.active) {
         if (highScoreNew) {
           initialsEntryActive = true;
           initialsCursor      = 0;
