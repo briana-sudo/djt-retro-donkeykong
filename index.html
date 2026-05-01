@@ -981,6 +981,17 @@ const MUSIC_STATES = {
   YMCA:          'ymca',
   BGM_ROTATION:  'bgmRotation',
 };
+// AUDIO-3-MUSIC-UX — map MUSIC_STATES one-shot values to SOUND_LIBRARY keys. Mirrors the
+// SOUND_MAP defined inside transitionToMusic but lifted to module scope so selfHealBgm can
+// look up which Howl to check for "is the desired music actually playing." BGM_ROTATION
+// and SILENT are not in this map — they're handled separately.
+const MUSIC_STATE_TO_SOUND = {
+  [MUSIC_STATES.ESCALATOR]:    'free_world',
+  [MUSIC_STATES.AVE_MARIA]:    'ave_maria',
+  [MUSIC_STATES.NESSUN_DORMA]: 'nessun_dorma',
+  [MUSIC_STATES.MACHO_MAN]:    'macho_man',
+  [MUSIC_STATES.YMCA]:         'ymca',
+};
 let currentMusic = MUSIC_STATES.SILENT;
 
 // Map state → desired music. Single source of truth. tickBGM compares against currentMusic
@@ -1155,6 +1166,38 @@ function tickBGM() {
   if (state === 'PAUSED') return;
   const desired = computeDesiredMusic();
   if (desired !== currentMusic) {
+    transitionToMusic(desired);
+  }
+}
+
+// AUDIO-3-MUSIC-UX — self-healing BGM. Called from each input handler (keydown / pointerdown
+// / touchstart). If the desired music for the current state SHOULD be playing but the
+// underlying Howl reports !playing(), force a fresh transition. tickBGM's normal compare-
+// and-swap can't catch this because currentMusic === desired (state machine thinks music is
+// playing); only checking sound.playing() reveals the silent reality. Common triggers:
+// - First-load Howler unlock failed to flush queued plays
+// - Mute/unmute song handoff dropped at once('end') boundary
+// - Pause/unpause caused Howler to silently stop a sound
+// Self-heal nullifies currentMusic so transitionToMusic doesn't early-return at L1057, then
+// invokes it with the same desired value to issue a fresh play.
+function selfHealBgm() {
+  if (!audioOn) return;
+  if (state === 'PAUSED') return;
+  if (typeof Howler === 'undefined' || !Howler.ctx || Howler.ctx.state !== 'running') return;
+  const desired = computeDesiredMusic();
+  if (desired === MUSIC_STATES.SILENT) return;
+  let isPlaying = false;
+  if (desired === MUSIC_STATES.BGM_ROTATION) {
+    const songName = BGM_ROTATION_SONGS[bgmRotationIdx];
+    const sound    = SOUND_LIBRARY[songName];
+    isPlaying = !!(sound && sound.playing());
+  } else {
+    const songName = MUSIC_STATE_TO_SOUND[desired];
+    const sound    = SOUND_LIBRARY[songName];
+    isPlaying = !!(sound && sound.playing());
+  }
+  if (!isPlaying) {
+    currentMusic = null;             // sentinel so transitionToMusic doesn't early-return
     transitionToMusic(desired);
   }
 }
@@ -1447,6 +1490,11 @@ window.addEventListener('keydown', e => {
   // audioContext but NOT skip past the music scheduling.
   if (state === 'INTRO_BLACK') return;
   if (state !== 'GAMEPLAY') skipToGame();
+  // AUDIO-3-MUSIC-UX — self-heal BGM after gameplay input. Catches scenarios where the
+  // state machine thinks music is playing but the underlying Howl is silent (R2/R3/R4
+  // residuals: post-death restart didn't fire, mute/unmute song handoff dropped, pause/
+  // unpause silenced a Howl). No-op if music is healthy.
+  selfHealBgm();
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
 
@@ -4264,6 +4312,7 @@ canvas.addEventListener('pointerdown', e => {
   activeTouches[e.pointerId]={action:b?b.action:null,box:b};
   if (b&&b.action==='jump') { touch.jump=true; setTimeout(()=>{touch.jump=false;},120); }
   applyTouchState();
+  selfHealBgm();   // AUDIO-3-MUSIC-UX — heal silent BGM on gameplay touch (R2/R3/R4 residuals)
 });
 canvas.addEventListener('pointermove', e => {
   e.preventDefault();
@@ -4329,6 +4378,7 @@ canvas.addEventListener('touchstart', e=>{
     if (b.action==='jump'){touch.jump=true;setTimeout(()=>{touch.jump=false;},120);}
   }
   applyTouchState();
+  selfHealBgm();   // AUDIO-3-MUSIC-UX — heal silent BGM on iOS Safari touch (R2/R3/R4 residuals)
 },{passive:false});
 canvas.addEventListener('touchend', e=>{
   e.preventDefault();
