@@ -456,6 +456,13 @@ function cutsceneAdvance() {
     return;
   }
   if (state === 'CUTSCENE_BETWEEN') {
+    // K-FIX-2 — gate restart until LEVEL 2 COMING SOON reveal appears at t=5.0s. Without this
+    // guard, a single tap during the 5+ second sky-flight phase bypasses the entire reveal.
+    // K-core removed the 8-second intro-replay buffer that previously masked accidental taps;
+    // this guard restores the protection. The 5.0 threshold matches the existing reveal time
+    // (BETWEEN render case at L4530: `if (stateT >= 5.0) { ... LEVEL 2 COMING SOON ... }`).
+    // `stateT` is the global state-clock declared at L258, reset to 0 on each transition.
+    if (stateT < 5.0) return;
     // K — tap on BETWEEN end card runs the SAME full-reset path as GAME_OVER tap. introHasPlayed
     // is true here (player won the level → must have completed intro), so restartLevel skips
     // straight to GAMEPLAY. This avoids replaying the 8-second intro every win cycle. Defensive
@@ -3167,7 +3174,9 @@ canvas.addEventListener('pointercancel', e=>{delete activeTouches[e.pointerId]; 
 
 // iOS Safari fallback — touch events in case pointer events don't fire
 canvas.addEventListener('touchstart', e=>{
-  e.preventDefault();
+  e.preventDefault();   // K-FIX-2 — also suppresses synthesized pointerdown on iOS Safari
+                        // so cutsceneAdvance / restart paths don't double-fire per tap.
+                        // Listener registered with {passive:false} below to honor preventDefault.
   // I1 — cutscene tap routes through cutsceneAdvance (per-state advance rules).
   // WIN_FREEZE / CUTSCENE_FADE_IN eat input; intro states skipToGame; GAMEPLAY = normal.
   // J — DEATH_REACTION eats input. GAME_OVER tap = restartFromGameOver (full reset).
@@ -3496,12 +3505,17 @@ function drawHUD() {
   ctx.fillStyle='#ffcc00'; ctx.font='bold 13px monospace'; ctx.textAlign='right';
   ctx.fillText('SCORE ' + Math.floor(playerScore), W-8, HUD_Y + 11);
   // J — HIGH SCORE display rule: blank dashes when the player has never set a score.
-  // K — show 'HI INI 5678' (initials + score) when both set; 'HI ---' when either missing
-  // (highScore == 0 OR initials not yet entered / malformed in storage). Match HUD typography.
+  // K-FIX-2 — three-way graceful-degradation rule (replaces K's strict-AND condition):
+  //   highScore == 0                          → 'HI ---'  (no score recorded)
+  //   highScore > 0  AND initials empty       → 'HI 4325' (legacy J-save: score but no initials)
+  //   highScore > 0  AND initials set         → 'HI BRI 4325'
+  // The middle case lets pre-K Block-J localStorage entries display their score immediately
+  // without forcing the player to beat their own prior high before the HUD shows anything.
   ctx.fillStyle='#aaccff'; ctx.font='bold 11px monospace';
   let hiText;
-  if (highScore <= 0 || !highScoreInitials) hiText = 'HI ---';
-  else                                       hiText = 'HI ' + highScoreInitials + ' ' + Math.floor(highScore);
+  if (highScore <= 0)          hiText = 'HI ---';
+  else if (!highScoreInitials) hiText = 'HI ' + Math.floor(highScore);
+  else                         hiText = 'HI ' + highScoreInitials + ' ' + Math.floor(highScore);
   ctx.fillText(hiText, W-8, HUD_Y + 22);
 
   // Block D — multiplier badge. E2 corrected — badge placed flush BELOW the HUD bar (in the
