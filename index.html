@@ -931,9 +931,12 @@ const SOUND_LIBRARY = {
   // macho_man (Antifa wave length varies), greenwood/queen/brown (BGM rotation slots).
   ymca:         new Howl({ src: ['audio/ymca.mp3'],         loop: false, volume: 0.7 }),
   macho_man:    new Howl({ src: ['audio/macho_man.mp3'],    loop: true,  volume: 0.7 }),
-  greenwood:    new Howl({ src: ['audio/greenwood.mp3'],    loop: true,  volume: 0.45 }), // AUDIO-3a — 25% quieter than other cues so BGM sits under voice/SFX
-  queen:        new Howl({ src: ['audio/queen.mp3'],        loop: true,  volume: 0.45 }), // AUDIO-3a
-  brown:        new Howl({ src: ['audio/brown.mp3'],        loop: true,  volume: 0.45 }), // AUDIO-3a
+  // AUDIO-3g — loop: false so Howler's 'end' event fires; startBgmRotation's once('end') handler
+  // advances bgmRotationIdx and plays the next track. With loop: true (AUDIO-1/2/3a default)
+  // 'end' never fires, so rotation was dead — only greenwood ever played.
+  greenwood:    new Howl({ src: ['audio/greenwood.mp3'],    loop: false, volume: 0.45 }), // AUDIO-3a vol; AUDIO-3g loop
+  queen:        new Howl({ src: ['audio/queen.mp3'],        loop: false, volume: 0.45 }), // AUDIO-3a vol; AUDIO-3g loop
+  brown:        new Howl({ src: ['audio/brown.mp3'],        loop: false, volume: 0.45 }), // AUDIO-3a vol; AUDIO-3g loop
   free_world:   new Howl({ src: ['audio/free_world.mp3'],   loop: false, volume: 0.6 }),
   ave_maria:    new Howl({ src: ['audio/ave_maria.mp3'],    loop: false, volume: 0.7 }),
   nessun_dorma: new Howl({ src: ['audio/nessun_dorma.mp3'], loop: false, volume: 0.7 }),
