@@ -694,8 +694,39 @@ function ensureAudioContext() {
       }
     }
   }
+  // N-FIX-6 4.5 — iOS Safari has stricter Web Audio rules than desktop Chrome:
+  //   1. AudioContext must be CREATED inside a user-gesture handler (handled by callers).
+  //   2. resume() must be CALLED synchronously inside that same handler (this block).
+  //   3. resume() returns a Promise on modern browsers; ignoring it can leak rejections
+  //      and on some iOS versions the context never actually transitions to 'running'.
+  //   4. Some iOS versions need a "warm-up" silent oscillator scheduled inside the gesture
+  //      before subsequent scheduled audio is audible. The 0-volume blip below handles this.
+  // Desktop Chrome is forgiving on points 2-4. iOS Safari is not — without this block the
+  // context stays 'suspended' (or 'running' but mute) and YouTube works while our app is silent.
   if (audioContext && audioContext.state === 'suspended') {
-    try { audioContext.resume(); } catch (e) {}
+    try {
+      const result = audioContext.resume();
+      if (result && typeof result.then === 'function') {
+        // Modern browsers — Promise is returned. Swallow rejection so it doesn't surface
+        // as an Unhandled Promise Rejection in DevTools.
+        result.catch(() => { /* will retry on next gesture */ });
+      }
+    } catch (e) { /* old-style synchronous resume threw — ignore, retry next gesture */ }
+  }
+  // iOS Safari warm-up blip — schedules a brief silent oscillator inside the user gesture
+  // to fully unlock Web Audio. No-op on desktop where the resume above is sufficient. Gated
+  // on state === 'running' so we only fire it when the context is actually ready (avoiding
+  // the iOS race where 'suspended' → 'running' is async even after resume()).
+  if (audioContext && audioContext.state === 'running' && masterChannel) {
+    try {
+      const blipOsc  = audioContext.createOscillator();
+      const blipGain = audioContext.createGain();
+      blipGain.gain.value = 0;                            // silent — only purpose is to schedule SOMETHING
+      blipOsc.connect(blipGain);
+      blipGain.connect(masterChannel);
+      blipOsc.start(audioContext.currentTime);
+      blipOsc.stop(audioContext.currentTime + 0.01);
+    } catch (e) { /* blip failed; main audio path still works on most browsers */ }
   }
 }
 
@@ -751,20 +782,9 @@ function playYmcaNote(freq) {
 }
 
 function startYmca() {
-  // N-FIX-4 — AUDIO TRACE: log every entry, including early-return paths, so we can see why
-  // YMCA might fail to play during game-over-dance (Brian's field report: "ymca song didn't
-  // play when game was over"). audioContext null = no user gesture yet; ymcaSchedulerId
-  // non-null = already playing (re-entry during state transition).
-  if (typeof console !== 'undefined') {
-    if (!audioContext)              { console.log('AUDIO TRACE: startYmca early-return — no audioContext', { t: performance.now(), state }); return; }
-    if (ymcaSchedulerId !== null)   { console.log('AUDIO TRACE: startYmca early-return — already playing', { t: performance.now(), state }); return; }
-  } else {
-    if (!audioContext) return;
-    if (ymcaSchedulerId !== null) return;                        // already playing
-  }
+  if (!audioContext) return;
+  if (ymcaSchedulerId !== null) return;                          // already playing
   ymcaNoteIdx = 0;
-  // N-FIX-4 — AUDIO TRACE: first YMCA note actually scheduled.
-  if (typeof console !== 'undefined') console.log('AUDIO TRACE: playYmcaNote called', { t: performance.now(), state, dtjDanceState });
   playYmcaNote(YMCA_MELODY[ymcaNoteIdx]);
   ymcaNoteIdx = (ymcaNoteIdx + 1) % YMCA_MELODY.length;
   ymcaSchedulerId = setInterval(() => {
@@ -1242,7 +1262,6 @@ function _bgmScheduleMachoMan(t0) {
 function startMachoMan() {
   if (!audioContext || !bgmChannel) return;
   if (machoManActive) return;
-  if (typeof console !== 'undefined') console.log('AUDIO TRACE: startMachoMan called', { t: performance.now(), state, helpersCount: (typeof helpers !== 'undefined' ? helpers.length : 'n/a') });
   // Save BGM rotation position so we can resume from where we left off.
   bgmSavedSongIdx = bgmCurrentSongIdx;
   bgmSavedElapsed = audioContext.currentTime - bgmSongStartTime;
@@ -1260,11 +1279,16 @@ function startMachoMan() {
 
 function stopMachoMan() {
   if (!machoManActive) return;
-  if (typeof console !== 'undefined') console.log('AUDIO TRACE: stopMachoMan called', { t: performance.now(), state });
+  // N-FIX-6 BUG 3 — set machoManActive=false IMMEDIATELY at top, BEFORE the setTimeout.
+  // Old behavior set the flag inside the setTimeout, so during the 500ms fade window the
+  // flag stayed true and updateHelpers's frame check (`if (machoManActive && antifaCount===0)`)
+  // re-fired stopMachoMan ~30 times before the first setTimeout drained. Each call queued
+  // a duplicate fade-out + BGM re-schedule. With the flag flipped now, subsequent frames
+  // see machoManActive=false and skip the re-fire.
+  machoManActive = false;
   bgmFadeOut(0.5);
   setTimeout(() => {
     if (!audioContext || !bgmChannel) return;
-    machoManActive = false;
     // Resume BGM rotation from saved song idx. The per-song schedule fns assume t0 == song
     // start, so we restart the saved song from the top rather than try to splice into the
     // middle (would require past-time scheduling). User-perceived behavior: "the song
@@ -1298,11 +1322,19 @@ let nessunDormaScheduled    = false;
 // Hook (4 bars): E - D - G - F# repeated with kick/snare backbeat.
 // Plays once per INTRO_ESCALATOR scene (~12s). Self-stops.
 function playEscalatorMusic() {
-  // N-FIX-5 BUG 2 diagnostic — log every entry so we can see if audioContext is null at the
-  // call moment (the BUG 2 root cause: INTRO_BLACK auto-advance fired BEFORE first user
-  // gesture, audioContext was null, this function bailed silently).
-  if (typeof console !== 'undefined') console.log('AUDIO TRACE: playEscalatorMusic called, audioContext =', !!audioContext, 'state =', state, 'escalatorMusicScheduled =', escalatorMusicScheduled, 't =', performance.now());
-  if (!audioContext || !bgmChannel || escalatorMusicScheduled) return;
+  // N-FIX-6 BUG 2 — deferred retry. First-page-load race: if INTRO_BLACK→INTRO_TITLE auto-
+  // advance happens to fire on the same tick the user gestured, ensureAudioContext might
+  // not have completed channel-graph init by the time playEscalatorMusic runs. The
+  // audioContext exists but bgmChannel may be null for one frame, OR the context is in
+  // 'suspended' state with resume() pending. Rather than bail silently, defer 50ms and
+  // retry. Once audioContext + bgmChannel are both ready, schedule normally. Idempotency
+  // guard (escalatorMusicScheduled) prevents the retry from double-scheduling.
+  if (!audioContext || !bgmChannel) {
+    if (escalatorMusicScheduled) return;
+    setTimeout(playEscalatorMusic, 50);
+    return;
+  }
+  if (escalatorMusicScheduled) return;
   escalatorMusicScheduled = true;
   const t0 = audioContext.currentTime;
   const beat = 60 / 140;                                         // 0.4286s
@@ -1620,8 +1652,6 @@ function tickDtjDance(dt) {
       dtjDanceTrigger = false;
       const c1 = DTJ_DANCE_BUBBLE_CYCLE1_TEXTS[Math.floor(Math.random() * DTJ_DANCE_BUBBLE_CYCLE1_TEXTS.length)];
       spawnDanceBubble(c1);
-      // N-FIX-4 — AUDIO TRACE: dance actually triggered (200ms after capsule hit).
-      if (typeof console !== 'undefined') console.log('AUDIO TRACE: dance triggered', { t: performance.now(), dtjDanceState, dtjDanceCycles });
       startYmca();
       duckBGM();                                                  // N — duck BGM on dance start
     }
@@ -1637,7 +1667,18 @@ function tickDtjDance(dt) {
       dtjDanceState = 'IDLE';
       dtjDanceT = 0;
       stopYmca();
-      unduckBGM();                                                // N — restore BGM on dance end
+      // N-FIX-6 BUG 4 — single source of truth for BGM-restoration after death-dance.
+      // If we're returning from a death (bgmDeathMuted=true), clear the flag and ramp
+      // the channel back to 1.0. The respawn path no longer touches the channel — it
+      // stays muted from hit() through dance-end so YMCA owns the audio space cleanly.
+      // Otherwise (a hypothetical non-death dance, currently impossible since dance only
+      // fires on capsule-hit), fall through to the normal unduck.
+      if (bgmDeathMuted) {
+        bgmDeathMuted = false;
+        bgmFadeIn(0.2);
+      } else {
+        unduckBGM();                                              // N — restore BGM on dance end
+      }
     }
   }
   tickBubble(dt);
@@ -2419,13 +2460,6 @@ function hit(source, capsule) {
   // resetForGameOver / resetForLevelTransition.
   bgmDeathMuted = true;
   bgmFadeOut(0.1);
-  // N-FIX-4 — AUDIO TRACE: DEATH_REACTION entry (capsule hit moment).
-  if (typeof console !== 'undefined') console.log('AUDIO TRACE: DEATH_REACTION entered', { t: performance.now(), state, lives: player.lives });
-  // N-FIX-5 BUG 1 diagnostic — capture bgmChannel.gain.value RIGHT AFTER bgmFadeOut to verify
-  // the ramp scheduled. value is read post-cancelScheduledValues + setValueAtTime so it should
-  // be 1.0 (start of ramp). The ramp completes at t+0.1s. If the dance-duck overrides at +0.2s
-  // we'll see gain climb back to 0.5 in subsequent log entries.
-  if (typeof console !== 'undefined' && bgmChannel) console.log('AUDIO TRACE: bgmFadeOut called from hit, gain =', bgmChannel.gain.value, 't =', performance.now());
   // K — ragdollDebris is now a SHARED pool (player + Antifa). DON'T clear it on hit() — leftover
   // Antifa debris from prior splats keeps draining naturally. Burst flash is a one-frame state.
   ragdollBurstFlashT = 0;
@@ -5967,8 +6001,6 @@ function loop(ts) {
           // GAME_OVER transition (when dtjDanceState === 'IDLE' && !bubble.active).
           state = 'GAMEOVER_PENDING';
           stateT = 0;
-          // N-FIX-4 — AUDIO TRACE: GAMEOVER_PENDING entered (after 3rd life lost, before dance ends).
-          if (typeof console !== 'undefined') console.log('AUDIO TRACE: GAMEOVER_PENDING entered', { t: performance.now() });
         } else {
           // L — score PERSISTS across respawn (lives already decremented). Multiplier and
           // briefcase reset (streak loss penalty). Capsules cleared for clean restart.
@@ -5976,8 +6008,11 @@ function loop(ts) {
           // continue across the respawn (funny). Platforms-reached re-seeded inside the helper.
           resetForRespawn();
           playSfx_respawn();                                   // N — ready ding on respawn
-          bgmDeathMuted = false;                               // N-FIX-5 — clear before fade-in so tickDtjDance unduck (if dance is still active) can run normally
-          bgmFadeIn(0.2);                                      // N-FIX-4 — un-mute BGM rotation (was 0 from DEATH_REACTION entry)
+          // N-FIX-6 BUG 4 — DON'T unmute BGM at respawn. The dance is still running for
+          // ~2s more (cycles=1 → 3.0s total, dance started 1.0s before respawn). Unmuting
+          // here caused BGM + YMCA to overlap audibly during the post-respawn dance phase.
+          // bgmDeathMuted stays true; tickDtjDance dance-end branch handles the unmute when
+          // the dance actually finishes (single source of truth for BGM-restoration timing).
           state = 'GAMEPLAY';
           stateT = 0;
         }
@@ -5999,7 +6034,13 @@ function loop(ts) {
       updatePelosi(dt);
       updateSS(dt);
       drawGameplay(false);
-      if (dtjDanceState === 'IDLE' && !bubble.active) {
+      // N-FIX-6 BUG 1 — minimum-duration gate. Math check: dance starts at hit+0.2s during
+      // DEATH_REACTION; DEATH_REACTION ends at hit+1.2s = PENDING entry; dance ends at
+      // hit+0.2+(3.0*2)=6.2s = PENDING+5.0s. With this gate, PENDING runs at least 6.0s
+      // so the YMCA tail has time to fully decay before the GAME_OVER overlay appears.
+      // Belt-and-suspenders against any future dance-state-machine bug that might end the
+      // dance early (dtjDanceState flips to IDLE prematurely).
+      if (stateT >= 6.0 && dtjDanceState === 'IDLE' && !bubble.active) {
         if (highScoreNew) {
           initialsEntryActive = true;
           initialsCursor      = 0;
@@ -6015,8 +6056,6 @@ function loop(ts) {
         playSfx_gameOver();                                       // N — sad horn on overlay reveal
         state = 'GAME_OVER';
         stateT = 0;
-        // N-FIX-4 — AUDIO TRACE: GAME_OVER entered (overlay reveal moment, after dance + bubble drained).
-        if (typeof console !== 'undefined') console.log('AUDIO TRACE: GAME_OVER entered', { t: performance.now() });
       }
       break;
     }
