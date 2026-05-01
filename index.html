@@ -1174,6 +1174,18 @@ function startBgmRotation() {
   sound.fade(0, targetVol, 200);
   currentlyPlayingSound = songKey;
   sound.once('end', () => {
+    // AUDIO-3-SIMPLIFY — belt-and-suspenders guard. If somehow a song hits 'end' while
+    // PAUSED (CHANGE 1's togglePause should have prevented this by .pause()-ing the Howl
+    // before it could reach end), refuse to advance rotation. Otherwise the silent
+    // background-advance corrupts currentMusic vs Howl sync. Log so we can see if it ever
+    // fires post-CHANGE-1 (would indicate an unanticipated path).
+    if (state === 'PAUSED') {
+      console.log('[BGM:end-blocked-paused]', {
+        endedSong: BGM_ROTATION_SONGS[bgmRotationIdx],
+        t: performance.now().toFixed(0),
+      });
+      return;
+    }
     // AUDIO-BUGHUNT-1 LOG POINT 2a — fires when a rotation song reaches its natural end.
     // Captures which song ended, current state/music, and what the next rotation pick will
     // be. If this never logs when a song ends, the 'end' event chain is broken (e.g. .pause()
@@ -1330,6 +1342,22 @@ function isPausableState() {
 
 function togglePause() {
   if (state === 'PAUSED') {
+    // AUDIO-3-SIMPLIFY — leaving PAUSED. Resume the active rotation Howl (matching
+    // bgmRotationIdx if currentMusic === BGM_ROTATION) and YMCA (if currentMusic === YMCA).
+    // Howler's .play() on a paused Howl resumes from the paused seek position automatically.
+    if (typeof SOUND_LIBRARY !== 'undefined') {
+      const activeRotationSong = BGM_ROTATION_SONGS[bgmRotationIdx];
+      for (const songName of BGM_ROTATION_SONGS) {
+        const sound = SOUND_LIBRARY[songName];
+        if (sound && songName === activeRotationSong &&
+            currentMusic === MUSIC_STATES.BGM_ROTATION) {
+          sound.play();
+        }
+      }
+      if (SOUND_LIBRARY.ymca && currentMusic === MUSIC_STATES.YMCA) {
+        SOUND_LIBRARY.ymca.play();
+      }
+    }
     state = lastGameplayState;
     stateT = 0;
     playSfx_pauseToggle();
@@ -1338,6 +1366,21 @@ function togglePause() {
     state = 'PAUSED';
     stateT = 0;
     playSfx_pauseToggle();
+    // AUDIO-3-SIMPLIFY — entering PAUSED. Stop the playback head on every rotation Howl
+    // and YMCA. Without this, songs continue playing inaudibly via Howler.mute (or just
+    // continue period if mute isn't set), reach their natural end during pause, and the
+    // once('end') handler advances rotation silently — corrupting currentMusic vs Howl
+    // sync. AUDIO-BUGHUNT-1 logs showed 8+ silent handoffs during a single 3-min pause.
+    // .pause() (not .stop()) preserves seek so unpause resumes from the same spot.
+    if (typeof SOUND_LIBRARY !== 'undefined') {
+      for (const songName of BGM_ROTATION_SONGS) {
+        const sound = SOUND_LIBRARY[songName];
+        if (sound && sound.playing()) sound.pause();
+      }
+      if (SOUND_LIBRARY.ymca && SOUND_LIBRARY.ymca.playing()) {
+        SOUND_LIBRARY.ymca.pause();
+      }
+    }
   }
 }
 
@@ -2422,6 +2465,11 @@ function resetForGameOver() {
   _resetEntitiesAndPerLevel();
   // AUDIO-1 — state-driven: state→INTRO_BLACK maps to ESCALATOR (audible after first user
   // gesture unlocks Howler's audio context). No flag reset needed (bgmDeathMuted gone).
+  // AUDIO-3-SIMPLIFY — reset rotation idx so Level 1 of the new game always starts on
+  // greenwood. AUDIO-3e Fix A advances idx on each level transition; over the course of a
+  // multi-level game it can land anywhere. On game-over → restart, snap back to the intended
+  // Level 1 = greenwood baseline.
+  bgmRotationIdx = 0;
   state  = 'INTRO_BLACK';
   stateT = 0;
 }
