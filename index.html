@@ -770,6 +770,23 @@ function ensureAudioContext() {
       blip2.stop(audioContext.currentTime + 0.05);
     } catch (e) { /* blip failed; main audio path still works on most browsers */ }
   }
+  // AUDIO-3e RESIDUAL Fix 2 — force Howler's full _unlockAudio flow by playing a Howl
+  // synchronously inside this user-gesture handler. The earlier ctx.resume() call (Fix C)
+  // unblocks the Web Audio context but does NOT trip Howler's _autoUnlocked flag or flush
+  // its _suspendQueue of pending plays. Without that flag, any subsequent Howl.play() gets
+  // queued and never executes until something else triggers Howler's internal unlock
+  // listener. Calling .play() on an existing Howl here runs Howler's full play pipeline,
+  // including the unlock + queue flush. We immediately mute and stop the playing instance
+  // so it produces no audible sound — the side effect (unlock) is the entire point.
+  if (typeof Howler !== 'undefined' && Howler.ctx && Howler.ctx.state === 'running' &&
+      typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.greenwood) {
+    try {
+      const ws = SOUND_LIBRARY.greenwood;
+      const id = ws.play();
+      ws.volume(0, id);
+      ws.stop(id);
+    } catch (e) { /* unlock failed; rely on Fix 1 gate to retry next gesture */ }
+  }
 }
 
 // AUDIO-1 — toggle master audio. Mutes BOTH Howler (music playback) AND the SFX channel
@@ -1144,8 +1161,19 @@ function startBgmRotation() {
 // if needed via transitionToMusic. Howler manages its own audio context internally and
 // handles cross-browser unlock; no per-frame note scheduling needed. PAUSED bails so music
 // doesn't switch during pause.
+// AUDIO-3e RESIDUAL Fix 1 — gate on Howler.ctx.state. If Howler is still suspended (because
+// the user gesture's resume() promise hasn't resolved yet, or because Howler's own auto-
+// unlock listener hasn't fired), bail without issuing any Howl.play() call. Otherwise
+// transitionToMusic→Howl.play() fires while Howler.ctx is suspended; Howler queues the play
+// internally but only flushes the queue when its OWN _unlockAudio runs. Bypassing that flow
+// (which Fix C did via direct ctx.resume) leaves the queued plays stranded — net effect was
+// "music silent until first death" because some later user gesture finally tripped Howler's
+// internal unlock. With this gate, no plays fire until Howler is fully ready.
 function tickBGM() {
   if (state === 'PAUSED') return;
+  if (typeof Howler !== 'undefined' && Howler.ctx && Howler.ctx.state !== 'running') {
+    return;
+  }
   const desired = computeDesiredMusic();
   if (desired !== currentMusic) {
     transitionToMusic(desired);
