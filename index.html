@@ -11,6 +11,12 @@
      padding artifact on launch. -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<!-- N-FIX-9 — eruda mobile console for iPhone Safari diagnostics. Drops a small floating
+     button on screen that opens an in-page DevTools console. Captures all console.log output
+     including the AUDIO IOS DIAG / PENDING TICK / PRESSED-KEY DIAG / TOGGLE-AUDIO DIAG /
+     TOUCH DIAG lines. TEMPORARY — remove in N-FIX-10 once iPhone audio confirmed working. -->
+<script src="https://cdn.jsdelivr.net/npm/eruda"></script>
+<script>eruda.init();</script>
 <title>DNC vs DJT</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -777,6 +783,17 @@ function toggleAudio() {
   if (masterChannel) masterChannel.gain.value = audioOn ? 1.0 : 0.0;
   try { localStorage.setItem(AUDIO_ON_KEY, String(audioOn)); } catch (e) {}
   if (audioOn) playSfx_pauseToggle();                            // feedback chirp on enable
+  // N-FIX-9 diagnostic — TEMPORARY. Logs the audio state right after toggle so Brian can
+  // compare against PRESSED-KEY DIAG. Hypothesis: M-toggle's playSfx_pauseToggle scheduling
+  // an audible (gain>0) oscillator unlocks Chrome's audio output, while ensureAudioContext's
+  // silent (gain=0) warm-up blip doesn't count. Removed in N-FIX-10.
+  if (typeof console !== 'undefined') {
+    console.log('TOGGLE-AUDIO DIAG:',
+      'audioContextState =', audioContext ? audioContext.state : 'null',
+      'masterGain =', masterChannel ? masterChannel.gain.value : 'null',
+      'audioOn =', audioOn,
+      'currentTime =', audioContext ? audioContext.currentTime : 'null');
+  }
 }
 
 // L — YMCA synth. 130 BPM descending arpeggio (E5, D5, C5, G4) per locked spec. Each note:
@@ -1840,6 +1857,16 @@ window.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (GAME_KEYS.has(e.code)) e.preventDefault();
   ensureAudioContext();                                          // L — first-input audio gate (PC keyboard path)
+  // N-FIX-9 diagnostic — TEMPORARY. Logs every keydown so Brian can capture the
+  // audioContext state + master gain immediately after ensureAudioContext fires. Removed
+  // in N-FIX-10. Helps diagnose the "PC silent until M-toggle cycle" bug.
+  if (typeof console !== 'undefined') {
+    console.log('PRESSED-KEY DIAG:',
+      'audioContextState =', audioContext ? audioContext.state : 'null',
+      'masterGain =', masterChannel ? masterChannel.gain.value : 'null',
+      'audioOn =', audioOn,
+      'currentTime =', audioContext ? audioContext.currentTime : 'null');
+  }
   // N — global audio toggle (M-key). Works in any state.
   if (e.code === 'KeyM') { toggleAudio(); return; }
   // N — pause toggle (P-key, Escape). togglePause internally gates on isPausableState().
@@ -4726,6 +4753,26 @@ canvas.addEventListener('touchstart', e=>{
     const t0N = e.changedTouches[0];
     if (t0N) {
       const txN = (t0N.clientX - r0.left) / scale, tyN = (t0N.clientY - r0.top) / scale;
+      // N-FIX-9 diagnostic — TEMPORARY. Logs raw touch coords + scaled canvas-space coords +
+      // icon hit-box positions so Brian can see whether iPhone touches register at all and
+      // whether the scale transform lands inside the SPEAKER_BOX / PAUSE_BOX regions.
+      // Removed in N-FIX-10.
+      if (typeof console !== 'undefined') {
+        console.log('TOUCH DIAG:',
+          'touchX =', t0N.clientX,
+          'touchY =', t0N.clientY,
+          'rectLeft =', r0.left,
+          'rectTop =', r0.top,
+          'scale =', scale,
+          'canvasW =', canvas.width,
+          'canvasClientW =', canvas.clientWidth,
+          'scaledX =', txN.toFixed(1),
+          'scaledY =', tyN.toFixed(1),
+          'speakerBox =', SPEAKER_BOX,
+          'pauseBox =', PAUSE_BOX,
+          'speakerHit =', pointInIconBox(txN, tyN, SPEAKER_BOX),
+          'pauseHit =', pointInIconBox(txN, tyN, PAUSE_BOX));
+      }
       if (pointInIconBox(txN, tyN, SPEAKER_BOX)) { toggleAudio(); return; }
       if (pointInIconBox(txN, tyN, PAUSE_BOX))   { togglePause(); return; }
     }
@@ -6082,6 +6129,15 @@ function loop(ts) {
           state = 'GAMEOVER_PENDING';
           stateT = 0;
           gameOverPendingT = 0;        // N-FIX-8 — dedicated PENDING timer; floor of 6.0s before GAME_OVER fires
+          // N-FIX-9 diagnostic — TEMPORARY. Logs the moment PENDING is entered with current
+          // dance state. Removed in N-FIX-10 once gate behavior is confirmed.
+          if (typeof console !== 'undefined') {
+            console.log('PENDING ENTERED at frame', performance.now().toFixed(0),
+              'dtjDanceState =', dtjDanceState,
+              'dtjDanceCycles =', dtjDanceCycles,
+              'dtjDanceT =', dtjDanceT.toFixed(3),
+              'lives =', player.lives);
+          }
         } else {
           // L — score PERSISTS across respawn (lives already decremented). Multiplier and
           // briefcase reset (streak loss penalty). Capsules cleared for clean restart.
@@ -6123,6 +6179,16 @@ function loop(ts) {
       // giving the dance a full second of post-IDLE buffer for YMCA tail to fully decay
       // before the GAME_OVER overlay covers the dance.
       gameOverPendingT += dt;
+      // N-FIX-9 diagnostic — TEMPORARY. Logs every frame inside PENDING so Brian can see if
+      // the gate is incrementing correctly and which condition trips first. Removed in N-FIX-10.
+      if (typeof console !== 'undefined') {
+        console.log('PENDING TICK:',
+          'gameOverPendingT =', gameOverPendingT.toFixed(3),
+          'dt =', dt.toFixed(4),
+          'dtjDanceState =', dtjDanceState,
+          'bubble.active =', bubble.active,
+          'willTransition =', (gameOverPendingT >= 6.0 && dtjDanceState === 'IDLE' && !bubble.active));
+      }
       if (gameOverPendingT >= 6.0 && dtjDanceState === 'IDLE' && !bubble.active) {
         if (highScoreNew) {
           initialsEntryActive = true;
