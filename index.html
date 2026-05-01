@@ -710,7 +710,7 @@ window.addEventListener('keydown', e => {
   // I1 — cutscene states route through cutsceneAdvance (which honors per-state rules).
   // WIN_FREEZE eats input (still in pause). Intro states bounce to GAMEPLAY via skipToGame.
   // J — DEATH_REACTION eats input. GAME_OVER tap = restartFromGameOver — full reset.
-  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_REACTION') return;
+  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_REACTION' || state === 'GAMEOVER_PENDING') return;
   // K — INITIALS_ENTRY input intercept (must precede GAME_OVER tap-to-restart).
   // K-FIX-4 — cycle extended to A-Z + ' '. Spacebar rerouted from confirm to set-space.
   //   ArrowUp / W       → cycle current letter forward (A→B→...→Z→' '→A)
@@ -3471,7 +3471,7 @@ canvas.addEventListener('pointerdown', e => {
   // WIN_FREEZE / CUTSCENE_FADE_IN eat input; intro states skipToGame; GAMEPLAY = normal.
   // J — DEATH_REACTION eats input. GAME_OVER tap = restartFromGameOver (full reset).
   // K — INITIALS_ENTRY routes tap through handleInitialsTap before any restart logic.
-  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_REACTION') return;
+  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_REACTION' || state === 'GAMEOVER_PENDING') return;
   if (state === 'GAME_OVER' && initialsEntryActive) {
     const r2=canvas.getBoundingClientRect();
     const tx2=(e.clientX-r2.left)/scale, ty2=(e.clientY-r2.top)/scale;
@@ -3513,7 +3513,7 @@ canvas.addEventListener('touchstart', e=>{
   // WIN_FREEZE / CUTSCENE_FADE_IN eat input; intro states skipToGame; GAMEPLAY = normal.
   // J — DEATH_REACTION eats input. GAME_OVER tap = restartFromGameOver (full reset).
   // K — INITIALS_ENTRY routes tap through handleInitialsTap.
-  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_REACTION') return;
+  if (state === 'WIN_FREEZE' || state === 'CUTSCENE_FADE_IN' || state === 'DEATH_REACTION' || state === 'GAMEOVER_PENDING') return;
   if (state === 'GAME_OVER' && initialsEntryActive) {
     const r3=canvas.getBoundingClientRect();
     const t0=e.changedTouches[0];
@@ -3826,22 +3826,30 @@ function drawScoreBreakdown(opts) {
       ctx.textAlign = 'center';
       ctx.fillText('TOP 5', W/2, y);
       y += 16;
-      // L — column-aligned monospace rows. padStart on rank (2 chars) and score (6 chars),
-      // padEnd on initials (3 chars, raw spaces preserved — list context, no underscoring).
-      // Render all rows centered on W/2 with the SAME monospace font so column positions line
-      // up across rows. Pre-L rendered " 1. BA  4325" with manual concatenation; the score
-      // column drifted right when initials had different trailing-space counts.
+      // L-FIX-1 — column-aligned via THREE fillText calls per row at fixed canvas-pixel x
+      // positions, NOT via padStart/padEnd string concatenation. The pre-L-FIX-1 approach
+      // assumed monospace font but the deployed canvas font wasn't reliably monospace, so
+      // padding via spaces drifted. Now: rank LEFT-aligned at LB_RANK_X, initials LEFT-aligned
+      // at LB_INITIALS_X, score RIGHT-aligned at LB_SCORE_X. Column positions are
+      // canvas-pixel exact regardless of font metrics or initials whitespace.
+      const LB_ROW_W       = 240;                          // visual width of leaderboard column
+      const LB_LEFT        = (W - LB_ROW_W) / 2;           // = 120; centers the column
+      const LB_RANK_X      = LB_LEFT + 0;                  // left edge for "1."
+      const LB_INITIALS_X  = LB_LEFT + 50;                 // left edge for initials
+      const LB_SCORE_X     = LB_LEFT + LB_ROW_W;           // right edge for score
       ctx.font = '14px monospace';
-      ctx.textAlign = 'center';
       for (let i = 0; i < board.length; i++) {
         const e = board[i];
         ctx.fillStyle = (i === 0) ? '#ffcc00' : '#dddddd';
-        const rankStr  = String(i + 1).padStart(2, ' ') + '. ';     // ' 1. ' or '10. '
-        const iniStr   = e.initials.padEnd(3, ' ');                 // exactly 3 chars
-        const scoreStr = String(Math.floor(e.score)).padStart(6, ' '); // ' 12235' or '  8141'
-        ctx.fillText(rankStr + iniStr + ' ' + scoreStr, W/2, y);
+        ctx.textAlign = 'left';
+        ctx.fillText((i + 1) + '.', LB_RANK_X, y);
+        ctx.textAlign = 'left';
+        ctx.fillText(e.initials, LB_INITIALS_X, y);
+        ctx.textAlign = 'right';
+        ctx.fillText(String(Math.floor(e.score)), LB_SCORE_X, y);
         y += 18;
       }
+      ctx.textAlign = 'left';                              // restore default
     }
   }
 
@@ -3919,6 +3927,10 @@ function drawHUD() {
 // ─────────────────────────────────────────────
 //  SPEECH BUBBLE
 // ─────────────────────────────────────────────
+// Existing intro/cutscene bubble — used by INTRO_TAUNT (FAKE NEWS! over DTJ on the rooftop).
+// Renders ABOVE a position with downward tail. Block L's dance bubble was originally calling
+// this with y=TOP.y-110=30 which placed it BEHIND the news ticker. L-FIX-1 routes dance/taunt
+// in-game bubbles through drawSideBandBubble below; this function is unchanged for INTRO_TAUNT.
 function drawBubble(x, y, text, alpha) {
   ctx.save(); ctx.globalAlpha = alpha;
   const pw=180, ph=48, px=x-pw/2, py=y-ph-20;
@@ -3929,6 +3941,78 @@ function drawBubble(x, y, text, alpha) {
   ctx.fill(); ctx.stroke();
   ctx.fillStyle='#cc0000'; ctx.font='bold 15px monospace'; ctx.textAlign='center';
   ctx.fillText(text, x, py+22);
+  ctx.restore();
+}
+
+// L-FIX-1 — in-game bubble for DTJ dance + (future) Block M taunt. Fixed position in the
+// right-side empty band between the news ticker bottom (y=18) and the TOP platform (y=140),
+// between the static barrel area and the canvas right edge. Tail points LEFT toward DTJ on TOP.
+// Word-wrapped, multi-line, larger font than the HUD/ticker so the gag reads at a glance.
+const SIDE_BUBBLE_X       = 300;                          // left edge
+const SIDE_BUBBLE_Y       = 50;                           // top edge (below ticker @ y=18)
+const SIDE_BUBBLE_W       = 170;
+const SIDE_BUBBLE_H_MAX   = 90;                           // visual cap; actual height shrinks if fewer lines
+const SIDE_BUBBLE_PAD     = 10;
+const SIDE_BUBBLE_LINE_H  = 18;
+const SIDE_BUBBLE_FONT    = 'bold 14px sans-serif';
+const SIDE_BUBBLE_MAX_LINES = 3;                          // wrap cap
+
+function wrapBubbleText(text, maxWidth) {
+  ctx.font = SIDE_BUBBLE_FONT;
+  const words = text.split(' ');
+  const lines = [];
+  let current = '';
+  for (const word of words) {
+    if (lines.length >= SIDE_BUBBLE_MAX_LINES) break;
+    const test = current ? current + ' ' + word : word;
+    if (ctx.measureText(test).width > maxWidth) {
+      if (current) lines.push(current);
+      current = word;
+    } else {
+      current = test;
+    }
+  }
+  if (current && lines.length < SIDE_BUBBLE_MAX_LINES) lines.push(current);
+  return lines;
+}
+
+function drawSideBandBubble(text, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  // Wrap text to fit inside (width - 2*pad).
+  const innerW = SIDE_BUBBLE_W - 2 * SIDE_BUBBLE_PAD;
+  const lines = wrapBubbleText(text, innerW);
+  const usedH = Math.min(SIDE_BUBBLE_H_MAX,
+                         SIDE_BUBBLE_PAD * 2 + lines.length * SIDE_BUBBLE_LINE_H);
+  const px = SIDE_BUBBLE_X;
+  const py = SIDE_BUBBLE_Y;
+  const pw = SIDE_BUBBLE_W;
+  const ph = usedH;
+  // Bubble body
+  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = '#cc0000';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.roundRect(px, py, pw, ph, 10); ctx.fill(); ctx.stroke();
+  // Tail — small triangle on LEFT edge at vertical mid-bubble, pointing LEFT toward DTJ.
+  const tailY = py + ph / 2;
+  ctx.beginPath();
+  ctx.moveTo(px,         tailY - 8);
+  ctx.lineTo(px - 14,    tailY);
+  ctx.lineTo(px,         tailY + 8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  // Text — dark red on white, centered horizontally within the bubble, stacked vertically.
+  ctx.fillStyle = '#cc0000';
+  ctx.font = SIDE_BUBBLE_FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  let ty = py + SIDE_BUBBLE_PAD;
+  for (const line of lines) {
+    ctx.fillText(line, px + pw / 2, ty);
+    ty += SIDE_BUBBLE_LINE_H;
+  }
+  ctx.textBaseline = 'alphabetic';
   ctx.restore();
 }
 
@@ -4152,14 +4236,16 @@ function drawGameplay(shake) {
     const tWithinCycle = dtjDanceT % DTJ_DANCE_CYCLE_DURATION;
     const danceSprite  = getDtjDancePose(tWithinCycle);
     drawSprite(danceSprite, DTJ_GAMEPLAY_X, TOP.y, 110, false, 1.0);
-    // L — dance speech bubble (LOSER!/SAD! cycle 1, GREATEST WIN EVER! cycle 2). Drawn just
-    // above DTJ's head. Hold 1.5s + fade 0.5s.
+    // L — dance speech bubble (LOSER!/SAD! cycle 1, GREATEST WIN EVER! cycle 2).
+    // L-FIX-1 — routed through drawSideBandBubble (right-side empty band, x=300/y=50). Block L
+    // had this calling drawBubble at y=TOP.y-110=30 which placed the bubble BEHIND the news
+    // ticker (ticker bottom at y=18, original bubble top at y=-38 — completely off-canvas).
     if (danceBubble.active) {
       const fadeStart = DTJ_DANCE_BUBBLE_HOLD;
       const alpha = danceBubble.t < fadeStart
         ? 1
         : Math.max(0, 1 - (danceBubble.t - fadeStart) / DTJ_DANCE_BUBBLE_FADE);
-      drawBubble(DTJ_GAMEPLAY_X, TOP.y - 110, danceBubble.text, alpha);
+      drawSideBandBubble(danceBubble.text, alpha);
     }
   } else if (dtjAnimState === 'IDLE') {
     drawSprite('dtj_idle', DTJ_GAMEPLAY_X, TOP.y, 110, false, 1.0);
@@ -4177,7 +4263,11 @@ function drawGameplay(shake) {
   // Player character (DNC). J — death reaction overrides normal render:
   //   phase1 → render rotated about body center (deathRotation accumulates at 720°/s)
   //   phase2 → suppress player render entirely; debris IS the player visual now
-  if (state === 'DEATH_REACTION' && deathPhase === 'phase2') {
+  if (state === 'GAMEOVER_PENDING') {
+    // L-FIX-1 — player is dead; world keeps running underneath the DTJ dance. Suppress
+    // player render entirely (debris already drained by the time we enter GAMEOVER_PENDING
+    // from DEATH_REACTION end).
+  } else if (state === 'DEATH_REACTION' && deathPhase === 'phase2') {
     // No-op — debris draw happens in the DEATH_REACTION state case after drawGameplay.
   } else if (state === 'DEATH_REACTION' && deathPhase === 'phase1') {
     ctx.save();
@@ -4727,22 +4817,15 @@ function loop(ts) {
         if (player.lives <= 0) {
           // Capture final score for the GAME_OVER overlay total + initials-entry trigger.
           gameOverFinalScore = playerScore;
-          // K-FIX-5 — initials entry trigger replaced. Was: wasNewHigh OR wasFirstScore (top-1
-          // model). Now: scoreMakesTop5(playerScore) (top-5 leaderboard model). highScoreNew is
-          // repurposed: now true if the score qualified for the leaderboard (drives the green
-          // 'NEW HIGH SCORE!' line in drawScoreBreakdown). Actual leaderboard insertion happens
-          // inside submitInitialsEntry after the player picks their initials, NOT here — so a
-          // qualifying score that the player abandons (refresh mid-entry) is NOT persisted.
+          // K-FIX-5 — highScoreNew computed now (snapshot at game-over moment). Used by
+          // drawScoreBreakdown to draw the green 'NEW HIGH SCORE!' line. Insertion deferred
+          // to submitInitialsEntry after the player enters their initials.
           highScoreNew = scoreMakesTop5(playerScore);
-          if (highScoreNew) {
-            initialsEntryActive = true;
-            initialsCursor      = 0;
-            initialsLetters[0]  = 'A';
-            initialsLetters[1]  = 'A';
-            initialsLetters[2]  = 'A';
-            initialsConfirmedT  = 0;
-          }
-          state = 'GAME_OVER';
+          // L-FIX-1 — was: state='GAME_OVER' immediately + trigger initials entry here.
+          // Now: state='GAMEOVER_PENDING' so the DTJ dance + bubbles play in full before the
+          // overlay covers them. Initials-entry trigger MOVED to the GAMEOVER_PENDING →
+          // GAME_OVER transition (when dtjDanceState === 'IDLE' && !danceBubble.active).
+          state = 'GAMEOVER_PENDING';
           stateT = 0;
         } else {
           // L — score PERSISTS across respawn (lives already decremented). Multiplier and
@@ -4753,6 +4836,35 @@ function loop(ts) {
           state = 'GAMEPLAY';
           stateT = 0;
         }
+      }
+      break;
+    }
+
+    // L-FIX-1 — GAMEOVER_PENDING: wait for DTJ dance + bubble to finish before showing the
+    // GAME_OVER overlay. Player is dead (drawGameplay's player-render block checks for this
+    // state and suppresses the player). World keeps living: capsules/helpers/Pelosi/SS keep
+    // ticking so mid-action chaos plays out underneath the dance. Transition to GAME_OVER
+    // when both dtjDanceState === 'IDLE' AND !danceBubble.active. Initials-entry trigger
+    // moved here from DEATH_REACTION end so it fires at the moment the overlay actually
+    // appears (and not during the dance).
+    case 'GAMEOVER_PENDING': {
+      updateCapsules(dt);
+      updatePickup(dt);
+      updateHelpers(dt);
+      updatePelosi(dt);
+      updateSS(dt);
+      drawGameplay(false);
+      if (dtjDanceState === 'IDLE' && !danceBubble.active) {
+        if (highScoreNew) {
+          initialsEntryActive = true;
+          initialsCursor      = 0;
+          initialsLetters[0]  = 'A';
+          initialsLetters[1]  = 'A';
+          initialsLetters[2]  = 'A';
+          initialsConfirmedT  = 0;
+        }
+        state = 'GAME_OVER';
+        stateT = 0;
       }
       break;
     }
