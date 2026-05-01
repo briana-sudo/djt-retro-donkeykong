@@ -1237,7 +1237,7 @@ function tickDtjDance(dt) {
     if (dtjDanceTriggerT <= 0) {
       dtjDanceState  = 'DANCING';
       dtjDanceT      = 0;
-      dtjDanceCycles = (player.lives > 1) ? 1 : 2;
+      dtjDanceCycles = (player.lives > 1) ? 1 : 3;     // AUDIO-3c — game-over dance bumped 2 → 3 cycles (6s → 9s) for full YMCA hook
       dtjDanceTrigger = false;
       const c1 = DTJ_DANCE_BUBBLE_CYCLE1_TEXTS[Math.floor(Math.random() * DTJ_DANCE_BUBBLE_CYCLE1_TEXTS.length)];
       spawnDanceBubble(c1);
@@ -1249,8 +1249,16 @@ function tickDtjDance(dt) {
   if (dtjDanceState === 'DANCING') {
     const prevT = dtjDanceT;
     dtjDanceT += dt;
-    if (dtjDanceCycles === 2 && prevT < DTJ_DANCE_CYCLE_DURATION && dtjDanceT >= DTJ_DANCE_CYCLE_DURATION) {
-      spawnDanceBubble(DTJ_DANCE_BUBBLE_CYCLE2_TEXT);
+    // AUDIO-3c — fire the "GREATEST WIN EVER!" bubble at the START of the LAST cycle,
+    // generically. (dtjDanceCycles - 1) * DTJ_DANCE_CYCLE_DURATION = the t-boundary of the
+    // last cycle. For cycles=2 (legacy 6s dance) this is 3.0s; for cycles=3 (new 9s game-over
+    // dance) this is 6.0s. Old code hardcoded === 2 with t-boundary at 3.0s, which would
+    // have skipped the bubble entirely on cycles=3.
+    if (dtjDanceCycles >= 2) {
+      const lastCycleStart = (dtjDanceCycles - 1) * DTJ_DANCE_CYCLE_DURATION;
+      if (prevT < lastCycleStart && dtjDanceT >= lastCycleStart) {
+        spawnDanceBubble(DTJ_DANCE_BUBBLE_CYCLE2_TEXT);
+      }
     }
     const totalDuration = DTJ_DANCE_CYCLE_DURATION * dtjDanceCycles;
     if (dtjDanceT >= totalDuration) {
@@ -5604,7 +5612,7 @@ function loop(ts) {
       // giving the dance a full second of post-IDLE buffer for YMCA tail to fully decay
       // before the GAME_OVER overlay covers the dance.
       gameOverPendingT += dt;
-      if (gameOverPendingT >= 6.0 && dtjDanceState === 'IDLE' && !bubble.active) {
+      if (gameOverPendingT >= 9.0 && dtjDanceState === 'IDLE' && !bubble.active) {     // AUDIO-3c — gate raised 6.0 → 9.0 to match the new 9s game-over dance (3 cycles × 3.0s)
         if (highScoreNew) {
           initialsEntryActive = true;
           initialsCursor      = 0;
