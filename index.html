@@ -48,7 +48,9 @@ window.bgmLogBuffer    = [];
 window.bgmLogBufferMax = 500;
 const _origConsoleLog  = console.log;
 console.log = function() {
-  if (arguments.length > 0 && typeof arguments[0] === 'string' && arguments[0].indexOf('[BGM:') === 0) {
+  // PAUSE-DIAG — also capture [PAUSE-DIAG] prefix so DUMP LOGS picks up the diagnostic
+  // output added to pointerdown / touchstart / togglePause for iPhone pause-button trace.
+  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0)) {
     window.bgmLogBuffer.push({
       prefix: arguments[0],
       data:   arguments.length > 1 ? arguments[1] : null,
@@ -1477,6 +1479,9 @@ function isPausableState() {
 }
 
 function togglePause() {
+  // PAUSE-DIAG — entry log. If togglePause is reached but state isn't 'GAMEPLAY' or 'PAUSED',
+  // both branches no-op silently — that's the suspected mobile failure mode.
+  console.log('[PAUSE-DIAG] togglePause-entry', { stateBefore: state, isPausableState: isPausableState() });
   if (state === 'PAUSED') {
     // AUDIO-3-SIMPLIFY — leaving PAUSED. Resume the active rotation Howl (matching
     // bgmRotationIdx if currentMusic === BGM_ROTATION) and YMCA (if currentMusic === YMCA).
@@ -1518,6 +1523,9 @@ function togglePause() {
       }
     }
   }
+  // PAUSE-DIAG — exit log. Compare stateAfter with stateBefore from the entry log to
+  // confirm whether either branch actually mutated state, or both no-op'd silently.
+  console.log('[PAUSE-DIAG] togglePause-exit', { stateAfter: state });
 }
 
 function drawPauseOverlay() {
@@ -4804,6 +4812,12 @@ canvas.addEventListener('pointerdown', e => {
   {
     const rN = canvas.getBoundingClientRect();
     const txN = (e.clientX - rN.left) / scale, tyN = (e.clientY - rN.top) / scale;
+    // PAUSE-DIAG — log every pointerdown that reaches the icon hit-test block. Includes
+    // canvas-pixel coords + IS_MOBILE + the live PAUSE_HIT_BOX dimensions for math sanity.
+    console.log('[PAUSE-DIAG] pointerdown-fired', {
+      x: txN.toFixed(1), y: tyN.toFixed(1), isMobile: IS_MOBILE, state: state,
+      pauseHitBox: { x: PAUSE_HIT_BOX.x, y: PAUSE_HIT_BOX.y, w: PAUSE_HIT_BOX.w, h: PAUSE_HIT_BOX.h },
+    });
     // AUDIO-3-LOG-DUMP — DUMP LOGS button hit-test. Only active when the button is rendered
     // (gameplay/game-over/CUTSCENE_BETWEEN). Opens DOM modal; does NOT advance game state.
     if (dumpBtnVisible() && pointInIconBox(txN, tyN, DUMP_BTN_BOX)) { showDumpLogModal(); return; }
@@ -4811,7 +4825,12 @@ canvas.addEventListener('pointerdown', e => {
     // 22×22 visual SPEAKER_BOX/PAUSE_BOX. Visual icons render unchanged at the smaller rect.
     // MOBILE-PAUSE-ONLY — speaker hit-test gated off on mobile (button hidden; tap is inert).
     if (!IS_MOBILE && pointInIconBox(txN, tyN, SPEAKER_HIT_BOX)) { toggleAudio(); return; }
-    if (pointInIconBox(txN, tyN, PAUSE_HIT_BOX))   { togglePause(); return; }
+    if (pointInIconBox(txN, tyN, PAUSE_HIT_BOX)) {
+      // PAUSE-DIAG — confirm the hit-test actually matched (not just "tap landed on canvas").
+      console.log('[PAUSE-DIAG] pointerdown-pause-hit', { state: state });
+      togglePause();
+      return;
+    }
     // AUDIO-3e-MUSIC-BUTTON — TAP TO START MUSIC hit-test. Only active during INTRO_BLACK
     // before audio is unlocked. Sets the flag and returns early so the game does NOT advance.
     // ensureAudioContext above already fired (creates audioContext, calls Howler.ctx.resume,
@@ -4873,12 +4892,23 @@ canvas.addEventListener('touchstart', e=>{
     const t0N = e.changedTouches[0];
     if (t0N) {
       const txN = (t0N.clientX - r0.left) / scale, tyN = (t0N.clientY - r0.top) / scale;
+      // PAUSE-DIAG — touchstart equivalent of the pointerdown log. iOS Safari is the
+      // primary path here since K-FIX-2's preventDefault suppresses synthesized pointerdown.
+      console.log('[PAUSE-DIAG] touchstart-fired', {
+        x: txN.toFixed(1), y: tyN.toFixed(1), isMobile: IS_MOBILE, state: state,
+        pauseHitBox: { x: PAUSE_HIT_BOX.x, y: PAUSE_HIT_BOX.y, w: PAUSE_HIT_BOX.w, h: PAUSE_HIT_BOX.h },
+      });
       // AUDIO-3-LOG-DUMP — DUMP LOGS button (iOS touch path).
       if (dumpBtnVisible() && pointInIconBox(txN, tyN, DUMP_BTN_BOX)) { showDumpLogModal(); return; }
       // MOBILE-HIT-TEST-FIX — 50×50 hit-rects on iOS touch path too.
       // MOBILE-PAUSE-ONLY — speaker hit-test gated off on mobile (iOS path).
       if (!IS_MOBILE && pointInIconBox(txN, tyN, SPEAKER_HIT_BOX)) { toggleAudio(); return; }
-      if (pointInIconBox(txN, tyN, PAUSE_HIT_BOX))   { togglePause(); return; }
+      if (pointInIconBox(txN, tyN, PAUSE_HIT_BOX)) {
+        // PAUSE-DIAG — confirm hit-test matched on iOS Safari touch path.
+        console.log('[PAUSE-DIAG] touchstart-pause-hit', { state: state });
+        togglePause();
+        return;
+      }
       // AUDIO-3e-MUSIC-BUTTON — TAP TO START MUSIC hit-test (iOS touch fallback path).
       // Same logic as pointerdown handler above. Most relevant on iPhone Safari since this
       // is where Howler's auto-unlock is finickiest.
