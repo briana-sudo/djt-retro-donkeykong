@@ -1648,6 +1648,18 @@ function drawAudioIcon() {
   const cx = SPEAKER_BOX.x + SPEAKER_BOX.w / 2;
   const cy = SPEAKER_BOX.y + SPEAKER_BOX.h / 2;
   ctx.save();
+  // BUTTONS-VISIBLE-MOBILE — d-pad-style semi-transparent bg rect over the 50×50 hit-zone
+  // (NOT the 22×22 visual SPEAKER_BOX). Same alpha values as drawDpad's idle state — speaker
+  // has no hold-state so we never paint the active variant. Makes the button finger-findable
+  // on iPhone where the bare icon glyph was invisible against dark scenery.
+  ctx.fillStyle   = 'rgba(255,255,255,0.08)';
+  ctx.beginPath();
+  ctx.roundRect(SPEAKER_HIT_BOX.x + 2, SPEAKER_HIT_BOX.y + 2, SPEAKER_HIT_BOX.w - 4, SPEAKER_HIT_BOX.h - 4, 10);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth   = 1.5;
+  ctx.stroke();
+  // Existing speaker icon glyph — centered on the original 22×22 SPEAKER_BOX, unchanged.
   ctx.strokeStyle = audioOn ? '#88ccff' : '#888888';
   ctx.fillStyle   = audioOn ? '#88ccff' : '#888888';
   ctx.lineWidth = 2;
@@ -1681,6 +1693,21 @@ function drawPauseIcon() {
   const cx = PAUSE_BOX.x + PAUSE_BOX.w / 2;
   const cy = PAUSE_BOX.y + PAUSE_BOX.h / 2;
   ctx.save();
+  // BUTTONS-VISIBLE-MOBILE — d-pad-style semi-transparent bg rect over the 50×50 hit-zone
+  // (NOT the 22×22 visual PAUSE_BOX). Idle alpha matches drawDpad idle; when state==='PAUSED'
+  // we use the active alphas (matching drawDpad's pressed-button feedback) so the button
+  // visibly brightens as a "currently engaged" indicator. Mobile-finger-findable; PC users
+  // see the same effect with no behavior change.
+  const pausedActive = (state === 'PAUSED');
+  ctx.fillStyle   = pausedActive ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.08)';
+  ctx.beginPath();
+  ctx.roundRect(PAUSE_HIT_BOX.x + 2, PAUSE_HIT_BOX.y + 2, PAUSE_HIT_BOX.w - 4, PAUSE_HIT_BOX.h - 4, 10);
+  ctx.fill();
+  ctx.strokeStyle = pausedActive ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.15)';
+  ctx.lineWidth   = 1.5;
+  ctx.stroke();
+  // Existing pause/play icon glyph — centered on the original 22×22 PAUSE_BOX, unchanged.
+  // Blue tint kept (Brian's call) to distinguish it as a non-d-pad control.
   ctx.fillStyle = '#88ccff';
   if (state === 'PAUSED') {
     // Play triangle (▶)
