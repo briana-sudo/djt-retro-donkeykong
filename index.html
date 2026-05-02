@@ -708,6 +708,13 @@ function pickTaunt() {
 
 function fireTaunt(phrase) {
   spawnBubble(phrase, TAUNT_HOLD, TAUNT_FADE);
+  // AUDIO-3F — fire trump_weak.mp3 only when the picked taunt is the "WEAK!" line.
+  // Intentional mismatch: bubble shows the full 'WEAK! VERY WEAK!' string but the
+  // recorded clip is just the single word — the taunt's emphasis is on the WEAK part
+  // anyway, layering the longer text with the shorter audio reinforces it.
+  // The other 7 TAUNT_POOL phrases + ANTIFA_TAUNT have no AUDIO-3F mapping yet —
+  // they continue firing only the synth SFX below.
+  if (phrase === 'WEAK! VERY WEAK!' && typeof TRUMP_AUDIO !== 'undefined' && TRUMP_AUDIO['WEAK!']) TRUMP_AUDIO['WEAK!'].play();
   playSfx_taunt();                                                // N — taunt SFX (was silent in M)
 }
 
@@ -1068,6 +1075,29 @@ const SOUND_LIBRARY = {
   nessun_dorma: new Howl({ src: ['audio/nessun_dorma.mp3'], loop: false, volume: 0.7 }),
 };
 let currentlyPlayingSound = null;
+
+// AUDIO-3F — 5 Trump voice clips keyed by their on-screen bubble text. Lookup is
+// direct: code that already picks a phrase (death dance c1, intro FAKE NEWS guard,
+// WIN cutscene WITCH HUNT pushCaption, gameplay TAUNT_POOL fireTaunt) just does
+// TRUMP_AUDIO[<phrase>].play() to fire the matching voice.
+//
+// File mapping notes:
+//   - 'FAKE NEWS!'  uses trump_fakenews_intro.mp3 (longer/emphatic INTRO/cutscene
+//     variant from AUDIO-BATCH spec — the death-bubble-shorter trump_fakenews.mp3
+//     is unused here because FAKE NEWS! does NOT appear in DTJ_DANCE_BUBBLE_CYCLE1_TEXTS).
+//   - 'WITCH HUNT!' uses trump_witchhunt_cutscene.mp3 (longer cutscene variant; the
+//     shorter trump_witchhunt.mp3 is unused for the same reason).
+//   - 'WEAK!' fires when the gameplay taunt picks 'WEAK! VERY WEAK!' (full taunt
+//     string in fireTaunt phrase param, audio is the single-word cut).
+// Separate from SOUND_LIBRARY because these are short SFX-style one-shots that
+// fire over BGM (no rotation, no fade, no duck — plays at its own volume on top).
+const TRUMP_AUDIO = {
+  'LOSER!':       new Howl({ src: ['audio/sfx/trump_loser.mp3'],              volume: 0.9, preload: true }),
+  'SAD!':         new Howl({ src: ['audio/sfx/trump_sad.mp3'],                volume: 0.9, preload: true }),
+  'FAKE NEWS!':   new Howl({ src: ['audio/sfx/trump_fakenews_intro.mp3'],     volume: 0.9, preload: true }),
+  'WITCH HUNT!':  new Howl({ src: ['audio/sfx/trump_witchhunt_cutscene.mp3'], volume: 0.9, preload: true }),
+  'WEAK!':        new Howl({ src: ['audio/sfx/trump_weak.mp3'],               volume: 0.9, preload: true }),
+};
 
 // BGM rotation: 3 songs cycle on song-end. bgmRotationIdx persists across cutscene/death
 // transitions so the rotation resumes from where it left off.
@@ -1783,6 +1813,10 @@ function tickDtjDance(dt) {
       dtjDanceTrigger = false;
       const c1 = DTJ_DANCE_BUBBLE_CYCLE1_TEXTS[Math.floor(Math.random() * DTJ_DANCE_BUBBLE_CYCLE1_TEXTS.length)];
       spawnDanceBubble(c1);
+      // AUDIO-3F — fire the matching Trump voice clip in lockstep with the chosen bubble text.
+      // Currently picks LOSER! or SAD! since those are the only two strings in CYCLE1_TEXTS.
+      // No lives gate needed here: the dance trigger itself only runs from the death code path.
+      if (typeof TRUMP_AUDIO !== 'undefined' && TRUMP_AUDIO[c1]) TRUMP_AUDIO[c1].play();
       // AUDIO-1 — startYmca / duckBGM removed. computeDesiredMusic returns YMCA whenever
       // dtjDanceState === 'DANCING' (highest-priority rule). transitionToMusic plays the
       // ymca.mp3 Howl at the next tickBGM call and fades any prior music out cleanly.
@@ -5927,6 +5961,10 @@ function loop(ts) {
         // N — fire FAKE NEWS! intro-taunt SFX once when the bubble starts to appear (stateT=3.2).
         if (!introTauntSfxFired && stateT > 3.2) {
           playSfx_introTaunt();
+          // AUDIO-3F — fire the longer "intro" Trump voice clip alongside the existing synth
+          // SFX. Both layered intentionally: synth is the punch, voice is the line. Single-fire
+          // guard above governs both — they never play more than once per intro pass.
+          if (typeof TRUMP_AUDIO !== 'undefined' && TRUMP_AUDIO['FAKE NEWS!']) TRUMP_AUDIO['FAKE NEWS!'].play();
           introTauntSfxFired = true;
         }
       }
@@ -6443,6 +6481,10 @@ function loop(ts) {
         // top-of-canvas strip (single visible at a time, fade-in/hold/fade-out).
         pushCaption('DNC', "YOU'RE FIRED, MR. PRESIDENT!", 1.8);
         pushCaption('DJT', 'WITCH HUNT!', 1.2);
+        // AUDIO-3F — Trump voice for WITCH HUNT! cutscene caption. Fired once per
+        // CUTSCENE_PHASE1 entry (the surrounding state-machine block executes exactly
+        // once on transition into the phase, so no extra guard needed).
+        if (typeof TRUMP_AUDIO !== 'undefined' && TRUMP_AUDIO['WITCH HUNT!']) TRUMP_AUDIO['WITCH HUNT!'].play();
       }
       break;
     }
