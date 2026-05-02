@@ -518,6 +518,17 @@ const INITIALS_CONFIRM_DURATION = 1.0;
 // fall back to migrateLegacyOrEmpty.
 function loadHighScores() {
   try {
+    // P-DIFFICULTY-1 — one-time leaderboard wipe migration. Scoring rules changed
+    // (per-second survival removed, time-bonus rate doubled, win-bonus per-level),
+    // so prior scores are not comparable. Wipe runs exactly once per browser/device;
+    // the migration flag persists in localStorage so subsequent loads skip it.
+    const P_DIFFICULTY_MIGRATION_KEY = 'pdiff_migrated_v1';
+    if (!localStorage.getItem(P_DIFFICULTY_MIGRATION_KEY)) {
+      localStorage.removeItem(HIGH_SCORES_KEY);
+      localStorage.removeItem(HIGH_SCORE_KEY);             // legacy single-score
+      localStorage.removeItem(HIGH_SCORE_INITIALS_KEY);    // legacy initials
+      localStorage.setItem(P_DIFFICULTY_MIGRATION_KEY, 'true');
+    }
     const raw = localStorage.getItem(HIGH_SCORES_KEY);
     if (raw == null) return migrateLegacyOrEmpty();
     const arr = JSON.parse(raw);
@@ -2159,6 +2170,12 @@ function updatePlayer(dt) {
   // Block 3 — tick invulnerability timer, floored at 0
   if (player.invulnT > 0) player.invulnT = Math.max(0, player.invulnT - dt);
 
+  // P-DIFFICULTY-1 PART D — anti-camp ladder timer. Increments every frame the
+  // player is on a ladder; resets to 0 the moment they leave. Read in spawnCapsule
+  // (line ~2478) to detect camp; if >= getLevelParams().antiCampSec the next
+  // capsule spawns at top of camped ladder + drops straight down.
+  if (player.onLadder) ladderTime += dt; else ladderTime = 0;
+
   // ══════════════════════════════════════════
   //  CLIMB STATE
   // ══════════════════════════════════════════
@@ -2390,12 +2407,14 @@ function updatePlayer(dt) {
 // any ladder they cross. AABB hit on DNC triggers hit() (stub until Block 3).
 const capsules = [];
 let capsuleSpawnT = 0;
-// Block 2.5 — variable spawn interval (2.5–4.5s), recomputed per spawn
-let capsuleSpawnInterval = 2.5 + Math.random() * 2.0;
+// P-DIFFICULTY-1: variable spawn interval driven by per-level params (was: hardcoded 2.5-4.5s).
+// Initial value is just a placeholder; updateCapsules re-rolls per-spawn using getLevelParams.
+let capsuleSpawnInterval = 2.5;
 const CAPSULE_R = 18;                              // Block 2.5 — bumped from 12
 const CAPSULE_ROLL_SPD = 75;
 const CAPSULE_GRAV = 1100;
-const CAPSULE_LADDER_DROP_CHANCE = 0.65;           // Block 2.5 — bumped from 0.5
+// P-DIFFICULTY-1: now per-level via getLevelParams().ladderDropChance (used at line ~2566).
+// const CAPSULE_LADDER_DROP_CHANCE = 0.65;           // Block 2.5 — bumped from 0.5
 // C2 v2 — capsules have NO lifeTimer. They persist until off-screen-left exit (after rolling off
 // FLOOR's left edge) or until a helper / Pelosi destroys them. The previous CAPSULE_LIFE+30s
 // backstop and the 40%-on-expiry Burning Briefcase spawn are both deleted here. Burning Briefcase
@@ -2421,7 +2440,8 @@ const CUTSCENE_PHASE1_DURATION = 3.0;
 // I-EAGLE-REWRITE — CUTSCENE_PHASE3_GRAB_DELAY removed. PHASE3 is now a 4-step pose sequence
 // with a hard cut to the eagle_carry combo at t=2.0s — no grab-pause beat.
 const CUTSCENE_SKIP_THRESHOLD = 10.0;         // input during PHASE1/PHASE3 after this skips to SCORE
-const WIN_BONUS              = 2000;
+// P-DIFFICULTY-1: now per-level via getLevelParams().winBonus (used at line ~2434 triggerWin).
+// const WIN_BONUS              = 2000;
 let   winFreezeT             = 0;
 let   winFinalScore          = 0;
 let   cutsceneT              = 0;             // seconds since CUTSCENE_FADE_IN entered
@@ -2429,9 +2449,11 @@ let   cutsceneT              = 0;             // seconds since CUTSCENE_FADE_IN 
 function triggerWin() {
   if (state !== 'GAMEPLAY') return;
   playSfx_levelComplete();                                       // N — fanfare sting on win trigger
-  // H1 — flat WIN_BONUS (no multiplier).
-  playerScore += WIN_BONUS;
-  stats.winBonus = WIN_BONUS;                      // I5 — capture for breakdown
+  // P-DIFFICULTY-1: per-level WIN_BONUS via getLevelParams (was: flat const WIN_BONUS = 2000).
+  // L1=2000, L10=6000, L11+=6000+(level-10)*400.
+  const _winBonus = getLevelParams().winBonus;
+  playerScore += _winBonus;
+  stats.winBonus = _winBonus;                      // I5 — capture for breakdown
   // H2 — time bonus: completing under TARGET_TIME awards remaining seconds × TIME_BONUS_PER_SECOND.
   // No multiplier per spec.
   const levelTime = totalT - levelStartTime;
@@ -2478,14 +2500,60 @@ let dtjAnimX     = DTJ_GAMEPLAY_X;          // current x during the animation
 function spawnCapsule() {
   // C2 v2 — capsule entity has no lifeTimer. Cap visible count via MAX_CAPSULES.
   if (capsules.length >= MAX_CAPSULES) return;
+  // P-DIFFICULTY-1 PART E — first-capsule-fast-drop. First capsule of each level
+  // spawns at top of leftmost ladder (ladders[0] x=80, top y=672 = P1 surface)
+  // with vy=200 initial + gravity. Loose ~3-4s target (per Brian's Q3) — actual
+  // timing is much faster (~0.4s) because ladders[0] connects FLOOR↔P1 only;
+  // tunable post-field-test if too fast.
+  // PART D — anti-camp ladder timer. If player is camped on a ladder for
+  // >= antiCampSec (per-level threshold), force the capsule to spawn at the top
+  // of THAT ladder (not BARREL_X). Resets ladderTime to prevent re-trigger.
+  const _p = getLevelParams();
+  const _campedLadder = (player.onLadder && ladderTime >= _p.antiCampSec)
+                          ? ladderContaining(player.x, player.y) : null;
+  if (_campedLadder) {
+    // Anti-camp override: spawn at top of camped ladder, drop straight down.
+    capsules.push({
+      x: _campedLadder.x + LADDER_W / 2,
+      y: _campedLadder.y - CAPSULE_R,
+      vx: 0,
+      vy: 30,                                   // matches normal ladder-drop initial vy (line ~2571)
+      rolling: false,
+      onPlat: null,
+      rot: 0,
+      speedMult: _p.capsuleSpeedMult,
+    });
+    ladderTime = 0;                              // reset so same camp session doesn't re-trigger
+    firstCapsuleDropped = true;                  // anti-camp also satisfies first-drop slot
+    return;
+  }
+  if (!firstCapsuleDropped) {
+    // First-capsule-fast-drop: spawn at top of leftmost ladder (ladders[0], x=80,
+    // top y=672), initial vy=200, gravity governs the rest.
+    const lad = ladders[0];
+    capsules.push({
+      x: lad.x + LADDER_W / 2,
+      y: lad.y - CAPSULE_R,
+      vx: 0,
+      vy: 200,
+      rolling: false,
+      onPlat: null,
+      rot: 0,
+      speedMult: _p.capsuleSpeedMult,
+    });
+    firstCapsuleDropped = true;
+    return;
+  }
+  // Normal spawn from BARREL_X.
   capsules.push({
     x: BARREL_X,                                // spawns from the static barrel decoration
     y: TOP.y - CAPSULE_R,                       // sitting on TOP platform
-    vx: CAPSULE_THROW_DIR * CAPSULE_ROLL_SPD,   // G4 — sign derived from CAPSULE_THROW_DIR
+    vx: CAPSULE_THROW_DIR * _p.capsuleSpeedMult * CAPSULE_ROLL_SPD,   // G4 — sign × per-level speed
     vy: 0,
     rolling: true,
     onPlat: TOP,
     rot: 0,
+    speedMult: _p.capsuleSpeedMult,             // P-DIFFICULTY-1: cached for per-frame velocity re-application
   });
 }
 
@@ -2496,7 +2564,11 @@ function updateCapsules(dt) {
   if (dtjAnimState === 'IDLE') {
     if (capsuleSpawnT >= capsuleSpawnInterval) {
       capsuleSpawnT = 0;
-      capsuleSpawnInterval = 2.5 + Math.random() * 2.0;
+      // P-DIFFICULTY-1: per-level spawn interval with symmetric variance.
+      // At L1 (avg=2.5, var=0.30): range 1.75-3.25s. L10 (avg=1.0, var=0.15): 0.85-1.15s.
+      const _sp = getLevelParams();
+      const _v  = _sp.spawnIntervalAvg * _sp.spawnVariance;
+      capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2;
       dtjAnimState = 'WALK_TO_BARREL';
       dtjAnimT = 0;
       dtjAnimX = DTJ_GAMEPLAY_X;
@@ -2546,9 +2618,11 @@ function updateCapsules(dt) {
     if (c.rolling && c.onPlat) {
       // D2 — FLOOR is the only flat platform where direction is forced (rightward, toward Pelosi).
       // Tilted platforms snap vx to downhill direction. TOP (flat) keeps the spawn-set vx (left).
-      if (c.onPlat === FLOOR)             c.vx =  CAPSULE_ROLL_SPD;     // always RIGHT on FLOOR
-      else if (c.onPlat.tilt >  0.1)      c.vx =  CAPSULE_ROLL_SPD;     // right-tilted = right downhill
-      else if (c.onPlat.tilt < -0.1)      c.vx = -CAPSULE_ROLL_SPD;     // left-tilted  = left downhill
+      // P-DIFFICULTY-1: per-capsule speedMult cached at spawn (see spawnCapsule line ~2478).
+      const _rs1 = (c.speedMult || 1) * CAPSULE_ROLL_SPD;
+      if (c.onPlat === FLOOR)             c.vx =  _rs1;     // always RIGHT on FLOOR
+      else if (c.onPlat.tilt >  0.1)      c.vx =  _rs1;     // right-tilted = right downhill
+      else if (c.onPlat.tilt < -0.1)      c.vx = -_rs1;     // left-tilted  = left downhill
 
       const prevX = c.x;
       c.x += c.vx * dt;
@@ -2563,7 +2637,7 @@ function updateCapsules(dt) {
         if (Math.abs(platYatLad - (lad.y + lad.h)) > 20) continue;
         const crossed = (prevX < ladCx && c.x >= ladCx) ||
                         (prevX > ladCx && c.x <= ladCx);
-        if (crossed && Math.random() < CAPSULE_LADDER_DROP_CHANCE) {
+        if (crossed && Math.random() < getLevelParams().ladderDropChance) {  // P-DIFFICULTY-1: per-level chance (was: CAPSULE_LADDER_DROP_CHANCE 0.65)
           c.rolling = false;
           c.onPlat = null;
           c.x = ladCx;
@@ -2599,10 +2673,12 @@ function updateCapsules(dt) {
         c.onPlat = plat;
         // D2 — FLOOR landing always sets vx rightward toward Pelosi. Tilted plats snap to downhill.
         // Other flat plats (TOP only, in practice) keep momentum sign.
-        if (plat === FLOOR)            c.vx =  CAPSULE_ROLL_SPD;
-        else if (plat.tilt >  0.1)     c.vx =  CAPSULE_ROLL_SPD;
-        else if (plat.tilt < -0.1)     c.vx = -CAPSULE_ROLL_SPD;
-        else                           c.vx = c.vx >= 0 ? CAPSULE_ROLL_SPD : -CAPSULE_ROLL_SPD;
+        // P-DIFFICULTY-1: per-capsule speedMult cached at spawn.
+        const _rs2 = (c.speedMult || 1) * CAPSULE_ROLL_SPD;
+        if (plat === FLOOR)            c.vx =  _rs2;
+        else if (plat.tilt >  0.1)     c.vx =  _rs2;
+        else if (plat.tilt < -0.1)     c.vx = -_rs2;
+        else                           c.vx = c.vx >= 0 ? _rs2 : -_rs2;
         break;
       }
     }
@@ -2801,7 +2877,11 @@ function _resetEntitiesAndPerLevel() {
   // All entity arrays cleared.
   capsules.length      = 0;
   capsuleSpawnT        = 0;
-  capsuleSpawnInterval = 2.5 + Math.random() * 2.0;
+  // P-DIFFICULTY-1: spawn interval uses current level params. currentLevel + reset
+  // flags are set by the CALLER (resetForLevelTransition or resetForGameOver) before
+  // this helper runs, so getLevelParams() here reflects the correct destination level.
+  { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance;
+    capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; }
   helpers.length       = 0;
   particles            = [];
   bricks               = [];
@@ -2816,7 +2896,8 @@ function _resetEntitiesAndPerLevel() {
   pelosi.active        = false;
   pelosi.phase         = 'IDLE';
   pelosi.phaseT        = 0;
-  pelosi.timer         = PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN);
+  // P-DIFFICULTY-1: per-level pelosi interval (was: PELOSI_INTERVAL_MIN/MAX 30-45s).
+  { const _pp = getLevelParams().pelosiInterval; pelosi.timer = _pp * 0.8 + Math.random() * _pp * 0.4; }
   pelosi.facing        = -1;
   pelosi.targetCapsule = null;
   pelosiFlash.active   = false;
@@ -2852,6 +2933,13 @@ function _resetEntitiesAndPerLevel() {
 function resetForLevelTransition() {
   // PRESERVED: playerScore, player.lives, highScores, introHasPlayed,
   //            gameOverFinalScore, highScoreNew (no game-over here — this is a win restart).
+  // P-DIFFICULTY-1: advance to next level BEFORE entity wipe so the helper's
+  // capsule-spawn-interval calc uses the new level's params. firstCapsuleDropped
+  // re-armed so each new level gets its own first-capsule-fast-drop. ladderTime
+  // cleared so anti-camp starts fresh.
+  currentLevel++;
+  firstCapsuleDropped = false;
+  ladderTime = 0;
   _resetEntitiesAndPerLevel();
   // AUDIO-3e Fix A — advance bgmRotationIdx by 1 (with wrap) so each new level opens with
   // the song AFTER whatever was current at the prior win. Within a level the once('end')
@@ -2919,6 +3007,12 @@ function resetForGameOver() {
   player.lives       = 3;
   highScoreNew       = false;
   gameOverFinalScore = 0;
+  // P-DIFFICULTY-1: full reset to L1. Set BEFORE _resetEntitiesAndPerLevel so the
+  // helper's spawn-interval calc uses L1 params. firstCapsuleDropped re-armed so the
+  // first capsule of the fresh game gets the fast-drop treatment.
+  currentLevel = 1;
+  firstCapsuleDropped = false;
+  ladderTime = 0;
   _resetEntitiesAndPerLevel();
   // AUDIO-1 — state-driven: state→INTRO_BLACK maps to ESCALATOR (audible after first user
   // gesture unlocks Howler's audio context). No flag reset needed (bgmDeathMuted gone).
@@ -3226,13 +3320,57 @@ function drawCapsules() {
 const PICKUP_SIZE          = 36;          // G6 — 1.5x base sprite size (was 72 in Block D, halved in G6)
 const PICKUP_HOVER_PX      = 40;          // height above platform surface
 // H2 — full scoring constants per Notion locked table.
-const SCORE_PER_SECOND      = 10;         // survival, multiplied by multiplier
+// P-DIFFICULTY-1: SCORE_PER_SECOND removed (per-second survival scoring deleted entirely).
+// const SCORE_PER_SECOND   = 10;         // survival, multiplied by multiplier
 const CAPSULE_CLEAR_SCORE   = 100;        // capsule passes player x without colliding ("jumped over")
 const HELPER_KILL_SCORE     = 150;        // Antifa or Zombie destroys a capsule
 const BRIEFCASE_SCORE       = 250;        // briefcase pickup collected
 const PLATFORM_REACH_BONUS  = 500;        // first time per life on each platform (excluding spawn FLOOR)
-const TIME_BONUS_PER_SECOND = 10;         // win-time-bonus = max(0, TARGET_TIME - levelTime) * this
+const TIME_BONUS_PER_SECOND = 20;         // P-DIFFICULTY-1: bumped 10→20 to compensate for survival removal
 const TARGET_TIME           = 120;        // seconds; tune later
+
+// P-DIFFICULTY-1 — level state + 10-level difficulty parameter table.
+// currentLevel: 1 fresh game; resetForLevelTransition increments, resetForGameOver = 1.
+// firstCapsuleDropped: per-level flag for first-capsule-fast-drop; reset on every
+//   level transition / game over.
+// ladderTime: anti-camp timer (in seconds); ticks in updatePlayer when onLadder=true,
+//   resets to 0 the moment they leave. Read in spawnCapsule for camped-ladder override.
+let currentLevel        = 1;
+let firstCapsuleDropped = false;
+let ladderTime          = 0;
+
+// 10-level parameter table. Index = currentLevel - 1 (clamped to 9 for L11+ which
+// reuses L10 row; winBonus extends linearly via getLevelParams).
+// Columns: capsuleSpeedMult, spawnIntervalAvg, spawnVariance, fastDropOn,
+//          ladderDropChance, antiCampSec, pelosiInterval, antifaWaveSize, winBonus
+const DIFFICULTY_TABLE = [
+  [1.00, 2.5, 0.30, true, 0.00, 10, 25, 1, 2000],   // L1
+  [1.07, 2.3, 0.28, true, 0.05, 9,  23, 1, 2400],   // L2
+  [1.14, 2.1, 0.25, true, 0.10, 8,  21, 1, 2800],   // L3
+  [1.20, 1.9, 0.23, true, 0.20, 7,  19, 2, 3200],   // L4
+  [1.27, 1.7, 0.21, true, 0.30, 6,  18, 2, 3600],   // L5
+  [1.33, 1.6, 0.20, true, 0.35, 6,  16, 2, 4000],   // L6
+  [1.40, 1.4, 0.18, true, 0.40, 5,  15, 3, 4400],   // L7
+  [1.47, 1.3, 0.17, true, 0.50, 5,  14, 3, 4800],   // L8
+  [1.53, 1.2, 0.16, true, 0.55, 4,  13, 3, 5200],   // L9
+  [1.60, 1.0, 0.15, true, 0.60, 4,  12, 3, 6000],   // L10
+];
+
+function getLevelParams() {
+  const idx = Math.min(currentLevel, 10) - 1;
+  const row = DIFFICULTY_TABLE[idx];
+  return {
+    capsuleSpeedMult:  row[0],
+    spawnIntervalAvg:  row[1],
+    spawnVariance:     row[2],
+    fastDropOn:        row[3],
+    ladderDropChance:  row[4],
+    antiCampSec:       row[5],
+    pelosiInterval:    row[6],
+    antifaWaveSize:    row[7],
+    winBonus:          currentLevel <= 10 ? row[8] : 6000 + (currentLevel - 10) * 400,
+  };
+}
 const BRIEFCASE_RESPAWN_MIN = 8.0;
 const BRIEFCASE_RESPAWN_MAX = 12.0;
 const MULT_BASE            = 1.0;
@@ -3261,6 +3399,8 @@ const stats = {
   winBonus:         0,
 };
 function resetStats() {
+  // P-DIFFICULTY-1: stats.survivalScore field removed from active scoring; left
+  // initialized to 0 for backwards-compat in case any debug/save path reads it.
   stats.survivalScore = 0;
   stats.clearedCount = 0;
   stats.helperKillCount = 0;
@@ -3433,7 +3573,10 @@ function findNearestUpLadder(plat, fromX) {
 }
 
 function spawnAntifaWave() {
-  const n = 5 + Math.floor(Math.random() * 6);   // 5–10
+  // P-DIFFICULTY-1: per-level multiplier on base 5-10 wave size. L1 mult=1 keeps
+  // current 5-10 default; L4-6 mult=2 → 10-20; L7+ mult=3 → 15-30.
+  const _waveMult = getLevelParams().antifaWaveSize;
+  const n = (5 + Math.floor(Math.random() * 6)) * _waveMult;
   // N-FIX-7 — Macho Man kick is now state-driven. computeDesiredMusic counts ANTIFA helpers
   // each frame and returns MACHO_MAN if any are present; the next tickBGM transitions in.
   // No explicit start/stop call needed here.
@@ -3798,8 +3941,9 @@ const PELOSI_LEFT_LIMIT       = 240;       // C1 — halfway across FLOOR (W/2).
 // center) — kept as a separate constant since it expresses a different intent.
 const PELOSI_SMASH_X          = 240;
 const PELOSI_ANCHOR_TOLERANCE = 4;         // px — Pelosi snaps to PELOSI_SMASH_X within this
-const PELOSI_INTERVAL_MIN     = 30.0;
-const PELOSI_INTERVAL_MAX     = 45.0;
+// P-DIFFICULTY-1: now per-level via getLevelParams().pelosiInterval (used at line ~3879 spawn re-seed).
+// const PELOSI_INTERVAL_MIN     = 30.0;
+// const PELOSI_INTERVAL_MAX     = 45.0;
 const PELOSI_BONUS            = 500;
 const PELOSI_FLASH_LIFETIME   = 1.5;
 const PELOSI_TORN_LIFETIME    = 1.0;
@@ -3808,7 +3952,11 @@ const pelosi = {
   active: false,
   phase: 'IDLE',
   phaseT: 0,
-  timer: PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN),
+  // P-DIFFICULTY-1: initial pelosi.timer set later (PELOSI_INTERVAL_*  hardcoded
+  // path replaced by getLevelParams.pelosiInterval at reset/respawn sites). Init
+  // value here is just a non-zero placeholder; actual value re-seeded in
+  // resetForRespawn (line ~2820) before first use.
+  timer: 30,
   x: 0, y: 0,
   facing: -1,                                                     // -1 = facing left, +1 = facing right
   targetCapsule: null,
@@ -3876,7 +4024,9 @@ function updatePelosi(dt) {
     pelosi.timer -= dt;
     if (pelosi.timer <= 0) {
       spawnPelosi();
-      pelosi.timer = PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN);
+      // P-DIFFICULTY-1: per-level pelosi interval with ±20% variance.
+      const _pp = getLevelParams().pelosiInterval;
+      pelosi.timer = _pp * 0.8 + Math.random() * _pp * 0.4;
     }
     return;
   }
@@ -5415,13 +5565,18 @@ function drawScoreBreakdown(opts) {
     ctx.fillText('+' + val, valueX, y);
     y += ROW;
   }
-  row('Survival:',         Math.floor(stats.survivalScore),                     '#aaffaa');
+  // P-DIFFICULTY-1: Survival row removed (per-second survival scoring deleted).
+  // The row(...) helper auto-advances y via `y += ROW;`, so the 7 rows below shift
+  // up cleanly with no manual y adjustment.
+  // row('Survival:',         Math.floor(stats.survivalScore),                     '#aaffaa');
   row('Capsules cleared:', stats.clearedCount    * CAPSULE_CLEAR_SCORE,         '#aaffaa');
   row('Helper kills:',     stats.helperKillCount * HELPER_KILL_SCORE,           '#ff88ff');
   row('Briefcases:',       stats.briefcaseCount  * BRIEFCASE_SCORE,             '#88ff88');
   row('Platforms:',        stats.platformCount   * PLATFORM_REACH_BONUS,        '#88ddff');
   row('Pelosi tears:',     stats.pelosiCount     * PELOSI_BONUS,                '#ffcc00');
   row('Time bonus:',       stats.timeBonus,                                     '#ffaa55');
+  // P-DIFFICULTY-1 — winBonus is now per-level via getLevelParams (set at win time
+  // into stats.winBonus by the existing pipeline at line 2434). Display unchanged.
   row('WIN BONUS:',        stats.winBonus,                                      '#ffcc00');
 
   // Divider + total
@@ -5533,6 +5688,18 @@ function drawHUD() {
   for (let i = 0; i < player.lives; i++) {
     drawDonkey(dncStartX + i * dncStep, dncFootY, dncSc, false, false, 0);
   }
+
+  // P-DIFFICULTY-1 — "LV N" indicator. Sits in the ~127px clear window between
+  // the last lives icon (~x=58 for 3 lives) and the centered "DNC vs DJT" title
+  // (left edge ~x=185). Gold to match the multiplier badge palette. Save/restore
+  // around the textAlign change so the next render block doesn't inherit 'left'.
+  ctx.save();
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 12px monospace';
+  ctx.textAlign = 'left';
+  const lvX = dncStartX + player.lives * dncStep + 10;
+  ctx.fillText('LV ' + currentLevel, lvX, HUD_Y + 17);
+  ctx.restore();
 
   // Title (centered)
   ctx.fillStyle='#ffffff'; ctx.font='bold 13px monospace'; ctx.textAlign='center';
@@ -6471,14 +6638,12 @@ function loop(ts) {
     }
 
     case 'GAMEPLAY': {
-      // H2 — survival score: +SCORE_PER_SECOND × multiplier per second (no float spawns; HUD score
-      // ticks visibly at +10/s base, +30/s while ×3 boost is active). I5 — also tracked into
-      // stats.survivalScore for the cutscene breakdown.
-      {
-        const inc = SCORE_PER_SECOND * dt * multiplier;
-        playerScore += inc;
-        stats.survivalScore += inc;
-      }
+      // P-DIFFICULTY-1: per-second survival score block removed entirely.
+      // Was: const inc = SCORE_PER_SECOND * dt * multiplier; playerScore += inc;
+      //      stats.survivalScore += inc;
+      // Survival category in score breakdown also removed (line ~5418). Score now
+      // comes purely from event-driven sources: capsule clears, helper kills,
+      // briefcases, platform-reach bonuses, Pelosi tears, time bonus, win bonus.
       updatePlayer(dt);
       updateCapsules(dt);
       updatePickup(dt);
