@@ -24,7 +24,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 SFX_DIR      = PROJECT_ROOT / 'audio' / 'sfx'
 WINGET_BIN   = r'C:\Users\brian\AppData\Local\Microsoft\WinGet\Packages'
-FFMPEG       = WINGET_BIN + r'\yt-dlp.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-N-124279-g0f6ba39122-win64-gpl\bin\ffmpeg.exe'
+FFMPEG_DIR   = WINGET_BIN + r'\yt-dlp.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-N-124279-g0f6ba39122-win64-gpl\bin'
+FFMPEG       = FFMPEG_DIR + r'\ffmpeg.exe'
 YT_DLP       = WINGET_BIN + r'\yt-dlp.yt-dlp_Microsoft.Winget.Source_8wekyb3d8bbwe\yt-dlp.exe'
 
 # AUDIO-BATCH — 10 game SFX. Search queries match Brian's spec exactly.
@@ -52,15 +53,21 @@ def run(cmd: list[str], timeout: int = 120) -> tuple[int, str, str]:
 
 def yt_dlp_download(query: str, dst_dir: Path) -> tuple[Path | None, str | None]:
     """Run yt-dlp with ytsearch1: prefix — first hit only. Returns (downloaded
-    file path, source URL) or (None, None) on failure."""
-    # Use --print to capture the resolved URL + filepath in one shot.
+    mp3 file path, source URL) or (None, None) on failure.
+
+    Uses a per-call empty temp subdir so we can glob *.mp3 after yt-dlp returns
+    to find the post-processed file (the after_move:filepath print template
+    doesn't fire reliably for ExtractAudio postprocessor — only --print
+    webpage_url survives, so we can't rely on it for the output filepath).
+    """
     template = str(dst_dir / '%(id)s.%(ext)s')
     cmd = [
         YT_DLP, '--no-warnings', '--quiet',
         '--extract-audio', '--audio-format', 'mp3',
         '--no-playlist',
+        '--ffmpeg-location', FFMPEG_DIR,                            # required: ffmpeg/ffprobe not on PATH
+        '--no-simulate',                                            # CRITICAL: --print implies --simulate by default; without this, yt-dlp prints URL but downloads nothing
         '-o', template,
-        '--print', 'after_move:filepath',
         '--print', 'webpage_url',
         f'ytsearch1:{query}',
     ]
@@ -69,15 +76,17 @@ def yt_dlp_download(query: str, dst_dir: Path) -> tuple[Path | None, str | None]
         print(f'    YT-DLP FAIL: {err[-300:]}')
         return None, None
     lines = [l.strip() for l in out.splitlines() if l.strip()]
-    if len(lines) < 2:
-        print(f'    YT-DLP unexpected output: {out!r}')
-        return None, None
-    filepath = Path(lines[0])
-    url      = lines[1]
-    if not filepath.exists():
-        print(f'    YT-DLP filepath missing: {filepath}')
-        return None, None
-    return filepath, url
+    url = lines[0] if lines else '(unknown)'
+    # Find the post-processed mp3 in dst_dir. yt-dlp + --extract-audio --audio-format mp3
+    # produces exactly one .mp3 per call (deletes the intermediate webm/m4a).
+    mp3s = list(dst_dir.glob('*.mp3'))
+    if not mp3s:
+        print(f'    YT-DLP NO MP3 produced (URL was {url})')
+        return None, url
+    if len(mp3s) > 1:
+        # Multiple .mp3 — pick the most recently created
+        mp3s.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return mp3s[0], url
 
 
 def ffmpeg_trim_loudnorm(src: Path, dst: Path, target_sec: float) -> bool:
@@ -101,7 +110,6 @@ def main() -> int:
     SFX_DIR.mkdir(parents=True, exist_ok=True)
     results = []
     with tempfile.TemporaryDirectory() as tmp_root:
-        tmp_dir = Path(tmp_root)
         for filename, query, target_sec, note in SFX_SPEC:
             dst = SFX_DIR / filename
             if dst.exists():
@@ -110,6 +118,9 @@ def main() -> int:
                 continue
             print(f'==> {filename}  (query: {query!r}, target {target_sec}s)')
             print(f'    note: {note}')
+            # Per-call subdir so we can glob *.mp3 cleanly without colliding with prior calls.
+            tmp_dir = Path(tmp_root) / filename.replace('.mp3', '')
+            tmp_dir.mkdir(exist_ok=True)
             src, url = yt_dlp_download(query, tmp_dir)
             if not src:
                 results.append((filename, 'yt-dlp-fail', '-', 0))

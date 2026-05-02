@@ -44,6 +44,35 @@ PHASE1_PHRASES = [
     ('Loser!',     'loser'),
 ]
 
+# AUDIO-BATCH Phase 2 — winning model picked by Brian after Phase 1 listening:
+# 5196af35f6ff4a0dbf541793fc9f2157 = Donald J. Trump (Noise reduction) by SHIB.
+WINNING_MODEL_ID = '5196af35f6ff4a0dbf541793fc9f2157'
+
+# Phase 2 production phrases — 15 total. INTRO/CUTSCENE entries prepend emotion-
+# tag prefix per Brian's spec; if the model ignores the tag, the prefix may be
+# spoken literally — Brian flags those in field test for surgical re-source.
+# Each tuple: (text_to_synthesize, output_filename_without_extension).
+PHASE2_PHRASES = [
+    # Death lines (5)
+    ('Loser!',                          'trump_loser'),
+    ('Sad!',                            'trump_sad'),
+    ('Fake news!',                      'trump_fakenews'),
+    ('Weak!',                           'trump_weak'),         # SHARED with taunts — generate ONCE
+    ('Witch hunt!',                     'trump_witchhunt'),
+    # In-game taunts (8 — trump_weak above is shared)
+    ('Crooked Dems!',                   'trump_crooked_dems'),
+    ('Nasty!',                          'trump_nasty'),
+    ('Worst ever!',                     'trump_worst_ever'),
+    ('Disgraceful!',                    'trump_disgraceful'),
+    ('Pathetic losers!',                'trump_pathetic_losers'),
+    ('Totally corrupt!',                'trump_totally_corrupt'),
+    ('Democrats hate America!',         'trump_democrats_hate_america'),
+    ('Radical left mob!',               'trump_radical_left_mob'),
+    # Intro/cutscene (2 — emotion-tag attempt)
+    ('(angry, emphatic) Fake news!',    'trump_fakenews_intro'),
+    ('(angry, emphatic) Witch hunt!',   'trump_witchhunt_cutscene'),
+]
+
 
 def loudnorm(src_path: Path, dst_path: Path) -> bool:
     """Single-pass ffmpeg loudnorm to project standard. Returns True on success.
@@ -126,6 +155,35 @@ def phase1():
     return 1 if fail_count else 0
 
 
+def phase2():
+    """Generate 15 production Trump voice clips on the winning model."""
+    api_key = os.environ.get('FISH_API_KEY')
+    if not api_key:
+        print('FISH_API_KEY env var not set. Aborting.')
+        return 1
+    SFX_DIR.mkdir(parents=True, exist_ok=True)
+    from fish_audio_sdk import Session
+    session = Session(api_key)
+    print(f'\n==> Phase 2 — model {WINNING_MODEL_ID} (SHIB Donald J. Trump Noise Reduction)')
+    print(f'    {len(PHASE2_PHRASES)} clips to generate\n')
+    results = []
+    for text, name_short in PHASE2_PHRASES:
+        dst = SFX_DIR / f'{name_short}.mp3'
+        print(f'  - "{text}" -> {dst.name}')
+        ok = generate_clip(session, text, WINNING_MODEL_ID, dst)
+        if ok and dst.exists():
+            size_kb = dst.stat().st_size / 1024
+            results.append((dst.name, size_kb, True))
+        else:
+            results.append((dst.name, 0, False))
+    print('\n--- Phase 2 results ---')
+    for name, size_kb, ok in results:
+        status = 'OK' if ok else 'FAIL'
+        print(f'  [{status}] {name}  ({size_kb:.1f} KB)')
+    fail_count = sum(1 for _, _, ok in results if not ok)
+    return 1 if fail_count else 0
+
+
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         print('Usage: py scripts/fish_audio_generate.py {phase1|phase2}')
@@ -134,8 +192,7 @@ if __name__ == '__main__':
     if arg == 'phase1':
         sys.exit(phase1())
     elif arg == 'phase2':
-        print('Phase 2 not implemented yet — waiting for Brian to pick winning model.')
-        sys.exit(2)
+        sys.exit(phase2())
     else:
         print(f'Unknown phase: {arg}')
         sys.exit(2)
