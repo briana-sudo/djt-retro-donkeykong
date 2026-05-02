@@ -6399,7 +6399,7 @@ function loop(ts) {
       // Taunt — phase 1: idle, phase 2: djt6 arm raise
       const tauntSprite = stateT >= 2.5 ? 'djt6' : 'dtj_idle';
       drawSprite(tauntSprite, stairsX, stairsY, 110);
-      if(tauntBubble>0.05) drawBubble(stairsX+30, stairsY-80, 'FAKE NEWS!', tauntBubble);
+      if(tauntBubble>0.05) drawSideBandBubble('FAKE NEWS!', tauntBubble);   // FAKE-NEWS-BUBBLE-FIX: was drawBubble(stairsX+30, stairsY-80, ...) — overhead bubble blocked DTJ. Now uses gameplay-taunt fixed top-right placement with LEFT-pointing tail.
       ctx.fillStyle='rgba(255,255,255,0.3)'; ctx.font='10px monospace'; ctx.textAlign='center';
       ctx.fillText('TAP / ANY KEY TO SKIP',W/2,H-12);
       break;
