@@ -710,13 +710,14 @@ function pickTaunt() {
 
 function fireTaunt(phrase) {
   spawnBubble(phrase, TAUNT_HOLD, TAUNT_FADE);
-  // AUDIO-3F — fire trump_weak.mp3 only when the picked taunt is the "WEAK!" line.
-  // Intentional mismatch: bubble shows the full 'WEAK! VERY WEAK!' string but the
-  // recorded clip is just the single word — the taunt's emphasis is on the WEAK part
-  // anyway, layering the longer text with the shorter audio reinforces it.
-  // The other 7 TAUNT_POOL phrases + ANTIFA_TAUNT have no AUDIO-3F mapping yet —
-  // they continue firing only the synth SFX below.
-  if (phrase === 'WEAK! VERY WEAK!' && typeof TRUMP_AUDIO !== 'undefined' && TRUMP_AUDIO['WEAK!']) TRUMP_AUDIO['WEAK!'].play();
+  // INTRO_TAUNT-AUDIO — generic TRUMP_AUDIO lookup keyed by the bubble text. Covers
+  // all 8 TAUNT_POOL entries + ANTIFA_TAUNT in one line (replaces AUDIO-3F's WEAK-only
+  // conditional). TRUMP_AUDIO keys match the phrase strings exactly so the lookup
+  // resolves without per-phrase if-branches. Per GLOBAL AUDIO RULE: the clip whose
+  // word matches the bubble text fires when that bubble appears. Any future taunt
+  // added to TAUNT_POOL with a matching TRUMP_AUDIO entry gets audio for free; any
+  // without one stays synth-only (playSfx_taunt below) without breaking.
+  if (typeof TRUMP_AUDIO !== 'undefined' && TRUMP_AUDIO[phrase]) TRUMP_AUDIO[phrase].play();
   playSfx_taunt();                                                // N — taunt SFX (was silent in M)
 }
 
@@ -1098,7 +1099,22 @@ const TRUMP_AUDIO = {
   'SAD!':         new Howl({ src: ['audio/sfx/trump_sad.mp3'],                volume: 0.9, preload: true }),
   'FAKE NEWS!':   new Howl({ src: ['audio/sfx/trump_fakenews_intro.mp3'],     volume: 0.9, preload: true }),
   'WITCH HUNT!':  new Howl({ src: ['audio/sfx/trump_witchhunt_cutscene.mp3'], volume: 0.9, preload: true }),
-  'WEAK!':        new Howl({ src: ['audio/sfx/trump_weak.mp3'],               volume: 0.9, preload: true }),
+  // INTRO_TAUNT-AUDIO — WEAK key rekeyed from 'WEAK!' to 'WEAK! VERY WEAK!' so the
+  // generic TRUMP_AUDIO[phrase] lookup in fireTaunt (line ~719) matches the bubble
+  // text directly. Audio file unchanged (trump_weak.mp3, single-word cut). The audio
+  // is intentionally shorter than the displayed bubble — the WEAK part is the emphasis.
+  'WEAK! VERY WEAK!':        new Howl({ src: ['audio/sfx/trump_weak.mp3'],                    volume: 0.9, preload: true }),
+  // INTRO_TAUNT-AUDIO — 8 new Trump taunt voice clips. Keys match TAUNT_POOL phrase
+  // strings (lines 679-688) + ANTIFA_TAUNT (line 689) EXACTLY so fireTaunt's generic
+  // lookup `TRUMP_AUDIO[phrase]` resolves without per-phrase conditionals.
+  'CROOKED DEMS!':           new Howl({ src: ['audio/sfx/trump_crooked_dems.mp3'],            volume: 0.9, preload: true }),
+  'NASTY!':                  new Howl({ src: ['audio/sfx/trump_nasty.mp3'],                   volume: 0.9, preload: true }),
+  'WORST EVER!':             new Howl({ src: ['audio/sfx/trump_worst_ever.mp3'],              volume: 0.9, preload: true }),
+  'DISGRACEFUL!':            new Howl({ src: ['audio/sfx/trump_disgraceful.mp3'],             volume: 0.9, preload: true }),
+  'PATHETIC LOSERS!':        new Howl({ src: ['audio/sfx/trump_pathetic_losers.mp3'],         volume: 0.9, preload: true }),
+  'TOTALLY CORRUPT!':        new Howl({ src: ['audio/sfx/trump_totally_corrupt.mp3'],         volume: 0.9, preload: true }),
+  'DEMOCRATS HATE AMERICA!': new Howl({ src: ['audio/sfx/trump_democrats_hate_america.mp3'],  volume: 0.9, preload: true }),
+  'RADICAL LEFT MOB!':       new Howl({ src: ['audio/sfx/trump_radical_left_mob.mp3'],        volume: 0.9, preload: true }),
 };
 
 // SFX-PACK — 9 game SFX + 1 media chaos. Each fires at the existing event trigger
