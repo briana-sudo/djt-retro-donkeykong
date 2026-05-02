@@ -285,6 +285,15 @@ function ell(x, y, rx, ry, rot, s, e) {
 }
 const W = 480, H = 854;
 let scale = 1;
+// MOBILE-PAUSE-ONLY — viewport detection, computed ONCE at script load. Used to:
+//   • hide the speaker icon on mobile entirely (drawAudioIcon returns early; speaker
+//     hit-test is gated off) — phone hardware volume buttons handle audio anyway
+//   • enlarge the pause hit-rect from 50×50 to 60×60 for finger reliability
+// Detection covers (a) iOS/Android touchscreens, (b) hybrid devices with stylus, and
+// (c) narrow desktop windows (<600px) — the last is acknowledged side-effect; PC users
+// who shrink their window will also get the mobile UI. Acceptable trade-off vs. a
+// screen-size-only check that would miss tablets in landscape.
+const IS_MOBILE = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || (window.innerWidth < 600);
 
 function resize() {
   // E1 — use clientWidth/Height (excludes browser chrome, scrollbars) so the canvas always
@@ -1555,6 +1564,23 @@ const PAUSE_BOX    = { x: W - 60, y: ICON_Y, w: ICON_SIZE, h: ICON_SIZE };
 // Acceptable: speaker is the more-frequently-tapped of the two, so first-precedence is right.
 const SPEAKER_HIT_BOX = { x: W - 44, y: ICON_Y - 14, w: 50, h: 50 };
 const PAUSE_HIT_BOX   = { x: W - 74, y: ICON_Y - 14, w: 50, h: 50 };
+// MOBILE-PAUSE-ONLY — on mobile, enlarge the pause rect from 50×50 to 60×60 (finger size).
+// Mutating const-bound objects is legal — only the binding is frozen, not the property bag.
+// PAUSE_BOX is also resized + repositioned to MATCH PAUSE_HIT_BOX so drawPauseIcon's center
+// math (cx = PAUSE_BOX.x + PAUSE_BOX.w/2) lands the icon glyph in the middle of the bg rect.
+// Without this, the glyph would render at the original 22×22 PAUSE_BOX center while the bg
+// rect drew around the new 60×60 PAUSE_HIT_BOX — they'd be offset by ~14px each axis.
+// SPEAKER boxes are NOT touched here — drawAudioIcon early-returns on mobile, and the
+// pointerdown/touchstart speaker hit-test is gated by !IS_MOBILE, so the speaker rects
+// are inert dead constants on mobile rather than re-jiggered geometry.
+if (IS_MOBILE) {
+  PAUSE_HIT_BOX.w = 60;
+  PAUSE_HIT_BOX.h = 60;
+  PAUSE_BOX.x     = PAUSE_HIT_BOX.x;
+  PAUSE_BOX.y     = PAUSE_HIT_BOX.y;
+  PAUSE_BOX.w     = 60;
+  PAUSE_BOX.h     = 60;
+}
 // AUDIO-3-LOG-DUMP — bottom-right DUMP LOGS button. 80×24 px, gameplay+game-over states
 // only. Positioned where it doesn't overlap touch controls (left jump+walk are on left
 // side; right ladder controls live higher up at H*0.45). Tap opens a DOM modal showing
@@ -1645,6 +1671,10 @@ function drawDumpLogsButton() {
 }
 
 function drawAudioIcon() {
+  // MOBILE-PAUSE-ONLY — speaker hidden entirely on mobile. Phone hardware volume buttons
+  // serve the muting role; the on-canvas speaker just adds clutter and competes with the
+  // pause button for top-right finger space. M-key on PC keyboards still calls toggleAudio.
+  if (IS_MOBILE) return;
   const cx = SPEAKER_BOX.x + SPEAKER_BOX.w / 2;
   const cy = SPEAKER_BOX.y + SPEAKER_BOX.h / 2;
   ctx.save();
@@ -4779,7 +4809,8 @@ canvas.addEventListener('pointerdown', e => {
     if (dumpBtnVisible() && pointInIconBox(txN, tyN, DUMP_BTN_BOX)) { showDumpLogModal(); return; }
     // MOBILE-HIT-TEST-FIX — use 50×50 SPEAKER_HIT_BOX/PAUSE_HIT_BOX (finger-friendly), not the
     // 22×22 visual SPEAKER_BOX/PAUSE_BOX. Visual icons render unchanged at the smaller rect.
-    if (pointInIconBox(txN, tyN, SPEAKER_HIT_BOX)) { toggleAudio(); return; }
+    // MOBILE-PAUSE-ONLY — speaker hit-test gated off on mobile (button hidden; tap is inert).
+    if (!IS_MOBILE && pointInIconBox(txN, tyN, SPEAKER_HIT_BOX)) { toggleAudio(); return; }
     if (pointInIconBox(txN, tyN, PAUSE_HIT_BOX))   { togglePause(); return; }
     // AUDIO-3e-MUSIC-BUTTON — TAP TO START MUSIC hit-test. Only active during INTRO_BLACK
     // before audio is unlocked. Sets the flag and returns early so the game does NOT advance.
@@ -4845,7 +4876,8 @@ canvas.addEventListener('touchstart', e=>{
       // AUDIO-3-LOG-DUMP — DUMP LOGS button (iOS touch path).
       if (dumpBtnVisible() && pointInIconBox(txN, tyN, DUMP_BTN_BOX)) { showDumpLogModal(); return; }
       // MOBILE-HIT-TEST-FIX — 50×50 hit-rects on iOS touch path too.
-      if (pointInIconBox(txN, tyN, SPEAKER_HIT_BOX)) { toggleAudio(); return; }
+      // MOBILE-PAUSE-ONLY — speaker hit-test gated off on mobile (iOS path).
+      if (!IS_MOBILE && pointInIconBox(txN, tyN, SPEAKER_HIT_BOX)) { toggleAudio(); return; }
       if (pointInIconBox(txN, tyN, PAUSE_HIT_BOX))   { togglePause(); return; }
       // AUDIO-3e-MUSIC-BUTTON — TAP TO START MUSIC hit-test (iOS touch fallback path).
       // Same logic as pointerdown handler above. Most relevant on iPhone Safari since this
