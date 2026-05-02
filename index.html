@@ -1146,6 +1146,13 @@ const GAME_SFX = {
   //   cut at 2.0s) until PHASE3 exits to CUTSCENE_SCORE (line ~6755 area).
   dnc_youre_fired:      new Howl({ src: ['audio/sfx/dnc_youre_fired.mp3'],           volume: 0.85,                preload: true }),
   crowd_usa_chant:      new Howl({ src: ['audio/sfx/crowd_usa_chant.mp3'],           volume: 0.7,  loop: true,   preload: true }),
+  // LINCOLN-MEMORIAL-CHAOS — 3 reporter voice clips layered with media_chaos at the
+  // INTRO_TAUNT phase 1 entry (line ~6134). Volume 0.4 (quieter than media_chaos
+  // 0.6 ambient bed) so 3 individual voices layer cleanly without overwhelming.
+  // Staggered fire pattern (t=0/0.5/0.75) + stop-all at FAKE NEWS punch (t=~3.2s).
+  reporter_what_about_russia:    new Howl({ src: ['audio/sfx/reporter_what_about_russia.mp3'],    volume: 0.4, preload: true }),
+  reporter_you_cant_win:         new Howl({ src: ['audio/sfx/reporter_you_cant_win.mp3'],         volume: 0.4, preload: true }),
+  reporter_one_more_question:    new Howl({ src: ['audio/sfx/reporter_one_more_question.mp3'],    volume: 0.4, preload: true }),
 };
 
 // BGM rotation: 3 songs cycle on song-end. bgmRotationIdx persists across cutscene/death
@@ -6129,9 +6136,21 @@ function loop(ts) {
             // N-FIX-7 — state-driven: INTRO_TAUNT maps to SILENT in computeDesiredMusic.
             state='INTRO_TAUNT'; stateT=0; tauntArm=0; tauntBubble=0; introTauntSfxFired=false;
             // SFX-PACK — media chaos (press-scrum reporters shouting) layers in at INTRO_TAUNT
-            // PHASE 1 ENTRY, before DTJ's arms raise. The FAKE NEWS audio at line ~5967 fires
+            // PHASE 1 ENTRY, before DTJ's arms raise. The FAKE NEWS audio at line ~6155 fires
             // ~3.2s later in phase 2 — the chaos plays first, then FAKE NEWS punches over it.
-            if (typeof GAME_SFX !== 'undefined' && GAME_SFX.media_chaos) GAME_SFX.media_chaos.play();
+            // LINCOLN-MEMORIAL-CHAOS — staggered chain: 3 reporter voices + media_chaos bed
+            // fire at t=0/0.25/0.5/0.75. Total chain runs ~3.23s (last reporter
+            // one_more_question is 2.48s starting t=0.75 → ends t=3.23). FAKE NEWS punch
+            // at stateT > 3.2 lands right as the last reporter finishes; stop-all-chaos
+            // block at line ~6155 area kills any tails. Single-fire by state-machine:
+            // this whole `if (stairsT > 1.2)` block runs once per intro flow because
+            // state='INTRO_TAUNT' transitions out of the surrounding INTRO_STAIRS case.
+            if (typeof GAME_SFX !== 'undefined') {
+              if (GAME_SFX.reporter_what_about_russia) GAME_SFX.reporter_what_about_russia.play();                            // t=0.00s
+              setTimeout(() => { if (GAME_SFX.media_chaos)                 GAME_SFX.media_chaos.play();                 }, 250);  // t=0.25s
+              setTimeout(() => { if (GAME_SFX.reporter_you_cant_win)       GAME_SFX.reporter_you_cant_win.play();       }, 500);  // t=0.50s
+              setTimeout(() => { if (GAME_SFX.reporter_one_more_question)  GAME_SFX.reporter_one_more_question.play();  }, 750);  // t=0.75s
+            }
           }
         }
       }
@@ -6153,6 +6172,18 @@ function loop(ts) {
           // SFX. Both layered intentionally: synth is the punch, voice is the line. Single-fire
           // guard above governs both — they never play more than once per intro pass.
           if (typeof TRUMP_AUDIO !== 'undefined' && TRUMP_AUDIO['FAKE NEWS!']) TRUMP_AUDIO['FAKE NEWS!'].play();
+          // LINCOLN-MEMORIAL-CHAOS — at the FAKE NEWS punch moment, stop all 4 chaos
+          // sources spawned at INTRO_TAUNT entry (line ~6134 area). Per timing analysis:
+          // 3 of 4 are already finished by t=3.2s; only reporter_one_more_question
+          // (2.48s starting t=0.75 → ends t=3.23) is still playing — this catches its
+          // ~30ms tail. Belt-and-suspenders: kills any mp3 still playing if timing
+          // shifts in future tuning, so FAKE NEWS lands clean.
+          if (typeof GAME_SFX !== 'undefined') {
+            if (GAME_SFX.media_chaos)                 GAME_SFX.media_chaos.stop();
+            if (GAME_SFX.reporter_what_about_russia)  GAME_SFX.reporter_what_about_russia.stop();
+            if (GAME_SFX.reporter_you_cant_win)       GAME_SFX.reporter_you_cant_win.stop();
+            if (GAME_SFX.reporter_one_more_question)  GAME_SFX.reporter_one_more_question.stop();
+          }
           introTauntSfxFired = true;
         }
       }
