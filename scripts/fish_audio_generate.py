@@ -1,0 +1,141 @@
+"""AUDIO-VOICE-TEST — Fish Audio TTS generation pipeline.
+
+Reads FISH_API_KEY from env. Takes a list of (text, reference_id, output_path)
+tuples; for each, calls Fish Audio's streaming TTS endpoint and writes the raw
+mp3 chunks to a temp file, then runs an ffmpeg loudnorm pass to normalize to the
+project's standard target (-16 LUFS / -1.5 dBTP / 11 LU range — same as
+audio_3h_loudnorm.py for BGM consistency).
+
+Idempotent: skips any output_path that already exists. Re-running won't
+re-bill the Fish Audio API.
+
+Usage:
+    set FISH_API_KEY=<key>
+    py scripts/fish_audio_generate.py phase1   # 6 test files, audio/sfx/test/
+    py scripts/fish_audio_generate.py phase2   # 15 production files, audio/sfx/
+
+Phase 1 outputs go to audio/sfx/test/ (separate folder so Brian can listen
+and reject without polluting the production audio/sfx/ directory). Phase 2
+outputs go to audio/sfx/ directly.
+"""
+from __future__ import annotations
+import os
+import sys
+import subprocess
+import tempfile
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).parent.parent
+SFX_DIR      = PROJECT_ROOT / 'audio' / 'sfx'
+TEST_DIR     = SFX_DIR / 'test'
+FFMPEG       = r'C:\Users\brian\AppData\Local\Microsoft\WinGet\Packages\yt-dlp.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-N-124279-g0f6ba39122-win64-gpl\bin\ffmpeg.exe'
+
+# AUDIO-VOICE-TEST — 3 candidate Trump voice models from fish.audio/discovery,
+# ranked by Brian. Phase 1 generates test clips on all 3; Phase 2 uses only the
+# winning model.
+CANDIDATE_MODELS = [
+    ('5196af35', '5196af35f6ff4a0dbf541793fc9f2157', 'Donald J. Trump (Noise reduction) by SHIB'),
+    ('e58b0d7e', 'e58b0d7efca34eb38d5c4985e378abcb', 'POTUS 47 - Trump by Reaction Vid'),
+    ('4457d0e6', '4457d0e6cc6745ae970231ba902c6b3d', 'Donald J Trump by yownhisaeden'),
+]
+
+PHASE1_PHRASES = [
+    ('Fake news!', 'fakenews'),
+    ('Loser!',     'loser'),
+]
+
+
+def loudnorm(src_path: Path, dst_path: Path) -> bool:
+    """Single-pass ffmpeg loudnorm to project standard. Returns True on success.
+    Single-pass (not the 2-pass measure-then-apply used by audio_3h_loudnorm.py)
+    because TTS output is short + already roughly consistent volume per session;
+    2-pass would be overkill and slower for 6-15 short clips.
+    """
+    cmd = [
+        FFMPEG, '-y', '-hide_banner', '-loglevel', 'error',
+        '-i', str(src_path),
+        '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11',
+        '-c:a', 'libmp3lame', '-q:a', '2',
+        str(dst_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        print(f'    LOUDNORM FAIL: {proc.stderr[-300:]}')
+        return False
+    return True
+
+
+def generate_clip(session, text: str, reference_id: str, dst_path: Path) -> bool:
+    """Stream TTS audio from Fish Audio to a temp mp3, then loudnorm to dst_path.
+    Returns True on success.
+    """
+    if dst_path.exists():
+        print(f'    SKIP (exists): {dst_path.name}')
+        return True
+    from fish_audio_sdk import TTSRequest
+    # Fish Audio streams raw mp3 chunks. Write to a temp file first, then
+    # loudnorm-pass into the final dst_path.
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp:
+        tmp_path = Path(tmp.name)
+        try:
+            for chunk in session.tts(TTSRequest(text=text, reference_id=reference_id)):
+                tmp.write(chunk)
+            tmp.flush()
+        except Exception as e:
+            print(f'    TTS API FAIL: {e}')
+            return False
+    try:
+        if tmp_path.stat().st_size == 0:
+            print(f'    EMPTY MP3 from API (probably bad model_id or auth)')
+            return False
+        ok = loudnorm(tmp_path, dst_path)
+        return ok
+    finally:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+
+
+def phase1():
+    """Generate 6 test files: 3 candidate models × 2 phrases each."""
+    api_key = os.environ.get('FISH_API_KEY')
+    if not api_key:
+        print('FISH_API_KEY env var not set. Aborting.')
+        return 1
+    TEST_DIR.mkdir(parents=True, exist_ok=True)
+    from fish_audio_sdk import Session
+    session = Session(api_key)
+    results = []
+    for short, model_id, label in CANDIDATE_MODELS:
+        print(f'\n==> {short} ({label})')
+        for phrase_text, phrase_short in PHASE1_PHRASES:
+            dst = TEST_DIR / f'{short}_{phrase_short}.mp3'
+            print(f'  - "{phrase_text}" -> {dst.name}')
+            ok = generate_clip(session, phrase_text, model_id, dst)
+            if ok and dst.exists():
+                size_kb = dst.stat().st_size / 1024
+                results.append((dst.name, size_kb, True))
+            else:
+                results.append((dst.name, 0, False))
+    print('\n--- Phase 1 results ---')
+    for name, size_kb, ok in results:
+        status = 'OK' if ok else 'FAIL'
+        print(f'  [{status}] {name}  ({size_kb:.1f} KB)')
+    fail_count = sum(1 for _, _, ok in results if not ok)
+    return 1 if fail_count else 0
+
+
+if __name__ == '__main__':
+    if len(sys.argv) < 2:
+        print('Usage: py scripts/fish_audio_generate.py {phase1|phase2}')
+        sys.exit(2)
+    arg = sys.argv[1]
+    if arg == 'phase1':
+        sys.exit(phase1())
+    elif arg == 'phase2':
+        print('Phase 2 not implemented yet — waiting for Brian to pick winning model.')
+        sys.exit(2)
+    else:
+        print(f'Unknown phase: {arg}')
+        sys.exit(2)
