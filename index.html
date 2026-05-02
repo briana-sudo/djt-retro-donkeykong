@@ -5706,6 +5706,23 @@ function tickCaptions(dt) {
       captionCurrent = captionQueue.shift();
       captionPhase = 'fadein';
       captionPhaseT = 0;
+      // INTRO_TAUNT-V3-FIX — fire caption-paired audio at the moment the caption
+      // is popped off the queue and starts its visual fadein, NOT at pushCaption
+      // time (which only enqueues — actual display is delayed until prior captions
+      // complete their fadein/hold/fadeout cycle). Pushing audio at PHASE1 entry
+      // (the prior wiring at lines ~6668 / 6673) caused WITCH HUNT mp3 to fire
+      // ~3s before the WITCH HUNT caption actually appeared (DNC caption ran first
+      // for ~3s with its own fadein/hold/fadeout). Per GLOBAL AUDIO RULE: audio
+      // fires when its bubble is ON SCREEN, not when its push is queued.
+      // No captionIsDnc helper exists — using inline string match for the DNC
+      // caption (single use site, tactical). captionIsWitchHunt at line ~5699
+      // already exists and is used for dtjScale gating; reusing it here.
+      if (typeof TRUMP_AUDIO !== 'undefined' && captionIsWitchHunt(captionCurrent) && TRUMP_AUDIO['WITCH HUNT!']) {
+        TRUMP_AUDIO['WITCH HUNT!'].play();
+      }
+      if (typeof GAME_SFX !== 'undefined' && captionCurrent.speaker === 'DNC' && captionCurrent.text === "YOU'RE FIRED, MR. PRESIDENT!" && GAME_SFX.dnc_youre_fired) {
+        GAME_SFX.dnc_youre_fired.play();
+      }
     }
     // I-CORR-4 — out of caption: ensure DTJ shrinks back.
     dtjScaleTarget = 1.0;
@@ -6662,15 +6679,16 @@ function loop(ts) {
         // I-CORR-3 — push the two PHASE1 dialogue captions on transition entry. They render in the
         // top-of-canvas strip (single visible at a time, fade-in/hold/fade-out).
         pushCaption('DNC', "YOU'RE FIRED, MR. PRESIDENT!", 1.8);
-        // INTRO_TAUNT-V3 — DNC voice fires alongside her caption push (per GLOBAL
-        // AUDIO RULE). Lands first; WITCH HUNT Trump voice at line ~6656 fires
-        // immediately after, creating the call-and-response cutscene beat.
-        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.dnc_youre_fired) GAME_SFX.dnc_youre_fired.play();
+        // INTRO_TAUNT-V3-FIX: audio moved to tickCaptions for caption-display-time firing.
+        // (Was: GAME_SFX.dnc_youre_fired.play() here at PHASE1 entry. Bug — DNC bubble
+        // pops on frame 1 so timing accidentally aligned, but WITCH HUNT bubble waited
+        // for DNC's fade cycle and audio fired ~3s too early. Both now keyed off the
+        // queue-shift moment in tickCaptions instead.)
         pushCaption('DJT', 'WITCH HUNT!', 1.2);
-        // AUDIO-3F — Trump voice for WITCH HUNT! cutscene caption. Fired once per
-        // CUTSCENE_PHASE1 entry (the surrounding state-machine block executes exactly
-        // once on transition into the phase, so no extra guard needed).
-        if (typeof TRUMP_AUDIO !== 'undefined' && TRUMP_AUDIO['WITCH HUNT!']) TRUMP_AUDIO['WITCH HUNT!'].play();
+        // INTRO_TAUNT-V3-FIX: audio moved to tickCaptions for caption-display-time firing.
+        // (Was: TRUMP_AUDIO['WITCH HUNT!'].play() here at PHASE1 entry. Confirmed root
+        // cause of Brian's "WITCH HUNT mp3 didn't fire" field test report — the mp3 was
+        // firing, just ~3s before the WITCH HUNT bubble visually appeared.)
         // SFX-PACK — RNC stage crowd cheer. SFX-PACK-FIX: 600ms delay removed per Brian
         // field test — "the crowd needs to come on as scene opens. doesn't land with the
         // delay." Now fires immediately at PHASE1 entry alongside the DNC bubble push.
