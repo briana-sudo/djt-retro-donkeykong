@@ -1099,6 +1099,29 @@ const TRUMP_AUDIO = {
   'WEAK!':        new Howl({ src: ['audio/sfx/trump_weak.mp3'],               volume: 0.9, preload: true }),
 };
 
+// SFX-PACK — 9 game SFX + 1 media chaos. Each fires at the existing event trigger
+// of the on-screen action it represents (per GLOBAL AUDIO RULE). Layered with the
+// existing playSfx_* synth calls — synths add immediate punch, mp3s add the
+// "real" sample on top. No duck system; mp3s play at their own volume over BGM.
+//
+// Volume tuning notes (relative to TRUMP_AUDIO's 0.9):
+//   - 0.7 default — mid-loud SFX events (crash/tear/destruction/thud/screech)
+//   - 0.65 quieter — pickup chime + crowd cheer (don't compete with cutscene dialog)
+//   - 0.6 quietest — media_chaos (ambient layer behind FAKE NEWS punch)
+//   - 0.75 loudest — eagle_screech + player_death_scream (focal moments)
+const GAME_SFX = {
+  lincoln_crash:        new Howl({ src: ['audio/sfx/sfx_lincoln_crash.mp3'],        volume: 0.7,  preload: true }),
+  stairs_collapse:      new Howl({ src: ['audio/sfx/sfx_stairs_collapse.mp3'],      volume: 0.7,  preload: true }),
+  eagle_screech:        new Howl({ src: ['audio/sfx/sfx_eagle_screech.mp3'],        volume: 0.75, preload: true }),
+  pelosi_tear:          new Howl({ src: ['audio/sfx/sfx_pelosi_tear.mp3'],          volume: 0.7,  preload: true }),
+  briefcase_pickup:     new Howl({ src: ['audio/sfx/sfx_briefcase_pickup.mp3'],     volume: 0.65, preload: true }),
+  capsule_destruction:  new Howl({ src: ['audio/sfx/sfx_capsule_destruction.mp3'],  volume: 0.7,  preload: true }),
+  crowd_cheer:          new Howl({ src: ['audio/sfx/sfx_crowd_cheer.mp3'],          volume: 0.65, preload: true }),
+  player_death_scream:  new Howl({ src: ['audio/sfx/sfx_player_death_scream.mp3'],  volume: 0.75, preload: true }),
+  ragdoll_thud:         new Howl({ src: ['audio/sfx/sfx_ragdoll_thud.mp3'],         volume: 0.7,  preload: true }),
+  media_chaos:          new Howl({ src: ['audio/sfx/media_chaos.mp3'],              volume: 0.6,  preload: true }),
+};
+
 // BGM rotation: 3 songs cycle on song-end. bgmRotationIdx persists across cutscene/death
 // transitions so the rotation resumes from where it left off.
 const BGM_ROTATION_SONGS = ['greenwood', 'queen', 'brown'];
@@ -2628,6 +2651,16 @@ function hit(source, capsule) {
   stateT = 0;
   deathReactionT = 0;
   deathPhase = 'phase1';
+  // SFX-PACK — player death scream gated to FINAL DEATH ONLY (lives currently 1 means
+  // about to become 0 in 1.2s when DEATH_REACTION ends at line ~6356 and decrements).
+  // Mutually exclusive with the AUDIO-3F Trump death-line audio: TRUMP_AUDIO[c1].play()
+  // at line 1819 fires when dtjDanceCycles is set to 1 (lives > 1 = respawn) inside
+  // tickDtjDance; here we fire on the opposite branch (lives <= 1 = game-over). The
+  // re-entry guard at line 2625 prevents hit() from firing twice per death cycle so
+  // this scream never doubles up.
+  if (typeof GAME_SFX !== 'undefined' && GAME_SFX.player_death_scream && player.lives <= 1) {
+    GAME_SFX.player_death_scream.play();
+  }
   // AUDIO-1 — bgmDeathMuted flag + bgmFadeOut call removed. computeDesiredMusic returns
   // SILENT for DEATH_REACTION until dance triggers (200ms later), then YMCA. transitionToMusic
   // fades the prior music out cleanly at the next tickBGM call.
@@ -3281,6 +3314,8 @@ function updatePickup(dt) {
     multiplier = Math.min(multiplier + MULT_ADD, MULT_MAX);
     multiplierT = MULT_DURATION;
     playSfx_briefcasePickup();                                  // N — powerup chime on collect
+    // SFX-PACK — real briefcase chime mp3 layered on top of the synth arpeggio.
+    if (typeof GAME_SFX !== 'undefined' && GAME_SFX.briefcase_pickup) GAME_SFX.briefcase_pickup.play();
     triggerHelperSpawn('briefcase');
     pickup.active = false;
     pickupSpawnTimer = 0;
@@ -3518,6 +3553,8 @@ function updateHelpers(dt) {
         addScore(HELPER_KILL_SCORE, true, c.x, c.y - 20, '#ff88ff');
         capsules.splice(ci, 1);
         playSfx_helperKill();                                  // N — pop on helper kill
+        // SFX-PACK — real glass-shatter mp3 for capsule destruction (Antifa/Zombie kills capsule).
+        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.capsule_destruction) GAME_SFX.capsule_destruction.play();
         if (h.type === 'ZOMBIE') { helperKilled = true; break; }
       }
     }
@@ -3871,6 +3908,8 @@ function updatePelosi(dt) {
         tornPieces.push({ x: pelosi.x - 6, y: baseY, vx: -180, vy: -240, rot: 0, rotV:  6, t: 0 });
         tornPieces.push({ x: pelosi.x + 6, y: baseY, vx:  180, vy: -260, rot: 0, rotV: -6, t: 0 });
         playSfx_pelosiTear();                                  // N — paper rip + low rumble
+        // SFX-PACK — real paper-rip mp3 layered with the synth tear.
+        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.pelosi_tear) GAME_SFX.pelosi_tear.play();
         // H2 — Pelosi tear → +500 × multiplier (was flat 500). pelosiFlash overlay still shown.
         stats.pelosiCount++;
         addScore(PELOSI_BONUS, true, pelosi.x, pelosi.y - PELOSI_HEIGHT, '#ffcc00');
@@ -5944,6 +5983,10 @@ function loop(ts) {
           if (stairsT > 1.2) {       // 1.2s at top before taunt
             // N-FIX-7 — state-driven: INTRO_TAUNT maps to SILENT in computeDesiredMusic.
             state='INTRO_TAUNT'; stateT=0; tauntArm=0; tauntBubble=0; introTauntSfxFired=false;
+            // SFX-PACK — media chaos (press-scrum reporters shouting) layers in at INTRO_TAUNT
+            // PHASE 1 ENTRY, before DTJ's arms raise. The FAKE NEWS audio at line ~5967 fires
+            // ~3.2s later in phase 2 — the chaos plays first, then FAKE NEWS punches over it.
+            if (typeof GAME_SFX !== 'undefined' && GAME_SFX.media_chaos) GAME_SFX.media_chaos.play();
           }
         }
       }
@@ -5972,6 +6015,14 @@ function loop(ts) {
         state='INTRO_SHATTER';stateT=0;shatterT=0;rampReveal=0;buildingFade=1;
         initBricks();
         boom(W/2,300,36,true);
+        // SFX-PACK — Lincoln Memorial crash beat: heavy stone impact at the moment the
+        // building shatters, then a 200ms-staggered stairs-collapse rumble for the
+        // cascading-debris feel. setTimeout is fine here — INTRO_SHATTER is a one-way
+        // state transition, no risk of mis-fire on re-entry.
+        if (typeof GAME_SFX !== 'undefined') {
+          if (GAME_SFX.lincoln_crash)   GAME_SFX.lincoln_crash.play();
+          if (GAME_SFX.stairs_collapse) setTimeout(() => GAME_SFX.stairs_collapse.play(), 200);
+        }
         shakeAmt=14;
       }
       break;
@@ -6337,6 +6388,9 @@ function loop(ts) {
           // K — burst spawn delegated to shared spawnRagdollBurst (also used by Antifa splat).
           spawnRagdollBurst(player.x, player.y - 24, DEATH_DEBRIS_COUNT);
           playSfx_burst();                                      // N — pop+fzzt on phase2 trigger
+          // SFX-PACK — ragdoll thud on EVERY death (no lives gate per spec). Fires
+          // alongside the synth burst for a layered "body-hits-ground" beat.
+          if (typeof GAME_SFX !== 'undefined' && GAME_SFX.ragdoll_thud) GAME_SFX.ragdoll_thud.play();
         }
       }
       // K — debris physics ticks every frame in the main loop's tickRagdollDebris(); local
@@ -6485,6 +6539,13 @@ function loop(ts) {
         // CUTSCENE_PHASE1 entry (the surrounding state-machine block executes exactly
         // once on transition into the phase, so no extra guard needed).
         if (typeof TRUMP_AUDIO !== 'undefined' && TRUMP_AUDIO['WITCH HUNT!']) TRUMP_AUDIO['WITCH HUNT!'].play();
+        // SFX-PACK — RNC stage crowd cheer. Delayed 600ms so the DNC "YOU'RE FIRED"
+        // bubble (1.8s caption) lands clean first; cheer comes in as the WITCH HUNT
+        // beat hits. setTimeout safe here — CUTSCENE_PHASE1 entry is a one-way state
+        // transition guarded by stateT >= CUTSCENE_FADE_DURATION, no re-fire risk.
+        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.crowd_cheer) {
+          setTimeout(() => GAME_SFX.crowd_cheer.play(), 600);
+        }
       }
       break;
     }
@@ -6558,6 +6619,8 @@ function loop(ts) {
           combo.y = STAGE_FLOOR_Y;                       // foot anchor — combo bottom == DTJ bottom
           pushCaption('DJT', 'THANK YOU PATRIOTS!', 2.0);
           playSfx_eagleScreech();                        // N — eagle screech at hard-cut moment
+          // SFX-PACK — real movie-eagle (red-tailed hawk) screech mp3 over the synth screech.
+          if (typeof GAME_SFX !== 'undefined' && GAME_SFX.eagle_screech) GAME_SFX.eagle_screech.play();
         }
         dtjStageMode = 'NONE';
         comboActive  = true;
