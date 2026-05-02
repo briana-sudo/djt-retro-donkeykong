@@ -1061,6 +1061,16 @@ let currentlyPlayingSound = null;
 // BGM rotation: 3 songs cycle on song-end. bgmRotationIdx persists across cutscene/death
 // transitions so the rotation resumes from where it left off.
 const BGM_ROTATION_SONGS = ['greenwood', 'queen', 'brown'];
+// AUDIO-3-BUGHUNT-3-FIX — canonical per-song target volumes for the rotation fade-in.
+// Sourced from SOUND_LIBRARY init values above (currently uniform 0.10 per AUDIO-3k).
+// MUST match SOUND_LIBRARY: if you re-tune a Howl's volume there, update the matching
+// entry here too. Keeping this table separate from a runtime sound.volume() read is
+// what fixes the 30s-on / 30s-off cycle — see comment in startBgmRotation.
+const BGM_ROTATION_VOLUMES = {
+  greenwood: 0.10,
+  queen:     0.10,
+  brown:     0.10,
+};
 let bgmRotationIdx = 0;
 
 const MUSIC_STATES = {
@@ -1276,11 +1286,16 @@ function startBgmRotation() {
   const sound   = SOUND_LIBRARY[songKey];
   if (!sound) return;
   sound.off('end');                                   // clear any previous handler
-  // AUDIO-3h — capture the Howl's configured base volume BEFORE we override to 0 for the
-  // fade-in. Was hardcoded `sound.fade(0, 0.6, 200)` which silently overrode every per-Howl
-  // volume (greenwood=0.30 / queen=0.48 / brown=0.60 in AUDIO-3h) back up to 0.6. Reading
-  // sound.volume() first preserves the per-track balance Brian tuned in this commit.
-  const targetVol = sound.volume();
+  // AUDIO-3-BUGHUNT-3-FIX — read targetVol from BGM_ROTATION_VOLUMES table, NOT from
+  // sound.volume(). The Howl's runtime volume can be 0 if a prior transitionToMusic
+  // faded it out and paused it — reading 0 makes the fade-in a fade(0→0) no-op,
+  // producing the silent-30s / audible-30s cycle observed in field test. (transition-
+  // ToMusic line ~1202 is `sound.fade(sound.volume(), 0, FADE_MS)` followed by a
+  // setTimeout pause; on a rotation song this leaves the Howl at internal volume=0.
+  // When rotation cycles back to that song, startBgmRotation called sound.volume() →
+  // got 0 → fade(0→0,200ms) → song plays inaudibly for full duration → 'end' fires →
+  // next song's Howl was untouched, plays audibly. Hence the 30s on / 30s off pattern.)
+  const targetVol = BGM_ROTATION_VOLUMES[songKey];
   sound.volume(0);
   sound.play();
   sound.fade(0, targetVol, 200);
