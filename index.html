@@ -3888,6 +3888,13 @@ function updatePelosi(dt) {
     case 'CARRY_TO_ANCHOR': {
       const carriedAlive = pelosi.targetCapsule && capsules.indexOf(pelosi.targetCapsule) >= 0;
       if (!carriedAlive) {
+        // CAPSULE-DIAG — Pelosi lost her carried capsule before reaching anchor.
+        // If this fires during Brian's "destroy a capsule" field test, the smash
+        // never happens — capsule already gone, .play() at line ~3918 unreachable.
+        console.log('[CAPSULE-DIAG] Pelosi CARRY_TO_ANCHOR -> SHRUG (carried capsule lost)', {
+          targetCapsule: !!pelosi.targetCapsule,
+          inCapsulesArray: pelosi.targetCapsule ? (capsules.indexOf(pelosi.targetCapsule) >= 0) : false,
+        });
         pelosi.targetCapsule = null;
         pelosi.phase = 'SHRUG';
         pelosi.phaseT = 0;
@@ -3895,6 +3902,17 @@ function updatePelosi(dt) {
       }
       const dx = PELOSI_SMASH_X - pelosi.x;
       if (Math.abs(dx) <= PELOSI_ANCHOR_TOLERANCE) {
+        // CAPSULE-DIAG — Pelosi reached anchor; about to splice capsule + fire mp3.
+        // This is a one-shot per Pelosi-smash sequence (state transitions to SLAM
+        // at end of block, so the if-arrived doesn't re-fire next frame).
+        console.log('[CAPSULE-DIAG] Pelosi reached anchor, splicing capsule', {
+          pelosiX:        pelosi.x,
+          smashX:         PELOSI_SMASH_X,
+          targetCapsule:  !!pelosi.targetCapsule,
+          capsuleIdx:     pelosi.targetCapsule ? capsules.indexOf(pelosi.targetCapsule) : -1,
+          gameSfxDefined: (typeof GAME_SFX !== 'undefined'),
+          capsDestrExists: (typeof GAME_SFX !== 'undefined' && !!GAME_SFX.capsule_destruction),
+        });
         // Arrived. Snap to anchor, splice capsule, spawn shatter, transition to SLAM.
         pelosi.x = PELOSI_SMASH_X;
         const ci = capsules.indexOf(pelosi.targetCapsule);
@@ -3915,8 +3933,25 @@ function updatePelosi(dt) {
             globalVolume: (typeof Howler !== 'undefined') ? Howler.volume() : 'no-howler',
             ctxState:     (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx.state : 'no-ctx',
           });
-          GAME_SFX.capsule_destruction.play();
+          const playId = GAME_SFX.capsule_destruction.play();
+          // CAPSULE-DIAG — log the sound ID + Howl polyphony state immediately AFTER
+          // .play() returns. If playId is undefined, Howler refused (suspended ctx,
+          // mute, etc.). If playId is a number but no audible sound, Howler queued the
+          // sound but something downstream (concurrent voice limit, mid-fire stop) is
+          // killing it before audio output. Helper-kill at line ~3580 doesn't have this
+          // post-call log because Brian confirmed it works — only Pelosi-smash needs it.
+          console.log('[CAPSULE-DIAG] post-play() at Pelosi-smash', {
+            playId:           playId,
+            playingNow:       GAME_SFX.capsule_destruction.playing(),
+            durationReported: GAME_SFX.capsule_destruction.duration(),
+          });
         }
+        // CAPSULE-DIAG — confirm we exited the if-guard cleanly and reached the SLAM
+        // transition. If this fires but post-play() above didn't, the .play() call
+        // itself threw silently (would also surface in browser console as Howler error).
+        console.log('[CAPSULE-DIAG] Pelosi -> SLAM phase transition', {
+          phaseT: pelosi.phaseT,
+        });
         pelosi.phase = 'SLAM';
         pelosi.phaseT = 0;
         break;
