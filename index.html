@@ -4803,22 +4803,19 @@ function applyTouchState() {
   }
 }
 
-// PAUSE-DOUBLE-FIRE-FIX — suppress synthesized pointerdown that fires after a real
-// touchstart on iOS Safari. K-FIX-2 assumed touchstart's preventDefault would block the
-// follow-up pointerdown; field test on commit 58af215 proved otherwise — the pause button
-// was getting togglePause()'d twice per tap (touchstart fires, then pointerdown fires
-// ~10-50ms later from iOS's mouse-event synthesis), so the state flipped ON→OFF in a
-// single user tap. PAUSE-DIAG logs confirmed two togglePause-entry events per tap.
-// Fix: touchstart records performance.now() into lastTouchTime; pointerdown early-returns
-// if a touch fired within TOUCH_SUPPRESS_MS. Gated on IS_MOBILE so PC (which has only
-// pointerdown, no touchstart) is unaffected.
-let lastTouchTime = 0;
-const TOUCH_SUPPRESS_MS = 500;
-
+// PAUSE-MOBILE-TOUCHSTART-ONLY — proper handler separation: mobile = touchstart only,
+// PC = pointerdown only. Replaces the brittle PAUSE-DOUBLE-FIRE-FIX 500ms time-based
+// suppression (which still race-condition'd on slower iOS taps where the synthesized
+// pointerdown landed AFTER the suppression window expired). With a hard IS_MOBILE early-
+// return at the top of pointerdown, there is exactly ONE handler firing per tap on each
+// platform — no time windows, no race conditions, no synthesized-event bookkeeping.
+//
+// Safe for d-pad input: pointermove/pointerup keys are only mutated against pointerIds
+// that pointerdown registered. With pointerdown gated off on mobile, those pointerIds
+// never enter activeTouches, so the move/up handlers no-op cleanly. Touchstart manages
+// its own d-pad keys under 't' + identifier prefix, fully independent of pointer IDs.
 canvas.addEventListener('pointerdown', e => {
-  if (IS_MOBILE && (performance.now() - lastTouchTime) < TOUCH_SUPPRESS_MS) {
-    return;                                                      // PAUSE-DOUBLE-FIRE-FIX — phantom synthesized event, ignore
-  }
+  if (IS_MOBILE) return;                                         // PAUSE-MOBILE-TOUCHSTART-ONLY — touchstart owns mobile input
   e.preventDefault();
   ensureAudioContext();                                          // L — first-input audio gate (mobile primary path)
   // N — speaker + pause icon hit-test (canvas-pixel coords). Icons render top-right; tap-zones
@@ -4897,14 +4894,12 @@ canvas.addEventListener('pointercancel', e=>{delete activeTouches[e.pointerId]; 
 
 // iOS Safari fallback — touch events in case pointer events don't fire
 canvas.addEventListener('touchstart', e=>{
-  e.preventDefault();   // K-FIX-2 — also suppresses synthesized pointerdown on iOS Safari
-                        // so cutsceneAdvance / restart paths don't double-fire per tap.
-                        // Listener registered with {passive:false} below to honor preventDefault.
-                        // PAUSE-DOUBLE-FIRE-FIX — K-FIX-2's claim turned out to be wrong on
-                        // the pause/icon hit-test path: synthesized pointerdown still fired
-                        // and called togglePause() a second time. Belt-and-suspenders: also
-                        // record lastTouchTime so the pointerdown handler can early-return.
-  lastTouchTime = performance.now();
+  e.preventDefault();   // K-FIX-2 — Listener registered with {passive:false} below to honor
+                        // preventDefault, which suppresses iOS's default touch behaviors
+                        // (scroll, text selection) on the canvas. PAUSE-MOBILE-TOUCHSTART-
+                        // ONLY (replaces PAUSE-DOUBLE-FIRE-FIX): no longer the suppressor of
+                        // synthesized pointerdown — that's now handled by an unconditional
+                        // IS_MOBILE early-return at the top of the pointerdown handler.
   ensureAudioContext(); // L — first-input audio gate (iOS Safari fallback path)
   // N — speaker + pause icon hit-test before state routing.
   {
