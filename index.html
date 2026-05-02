@@ -1543,6 +1543,18 @@ const SPEAKER_BOX  = { x: W - 30, y: ICON_Y, w: ICON_SIZE, h: ICON_SIZE };
 // plenty of finger area on phones. Rendered only on INTRO_BLACK while !audioUnlocked.
 const MUSIC_BTN_BOX = { x: W / 2 - 100, y: H / 2 + 40, w: 200, h: 40 };
 const PAUSE_BOX    = { x: W - 60, y: ICON_Y, w: ICON_SIZE, h: ICON_SIZE };
+// MOBILE-HIT-TEST-FIX — 50×50 transparent hit-rects, decoupled from the 22×22 visual icons.
+// Same pattern as the d-pad zones (boxLeft/boxRight/boxJump/boxUp/boxDown) — finger-friendly
+// invisible touch areas; the icon graphics are just visual markers. Centered on the original
+// 22×22 visual rects: SPEAKER visual center = (W-19, ICON_Y+11), PAUSE visual center =
+// (W-49, ICON_Y+11); subtract 25 on each axis to get the 50×50 top-left.
+// Spans: SPEAKER_HIT_BOX x=[W-44 .. W+6], PAUSE_HIT_BOX x=[W-74 .. W-24] — they OVERLAP
+// by 20px in the x=[W-44 .. W-24] strip (each centered on its 22×22 visual icon spaced
+// 30px apart, so the 50×50 zones can't help but encroach). Speaker is checked BEFORE pause
+// in pointerdown/touchstart, so the overlap strip resolves deterministically to toggleAudio.
+// Acceptable: speaker is the more-frequently-tapped of the two, so first-precedence is right.
+const SPEAKER_HIT_BOX = { x: W - 44, y: ICON_Y - 14, w: 50, h: 50 };
+const PAUSE_HIT_BOX   = { x: W - 74, y: ICON_Y - 14, w: 50, h: 50 };
 // AUDIO-3-LOG-DUMP — bottom-right DUMP LOGS button. 80×24 px, gameplay+game-over states
 // only. Positioned where it doesn't overlap touch controls (left jump+walk are on left
 // side; right ladder controls live higher up at H*0.45). Tap opens a DOM modal showing
@@ -4738,8 +4750,10 @@ canvas.addEventListener('pointerdown', e => {
     // AUDIO-3-LOG-DUMP — DUMP LOGS button hit-test. Only active when the button is rendered
     // (gameplay/game-over/CUTSCENE_BETWEEN). Opens DOM modal; does NOT advance game state.
     if (dumpBtnVisible() && pointInIconBox(txN, tyN, DUMP_BTN_BOX)) { showDumpLogModal(); return; }
-    if (pointInIconBox(txN, tyN, SPEAKER_BOX)) { toggleAudio(); return; }
-    if (pointInIconBox(txN, tyN, PAUSE_BOX))   { togglePause(); return; }
+    // MOBILE-HIT-TEST-FIX — use 50×50 SPEAKER_HIT_BOX/PAUSE_HIT_BOX (finger-friendly), not the
+    // 22×22 visual SPEAKER_BOX/PAUSE_BOX. Visual icons render unchanged at the smaller rect.
+    if (pointInIconBox(txN, tyN, SPEAKER_HIT_BOX)) { toggleAudio(); return; }
+    if (pointInIconBox(txN, tyN, PAUSE_HIT_BOX))   { togglePause(); return; }
     // AUDIO-3e-MUSIC-BUTTON — TAP TO START MUSIC hit-test. Only active during INTRO_BLACK
     // before audio is unlocked. Sets the flag and returns early so the game does NOT advance.
     // ensureAudioContext above already fired (creates audioContext, calls Howler.ctx.resume,
@@ -4803,8 +4817,9 @@ canvas.addEventListener('touchstart', e=>{
       const txN = (t0N.clientX - r0.left) / scale, tyN = (t0N.clientY - r0.top) / scale;
       // AUDIO-3-LOG-DUMP — DUMP LOGS button (iOS touch path).
       if (dumpBtnVisible() && pointInIconBox(txN, tyN, DUMP_BTN_BOX)) { showDumpLogModal(); return; }
-      if (pointInIconBox(txN, tyN, SPEAKER_BOX)) { toggleAudio(); return; }
-      if (pointInIconBox(txN, tyN, PAUSE_BOX))   { togglePause(); return; }
+      // MOBILE-HIT-TEST-FIX — 50×50 hit-rects on iOS touch path too.
+      if (pointInIconBox(txN, tyN, SPEAKER_HIT_BOX)) { toggleAudio(); return; }
+      if (pointInIconBox(txN, tyN, PAUSE_HIT_BOX))   { togglePause(); return; }
       // AUDIO-3e-MUSIC-BUTTON — TAP TO START MUSIC hit-test (iOS touch fallback path).
       // Same logic as pointerdown handler above. Most relevant on iPhone Safari since this
       // is where Howler's auto-unlock is finickiest.
