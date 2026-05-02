@@ -19,8 +19,18 @@ import requests                                               # kept for fallbac
 UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 TARGETS = [
-    ('FreqMan', 43607, 'sfx_ragdoll_thud'),
-    ('kyles',   452667, 'sfx_capsule_destruction'),
+    ('FreqMan',          43607,  'sfx_ragdoll_thud'),
+    ('kyles',            452667, 'sfx_capsule_destruction'),
+    # SFX-RERUN-4 — top 3 candidates for player_death_scream (cartoon comedic).
+    # SUPERSEDED — Brian's revised spec rejects cartoon vibe; see masculine-grunt
+    # candidates below. Kept for audit trail.
+    ('se2001',           464361, 'cand_player_death_scream_tom_esque'),
+    ('SundayRecords',    668884, 'cand_player_death_scream_tom_jerry'),
+    ('NicknameLarry',    508898, 'cand_player_death_scream_wow'),
+    # SFX-RERUN-5 — masculine pained grunt candidates (replaces cartoon vibe).
+    ('MrFossy',          547209, 'cand_player_death_scream_pain_grunt_09'),
+    ('EvilOldScratch',   667697, 'cand_player_death_scream_strong_grunt'),
+    ('miksmusic',        497713, 'cand_player_death_scream_punch_grunt'),
 ]
 
 

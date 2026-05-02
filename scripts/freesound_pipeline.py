@@ -52,6 +52,22 @@ TARGETS = [
         'title':      'window break with axe glass shatter in trailer.wav',
         'src_dur':    6.756,
     },
+    # SFX-RERUN-5 — player death scream, MASCULINE PAINED GRUNT (Brian's
+    # revised spec rejected the cartoon vibe). Picked from 3 CC0 candidates
+    # under "male grunt pain hit" search; chose MrFossy as #1 ranked + most
+    # explicit name match (AdultMale_PainGrunts pack). Backups for future
+    # iteration if needed: EvilOldScratch/667697 (Strong_Male_Grunt1) and
+    # miksmusic/497713 (Punch Grunt 1, CC-BY).
+    {
+        'filename':   'sfx_player_death_scream.mp3',
+        'preview':    'https://cdn.freesound.org/previews/547/547209_129727-hq.mp3',
+        'target_sec': 0.7,                                     # mid of 0.5-0.9
+        'page':       'https://freesound.org/people/MrFossy/sounds/547209/',
+        'license':    'CC0 (Public Domain)',
+        'author':     'MrFossy',
+        'title':      'Voice_AdultMale_PainGrunts_09.wav',
+        'src_dur':    0.0,                                     # not measured pre-download; reported by ffprobe post
+    },
 ]
 
 
@@ -121,6 +137,11 @@ def main() -> int:
         tmp_root = Path(tmp_root_str)
         for t in TARGETS:
             print(f'\n==> {t["filename"]}')
+            dst_pre = SFX_DIR / t['filename']
+            if dst_pre.exists():
+                print(f'    SKIP (already exists, {dst_pre.stat().st_size / 1024:.1f} KB) — '
+                      f'delete the file first to force re-pull')
+                continue
             print(f'    title:    {t["title"]}')
             print(f'    author:   {t["author"]}')
             print(f'    license:  {t["license"]}')
