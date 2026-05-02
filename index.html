@@ -1115,7 +1115,7 @@ const GAME_SFX = {
   eagle_screech:        new Howl({ src: ['audio/sfx/sfx_eagle_screech.mp3'],        volume: 0.75, preload: true }),
   pelosi_tear:          new Howl({ src: ['audio/sfx/sfx_pelosi_tear.mp3'],          volume: 0.7,  preload: true }),
   briefcase_pickup:     new Howl({ src: ['audio/sfx/sfx_briefcase_pickup.mp3'],     volume: 0.65, preload: true }),
-  capsule_destruction:  new Howl({ src: ['audio/sfx/sfx_capsule_destruction.mp3'],  volume: 0.7,  preload: true }),
+  capsule_destruction:  new Howl({ src: ['audio/sfx/sfx_capsule_destruction.mp3'],  volume: 0.85, preload: true }),  // SFX-PACK-FIX: 0.7→0.85 per Brian field test (was getting masked by helperKill synth)
   crowd_cheer:          new Howl({ src: ['audio/sfx/sfx_crowd_cheer.mp3'],          volume: 0.65, preload: true }),
   player_death_scream:  new Howl({ src: ['audio/sfx/sfx_player_death_scream.mp3'],  volume: 0.75, preload: true }),
   ragdoll_thud:         new Howl({ src: ['audio/sfx/sfx_ragdoll_thud.mp3'],         volume: 0.7,  preload: true }),
@@ -3552,7 +3552,8 @@ function updateHelpers(dt) {
         stats.helperKillCount++;
         addScore(HELPER_KILL_SCORE, true, c.x, c.y - 20, '#ff88ff');
         capsules.splice(ci, 1);
-        playSfx_helperKill();                                  // N — pop on helper kill
+        // playSfx_helperKill();                                  // N — pop on helper kill
+        // SFX-PACK-FIX: synth stripped, mp3 owns this moment per Brian field test
         // SFX-PACK — real glass-shatter mp3 for capsule destruction (Antifa/Zombie kills capsule).
         if (typeof GAME_SFX !== 'undefined' && GAME_SFX.capsule_destruction) GAME_SFX.capsule_destruction.play();
         if (h.type === 'ZOMBIE') { helperKilled = true; break; }
@@ -6539,13 +6540,10 @@ function loop(ts) {
         // CUTSCENE_PHASE1 entry (the surrounding state-machine block executes exactly
         // once on transition into the phase, so no extra guard needed).
         if (typeof TRUMP_AUDIO !== 'undefined' && TRUMP_AUDIO['WITCH HUNT!']) TRUMP_AUDIO['WITCH HUNT!'].play();
-        // SFX-PACK — RNC stage crowd cheer. Delayed 600ms so the DNC "YOU'RE FIRED"
-        // bubble (1.8s caption) lands clean first; cheer comes in as the WITCH HUNT
-        // beat hits. setTimeout safe here — CUTSCENE_PHASE1 entry is a one-way state
-        // transition guarded by stateT >= CUTSCENE_FADE_DURATION, no re-fire risk.
-        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.crowd_cheer) {
-          setTimeout(() => GAME_SFX.crowd_cheer.play(), 600);
-        }
+        // SFX-PACK — RNC stage crowd cheer. SFX-PACK-FIX: 600ms delay removed per Brian
+        // field test — "the crowd needs to come on as scene opens. doesn't land with the
+        // delay." Now fires immediately at PHASE1 entry alongside the DNC bubble push.
+        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.crowd_cheer) GAME_SFX.crowd_cheer.play();
       }
       break;
     }
