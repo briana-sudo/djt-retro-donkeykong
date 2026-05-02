@@ -1116,7 +1116,7 @@ const GAME_SFX = {
   pelosi_tear:          new Howl({ src: ['audio/sfx/sfx_pelosi_tear.mp3'],          volume: 0.7,  preload: true }),
   briefcase_pickup:     new Howl({ src: ['audio/sfx/sfx_briefcase_pickup.mp3'],     volume: 0.65, preload: true }),
   capsule_destruction:  new Howl({ src: ['audio/sfx/sfx_capsule_destruction.mp3'],  volume: 0.85, preload: true }),  // SFX-PACK-FIX: 0.7→0.85 per Brian field test (was getting masked by helperKill synth)
-  crowd_cheer:          new Howl({ src: ['audio/sfx/sfx_crowd_cheer.mp3'],          volume: 0.65, preload: true }),
+  crowd_cheer:          new Howl({ src: ['audio/sfx/sfx_crowd_cheer.mp3'],          volume: 0.65, loop: true, preload: true }),  // SFX-PACK-FIX-V2: loop:true to sustain through 3.0s CUTSCENE_PHASE1 (1.5s source); stop()'d at PHASE1 exit
   player_death_scream:  new Howl({ src: ['audio/sfx/sfx_player_death_scream.mp3'],  volume: 0.75, preload: true }),
   ragdoll_thud:         new Howl({ src: ['audio/sfx/sfx_ragdoll_thud.mp3'],         volume: 0.7,  preload: true }),
   media_chaos:          new Howl({ src: ['audio/sfx/media_chaos.mp3'],              volume: 0.6,  preload: true }),
@@ -3875,7 +3875,11 @@ function updatePelosi(dt) {
         const ci = capsules.indexOf(pelosi.targetCapsule);
         if (ci >= 0) capsules.splice(ci, 1);
         spawnPelosiGlassShatter(pelosi.x, pelosi.y - PELOSI_HEIGHT * 0.55);
-        playSfx_pelosiSlam();                                  // N — glass shatter on slam
+        // playSfx_pelosiSlam();                                  // N — glass shatter on slam
+        // SFX-PACK-FIX-V2: synth stripped, mp3 unified with helper-kill path per Brian field test.
+        // Both capsule-destruction events (helper-kill at line 3554, Pelosi-smash here) now
+        // share the same sfx_capsule_destruction.mp3 sound so audio behavior is consistent.
+        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.capsule_destruction) GAME_SFX.capsule_destruction.play();
         pelosi.phase = 'SLAM';
         pelosi.phaseT = 0;
         break;
@@ -3904,23 +3908,41 @@ function updatePelosi(dt) {
     }
     case 'TEAR': {
       if (pelosi.phaseT >= PELOSI_TEAR_DURATION) {
-        // Spawn two paper pieces flying off in opposite arcs (one upper-left, one upper-right).
+        // SFX-PACK-FIX-V2 — capture position + base-y BEFORE the state transition + 800ms
+        // delay below; pelosi.x will have shifted during the WALKING_RIGHT walk by the
+        // time the setTimeout fires.
+        const px = pelosi.x;
         const baseY = pelosi.y - PELOSI_HEIGHT * 0.55;
-        tornPieces.push({ x: pelosi.x - 6, y: baseY, vx: -180, vy: -240, rot: 0, rotV:  6, t: 0 });
-        tornPieces.push({ x: pelosi.x + 6, y: baseY, vx:  180, vy: -260, rot: 0, rotV: -6, t: 0 });
-        playSfx_pelosiTear();                                  // N — paper rip + low rumble
-        // SFX-PACK — real paper-rip mp3 layered with the synth tear.
-        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.pelosi_tear) GAME_SFX.pelosi_tear.play();
-        // H2 — Pelosi tear → +500 × multiplier (was flat 500). pelosiFlash overlay still shown.
-        stats.pelosiCount++;
-        addScore(PELOSI_BONUS, true, pelosi.x, pelosi.y - PELOSI_HEIGHT, '#ffcc00');
-        pelosiFlash.active = true;
-        pelosiFlash.t = 0;
-        pelosiFlash.x = pelosi.x;
-        pelosiFlash.y = pelosi.y - PELOSI_HEIGHT - 10;
+        const flashY = pelosi.y - PELOSI_HEIGHT - 10;
+        const scoreY = pelosi.y - PELOSI_HEIGHT;
+
+        // SFX-PACK-FIX-V2 — STATE TRANSITION FIRES IMMEDIATELY to prevent re-entry. The
+        // if-block above runs every frame while pelosi.phase === 'TEAR' && phaseT >= dur,
+        // so without this immediate phase change, the 800ms setTimeout below would be
+        // queued 48+ times (60fps × 0.8s) before the phase change took effect.
         pelosi.phase = 'WALKING_RIGHT';
         pelosi.phaseT = 0;
         pelosi.facing = 1;
+
+        // SFX-PACK-FIX-V2 — pause 800ms after the unified capsule-shatter mp3 from the
+        // SLAM-entry block above (line ~3878) before the tear sprite + audio + score
+        // flash all land together. Lets the shatter audio (~0.7s) clear before the tear
+        // event takes over per Brian field test.
+        setTimeout(() => {
+          // Spawn two paper pieces flying off in opposite arcs (upper-left + upper-right).
+          tornPieces.push({ x: px - 6, y: baseY, vx: -180, vy: -240, rot: 0, rotV:  6, t: 0 });
+          tornPieces.push({ x: px + 6, y: baseY, vx:  180, vy: -260, rot: 0, rotV: -6, t: 0 });
+          playSfx_pelosiTear();                                  // N — paper rip + low rumble (synth)
+          // SFX-PACK — real paper-rip mp3 layered with the synth tear.
+          if (typeof GAME_SFX !== 'undefined' && GAME_SFX.pelosi_tear) GAME_SFX.pelosi_tear.play();
+          // H2 — Pelosi tear → +500 × multiplier (was flat 500). pelosiFlash overlay shown.
+          stats.pelosiCount++;
+          addScore(PELOSI_BONUS, true, px, scoreY, '#ffcc00');
+          pelosiFlash.active = true;
+          pelosiFlash.t = 0;
+          pelosiFlash.x = px;
+          pelosiFlash.y = flashY;
+        }, 800);
       }
       break;
     }
@@ -6574,6 +6596,10 @@ function loop(ts) {
       renderCutsceneCaption();
 
       if (stateT >= CUTSCENE_PHASE1_DURATION) {
+        // SFX-PACK-FIX-V2 — stop the looping crowd_cheer cleanly at PHASE1 exit so it
+        // doesn't bleed into PHASE3. Placed BEFORE the state assignment so the audio
+        // ends in lockstep with the scene end per Brian field test.
+        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.crowd_cheer) GAME_SFX.crowd_cheer.stop();
         // N-FIX-7 — state-driven: CUTSCENE_PHASE3 maps to NESSUN_DORMA in computeDesiredMusic.
         // tickBGM transitions SILENT → NESSUN_DORMA next tick (cancel ramps + 100ms fade-out
         // + 200ms fade-in to 1.0 + playNessunDorma scheduling).
