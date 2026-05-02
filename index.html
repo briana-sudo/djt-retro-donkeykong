@@ -50,7 +50,9 @@ const _origConsoleLog  = console.log;
 console.log = function() {
   // PAUSE-DIAG — also capture [PAUSE-DIAG] prefix so DUMP LOGS picks up the diagnostic
   // output added to pointerdown / touchstart / togglePause for iPhone pause-button trace.
-  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0)) {
+  // CAPSULE-DIAG — also capture [CAPSULE-DIAG] for the SFX-PACK round-3 capsule
+  // destruction trace (Brian field test: synth still sounds, despite both prior strips).
+  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0)) {
     window.bgmLogBuffer.push({
       prefix: arguments[0],
       data:   arguments.length > 1 ? arguments[1] : null,
@@ -2681,6 +2683,18 @@ function hit(source, capsule) {
   // first. Cycle count decided at trigger time inside tickDtjDance based on player.lives.
   dtjDanceTrigger  = true;
   dtjDanceTriggerT = DTJ_DANCE_TRIGGER_DELAY;
+  // CAPSULE-DIAG — log when the player-hit "thwack" synth fires. This is a SEPARATE
+  // event from capsule-destruction (capsule kills DNC, capsule does NOT splice — keeps
+  // rolling). If DUMP LOGS shows [CAPSULE-DIAG] capsuleHitsPlayer entries WITHOUT
+  // matching helper-kill / Pelosi-smash entries during Brian's "destroy a capsule"
+  // field test, then the testing path is "run into capsule" and the synth Brian hears
+  // is playSfx_capsuleHitsPlayer (intended — this is the death thwack, not the
+  // destruction shatter).
+  console.log('[CAPSULE-DIAG] capsuleHitsPlayer (line 2684) — player-hit synth, NOT a destruction event', {
+    capsuleVx: (capsule && typeof capsule.vx === 'number') ? capsule.vx : 'no-capsule',
+    source:    source,
+    livesNow:  player.lives,
+  });
   playSfx_capsuleHitsPlayer();                            // N — thwack on hit moment
 }
 
@@ -3555,7 +3569,18 @@ function updateHelpers(dt) {
         // playSfx_helperKill();                                  // N — pop on helper kill
         // SFX-PACK-FIX: synth stripped, mp3 owns this moment per Brian field test
         // SFX-PACK — real glass-shatter mp3 for capsule destruction (Antifa/Zombie kills capsule).
-        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.capsule_destruction) GAME_SFX.capsule_destruction.play();
+        // CAPSULE-DIAG — log Howl state + global mute at the moment .play() fires so Brian's
+        // field-test DUMP LOGS reveals whether the mp3 is loaded + audible at runtime.
+        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.capsule_destruction) {
+          console.log('[CAPSULE-DIAG] play() at helper-kill (line 3558)', {
+            howlState:    GAME_SFX.capsule_destruction.state(),    // 'unloaded' | 'loading' | 'loaded'
+            howlVolume:   GAME_SFX.capsule_destruction.volume(),
+            globalMute:   (typeof Howler !== 'undefined') ? Howler._muted : 'no-howler',
+            globalVolume: (typeof Howler !== 'undefined') ? Howler.volume() : 'no-howler',
+            ctxState:     (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx.state : 'no-ctx',
+          });
+          GAME_SFX.capsule_destruction.play();
+        }
         if (h.type === 'ZOMBIE') { helperKilled = true; break; }
       }
     }
@@ -3879,7 +3904,19 @@ function updatePelosi(dt) {
         // SFX-PACK-FIX-V2: synth stripped, mp3 unified with helper-kill path per Brian field test.
         // Both capsule-destruction events (helper-kill at line 3554, Pelosi-smash here) now
         // share the same sfx_capsule_destruction.mp3 sound so audio behavior is consistent.
-        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.capsule_destruction) GAME_SFX.capsule_destruction.play();
+        // CAPSULE-DIAG — Pelosi-smash variant of the helper-kill diagnostic above. If only
+        // ONE of these two prefixes shows in DUMP LOGS during a capsule-destroy field test,
+        // we know which trigger path the player is exercising vs which is silent.
+        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.capsule_destruction) {
+          console.log('[CAPSULE-DIAG] play() at Pelosi-smash (line 3882)', {
+            howlState:    GAME_SFX.capsule_destruction.state(),
+            howlVolume:   GAME_SFX.capsule_destruction.volume(),
+            globalMute:   (typeof Howler !== 'undefined') ? Howler._muted : 'no-howler',
+            globalVolume: (typeof Howler !== 'undefined') ? Howler.volume() : 'no-howler',
+            ctxState:     (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx.state : 'no-ctx',
+          });
+          GAME_SFX.capsule_destruction.play();
+        }
         pelosi.phase = 'SLAM';
         pelosi.phaseT = 0;
         break;
