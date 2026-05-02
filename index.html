@@ -1973,7 +1973,11 @@ function cutsceneAdvance() {
 }
 
 function skipToGame() {
-  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; capsuleSpawnInterval = 2.5 + Math.random() * 2.0; dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; resetStats(); pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; pelosi.timer = PELOSI_INTERVAL_MIN + Math.random() * (PELOSI_INTERVAL_MAX - PELOSI_INTERVAL_MIN); pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; }
+  // P-DIFFICULTY-1-FIX BUG 9: skipToGame regression — was reading the now-commented-
+  // out PELOSI_INTERVAL_MIN/MAX constants → ReferenceError on tap during non-GAMEPLAY
+  // state (intro/cutscene). Replaced with the same per-level pelosi-timer formula
+  // used elsewhere. Also using getLevelParams for capsuleSpawnInterval.
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance; capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; } dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; resetStats(); pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; { const _pp = getLevelParams().pelosiInterval; pelosi.timer = _pp * 0.8 + Math.random() * _pp * 0.4; } pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; }
 }
 
 // ─────────────────────────────────────────────
@@ -1985,6 +1989,17 @@ window.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (GAME_KEYS.has(e.code)) e.preventDefault();
   ensureAudioContext();                                          // L — first-input audio gate (PC keyboard path)
+  // P-DIFFICULTY-1-FIX BUG 8 — Ctrl+Shift+L debug level skip. GAMEPLAY-only;
+  // increments currentLevel + re-arms first-capsule-fast-drop + resets
+  // ladderTime. DOES NOT advance bgmRotationIdx (per Brian: lets per-level
+  // audio testing stay isolated). e.repeat filter prevents held-key spam.
+  if (state === 'GAMEPLAY' && !e.repeat && e.ctrlKey && e.shiftKey && e.code === 'KeyL') {
+    e.preventDefault();
+    currentLevel++;
+    firstCapsuleDropped = false;
+    ladderTime = 0;
+    return;
+  }
   // N — global audio toggle (M-key). Works in any state.
   if (e.code === 'KeyM') { toggleAudio(); return; }
   // N — pause toggle (P-key, Escape). togglePause internally gates on isPausableState().
@@ -2157,6 +2172,15 @@ function platSolidAt(px, plat, climbing) {
 //  UPDATE PLAYER
 // ─────────────────────────────────────────────
 function updatePlayer(dt) {
+  // P-DIFFICULTY-1-FIX BUG 8: 3s level-start lock. Tick down + early-return so
+  // ALL player physics + input are skipped during the lock window. Player starts
+  // at FLOOR with onGround=true / vy=0, so freezing physics is safe — they sit
+  // in place. Capsules + DTJ animation continue running (separate update calls)
+  // so by the time the lock releases the first capsule has cascaded down.
+  if (levelStartLockT > 0) {
+    levelStartLockT -= dt;
+    return;
+  }
   const left   = keys['ArrowLeft']  || touch.left;
   const right  = keys['ArrowRight'] || touch.right;
   const climbU = keys['KeyA']       || touch.climbUp;
@@ -2528,18 +2552,21 @@ function spawnCapsule() {
     return;
   }
   if (!firstCapsuleDropped) {
-    // First-capsule-fast-drop: spawn at top of leftmost ladder (ladders[0], x=80,
-    // top y=672), initial vy=200, gravity governs the rest.
-    const lad = ladders[0];
+    // P-DIFFICULTY-1-FIX BUG 7: spawn first capsule from DTJ's BARREL_X position
+    // (top of screen) with 2.5× speed boost. Existing cascade physics carry it
+    // to FLOOR in ~5s. Was: spawn at top of ladders[0] (FLOOR↔P1 ladder, x=80,
+    // y=654) which appeared near FLOOR — confused the player. Now it visibly
+    // falls from DTJ's throw spot like every other capsule, just faster.
+    const _firstMult = _p.capsuleSpeedMult * 2.5;
     capsules.push({
-      x: lad.x + LADDER_W / 2,
-      y: lad.y - CAPSULE_R,
-      vx: 0,
-      vy: 200,
-      rolling: false,
-      onPlat: null,
+      x: BARREL_X,
+      y: TOP.y - CAPSULE_R,
+      vx: CAPSULE_THROW_DIR * _firstMult * CAPSULE_ROLL_SPD,
+      vy: 0,
+      rolling: true,
+      onPlat: TOP,
       rot: 0,
-      speedMult: _p.capsuleSpeedMult,
+      speedMult: _firstMult,
     });
     firstCapsuleDropped = true;
     return;
@@ -2876,12 +2903,18 @@ function _resetEntitiesAndPerLevel() {
   multiplierT = 0;
   // All entity arrays cleared.
   capsules.length      = 0;
-  capsuleSpawnT        = 0;
   // P-DIFFICULTY-1: spawn interval uses current level params. currentLevel + reset
   // flags are set by the CALLER (resetForLevelTransition or resetForGameOver) before
   // this helper runs, so getLevelParams() here reflects the correct destination level.
   { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance;
     capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; }
+  // P-DIFFICULTY-1-FIX BUG 8: 3s movement lock + immediate first-capsule fire.
+  // Setting capsuleSpawnT = capsuleSpawnInterval triggers the next updateCapsules
+  // tick to start DTJ's WALK_TO_BARREL → THROW animation immediately, so the first
+  // capsule actually appears ~0.5-1s into GAMEPLAY. By the time the 3s lock
+  // releases, the capsule has cascaded down and the player has visual feedback.
+  capsuleSpawnT        = capsuleSpawnInterval;
+  levelStartLockT      = 3.0;
   helpers.length       = 0;
   particles            = [];
   bricks               = [];
@@ -3338,21 +3371,30 @@ const TARGET_TIME           = 120;        // seconds; tune later
 let currentLevel        = 1;
 let firstCapsuleDropped = false;
 let ladderTime          = 0;
+// P-DIFFICULTY-1-FIX BUG 8: 3s level-start movement lock. Set to 3.0 in
+// _resetEntitiesAndPerLevel; ticked down + early-returns updatePlayer while > 0.
+// First capsule fires immediately (capsuleSpawnT primed in same helper) so by
+// the time the lock releases, the capsule has cascaded down toward the player.
+let levelStartLockT     = 0;
 
 // 10-level parameter table. Index = currentLevel - 1 (clamped to 9 for L11+ which
 // reuses L10 row; winBonus extends linearly via getLevelParams).
 // Columns: capsuleSpeedMult, spawnIntervalAvg, spawnVariance, fastDropOn,
 //          ladderDropChance, antiCampSec, pelosiInterval, antifaWaveSize, winBonus
+// P-DIFFICULTY-1-FIX BUG 11: ladderDropChance ([4] column) curve revised per Brian
+// field test. Was: 0/0.05/0.10/0.20/0.30/0.35/0.40/0.50/0.55/0.60 (too gradual, L2-3
+// felt no different from L1). Now: 0/0.25/0.30/0.35/0.40/0.45/0.50/0.55/0.58/0.60
+// — sharp jump at L2 makes the difficulty curve actually felt early.
 const DIFFICULTY_TABLE = [
   [1.00, 2.5, 0.30, true, 0.00, 10, 25, 1, 2000],   // L1
-  [1.07, 2.3, 0.28, true, 0.05, 9,  23, 1, 2400],   // L2
-  [1.14, 2.1, 0.25, true, 0.10, 8,  21, 1, 2800],   // L3
-  [1.20, 1.9, 0.23, true, 0.20, 7,  19, 2, 3200],   // L4
-  [1.27, 1.7, 0.21, true, 0.30, 6,  18, 2, 3600],   // L5
-  [1.33, 1.6, 0.20, true, 0.35, 6,  16, 2, 4000],   // L6
-  [1.40, 1.4, 0.18, true, 0.40, 5,  15, 3, 4400],   // L7
-  [1.47, 1.3, 0.17, true, 0.50, 5,  14, 3, 4800],   // L8
-  [1.53, 1.2, 0.16, true, 0.55, 4,  13, 3, 5200],   // L9
+  [1.07, 2.3, 0.28, true, 0.25, 9,  23, 1, 2400],   // L2
+  [1.14, 2.1, 0.25, true, 0.30, 8,  21, 1, 2800],   // L3
+  [1.20, 1.9, 0.23, true, 0.35, 7,  19, 2, 3200],   // L4
+  [1.27, 1.7, 0.21, true, 0.40, 6,  18, 2, 3600],   // L5
+  [1.33, 1.6, 0.20, true, 0.45, 6,  16, 2, 4000],   // L6
+  [1.40, 1.4, 0.18, true, 0.50, 5,  15, 3, 4400],   // L7
+  [1.47, 1.3, 0.17, true, 0.55, 5,  14, 3, 4800],   // L8
+  [1.53, 1.2, 0.16, true, 0.58, 4,  13, 3, 5200],   // L9
   [1.60, 1.0, 0.15, true, 0.60, 4,  12, 3, 6000],   // L10
 ];
 
@@ -5712,7 +5754,7 @@ function drawHUD() {
   // J — score + high score, right-aligned. SCORE on the upper line, HI on the lower line so the
   // HUD typography matches the existing 13px monospace SCORE style without crowding the title.
   ctx.fillStyle='#ffcc00'; ctx.font='bold 13px monospace'; ctx.textAlign='right';
-  ctx.fillText('SCORE ' + Math.floor(playerScore), W-8, HUD_Y + 11);
+  ctx.fillText('SC: ' + Math.floor(playerScore), W-8, HUD_Y + 11);   // P-DIFFICULTY-1-FIX GATE 19: 'SCORE ' → 'SC: ' (saves ~16px on 480px iPhone)
   // J — HIGH SCORE display rule: blank dashes when the player has never set a score.
   // K-FIX-5 — sources the top entry from highScores (was: highScore + highScoreInitials globals).
   // Three-way display preserved from K-FIX-2/4:
@@ -5721,13 +5763,14 @@ function drawHUD() {
   //   top entry initials non-empty            → 'HI BRI 4325'  (trailing spaces trimmed)
   ctx.fillStyle='#aaccff'; ctx.font='bold 11px monospace';
   let hiText;
+  // P-DIFFICULTY-1-FIX GATE 19: 'HI ' → 'HI: ' for visual consistency with 'SC: '.
   if (highScores.length === 0) {
-    hiText = 'HI ---';
+    hiText = 'HI: ---';
   } else {
     const top = highScores[0];
     const trimmed = (top.initials || '').replace(/\s+$/, '');
-    if (!trimmed) hiText = 'HI ' + Math.floor(top.score);
-    else          hiText = 'HI ' + trimmed + ' ' + Math.floor(top.score);
+    if (!trimmed) hiText = 'HI: ' + Math.floor(top.score);
+    else          hiText = 'HI: ' + trimmed + ' ' + Math.floor(top.score);
   }
   ctx.fillText(hiText, W-8, HUD_Y + 22);
 
@@ -6397,7 +6440,7 @@ function loop(ts) {
       // Shake on first hit
       if(shatterT>0.5&&shatterT<0.55){ shakeAmt=10; boom(W/2,500,28,true); playSfx_memorialCrash(); /* N-FIX-2 — 4-layer crash on visual shatter */ }
       if(shatterT>1.2&&shatterT<1.25){ shakeAmt=8; }
-      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; capsuleSpawnInterval=2.5+Math.random()*2.0; dtjAnimState='IDLE'; dtjAnimT=0; dtjAnimX=DTJ_GAMEPLAY_X; helpers.length=0; player.lives=3; player.invulnT=0; player.platformsReached=new Set([0]); playerScore=0; multiplier=MULT_BASE; multiplierT=0; levelStartTime=totalT; scoreFloats.length=0; resetStats(); pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); pelosi.active=false; pelosi.phase='IDLE'; pelosi.phaseT=0; pelosi.timer=PELOSI_INTERVAL_MIN+Math.random()*(PELOSI_INTERVAL_MAX-PELOSI_INTERVAL_MIN); pelosi.facing=-1; pelosi.targetCapsule=null; pelosiFlash.active=false; tornPieces.length=0; introHasPlayed=true; /* K — single set-site for skip-intro gate */ /* N-FIX-7 — BGM start is state-driven via tickBGM/computeDesiredMusic */ }
+      if(shatterT>3.5){ state='GAMEPLAY'; stateT=0; particles=[]; bricks=[]; capsules.length=0; capsuleSpawnT=0; { const _sp=getLevelParams(); const _v=_sp.spawnIntervalAvg*_sp.spawnVariance; capsuleSpawnInterval=_sp.spawnIntervalAvg-_v+Math.random()*_v*2; } dtjAnimState='IDLE'; dtjAnimT=0; dtjAnimX=DTJ_GAMEPLAY_X; helpers.length=0; player.lives=3; player.invulnT=0; player.platformsReached=new Set([0]); playerScore=0; multiplier=MULT_BASE; multiplierT=0; levelStartTime=totalT; scoreFloats.length=0; resetStats(); pickupSpawnTimer=0; pickupRespawnDelay=0; pickup.active=false; spawnFirstPickup(); pelosi.active=false; pelosi.phase='IDLE'; pelosi.phaseT=0; { const _pp=getLevelParams().pelosiInterval; pelosi.timer=_pp*0.8+Math.random()*_pp*0.4; } pelosi.facing=-1; pelosi.targetCapsule=null; pelosiFlash.active=false; tornPieces.length=0; introHasPlayed=true; /* K — single set-site for skip-intro gate */ /* N-FIX-7 — BGM start is state-driven via tickBGM/computeDesiredMusic */ /* P-DIFFICULTY-1-FIX BUG 9: was reading commented-out PELOSI_INTERVAL_MIN/MAX → ReferenceError when intro completed naturally; now uses getLevelParams matching the rest of the codebase */ levelStartLockT=3.0; /* P-DIFFICULTY-1-FIX BUG 8: also apply 3s lock at intro→GAMEPLAY entry */ }
       break;
   }
 
@@ -6832,6 +6875,15 @@ function loop(ts) {
     // sets initialsEntryActive=false and starts the 1.0s "INITIALS SAVED" confirmation, after
     // which the prompt re-appears.
     case 'GAME_OVER': {
+      // P-DIFFICULTY-1-FIX — 15s auto-restart. Tick stateT-driven timer; at 15s
+      // automatically call restartFromGameOver() (same path as TAP TO RESTART).
+      // GATED on !initialsEntryActive — if player is entering initials, hold the
+      // countdown until they finish. P-DIFFICULTY-2 will replace this destination
+      // with the ATTRACT screen; for now it goes back to L1 fresh game.
+      if (!initialsEntryActive && stateT >= 15.0) {
+        restartFromGameOver();
+        break;
+      }
       const showRestartPrompt = !initialsEntryActive && initialsConfirmedT <= 0;
       drawScoreBreakdown({
         header:        'GAME OVER',
@@ -7019,7 +7071,7 @@ function loop(ts) {
       // I5 — full score breakdown overlay. J — render delegated to shared drawScoreBreakdown
       // helper (reused by GAME_OVER). showHighScore=false → no high-score block on level-complete.
       drawScoreBreakdown({
-        header:        'LEVEL 1 COMPLETE',
+        header:        'LEVEL ' + currentLevel + ' COMPLETE',  // P-DIFFICULTY-1-FIX BUG 2: dynamic level number
         total:         winFinalScore,
         prompt:        'TAP TO CONTINUE',
         pulseT:        stateT,
@@ -7065,11 +7117,15 @@ function loop(ts) {
         ctx.fillStyle = '#ffcc00';
         ctx.font = 'bold 28px monospace';
         ctx.textAlign = 'center';
-        ctx.fillText('LEVEL 1 COMPLETE!', W/2, 200);
+        // P-DIFFICULTY-1-FIX BUG 2: dynamic level number. At WIN cutscene render
+        // time, currentLevel is still the level just completed (resetForLevelTransition
+        // only increments on BETWEEN tap). So currentLevel = "completed" and
+        // currentLevel + 1 = "next."
+        ctx.fillText('LEVEL ' + currentLevel + ' COMPLETE!', W/2, 200);
         // Line 2 — subtitle (white, current size from prior reveal).
         ctx.fillStyle = '#fff';
         ctx.font = 'bold 22px monospace';
-        ctx.fillText('LEVEL 2 COMING SOON', W/2, 240);
+        ctx.fillText('LEVEL ' + (currentLevel + 1) + ' COMING SOON', W/2, 240);
         // Line 3 — pulsing action prompt.
         const pulseB = 0.5 + 0.5 * Math.sin(stateT * 4);
         ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulseB).toFixed(3) + ')';
