@@ -5362,14 +5362,18 @@ canvas.addEventListener('touchmove', e=>{
 function drawDpad() {
   if (state!=='GAMEPLAY') return;
   ctx.save();
+  // MOBILE-LABELS — replaced 'JUMP' word + filled triangles with single-letter
+  // 'J' + Unicode arrow chars per Brian field test. All 7 buttons now use big:true
+  // (28px) so the single-letter J is readable on the wide jump button (180px wide).
+  // Visual treatment (alpha, color, font, position) unchanged from prior F2 spec.
   const defs=[
-    {b:boxJump,  icon:'JUMP', big:false},
-    {b:boxJump2, icon:'JUMP', big:false},
-    {b:boxJump3, icon:'JUMP', big:false},
-    {b:boxLeft,  icon:'◀',   big:true},
-    {b:boxRight, icon:'▶',   big:true},
-    {b:boxUp,    icon:'▲',   big:true},
-    {b:boxDown,  icon:'▼',   big:true},
+    {b:boxJump,  icon:'J',   big:true},
+    {b:boxJump2, icon:'J',   big:true},
+    {b:boxJump3, icon:'J',   big:true},
+    {b:boxLeft,  icon:'←',   big:true},
+    {b:boxRight, icon:'→',   big:true},
+    {b:boxUp,    icon:'↑',   big:true},
+    {b:boxDown,  icon:'↓',   big:true},
   ];
   for (const {b,icon,big} of defs) {
     const active=Object.values(activeTouches).some(t=>t.box===b);
