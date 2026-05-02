@@ -4869,25 +4869,36 @@ canvas.addEventListener('pointerdown', e => {
   if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
   if (state === 'INTRO_BLACK') return;                     // N-FIX-5 BUG 2 — prime audio only, don't skip intro
   if (state !== 'GAMEPLAY') { skipToGame(); return; }
-  canvas.setPointerCapture(e.pointerId);
-  const r=canvas.getBoundingClientRect();
-  const tx=(e.clientX-r.left)/scale, ty=(e.clientY-r.top)/scale;
-  const b=getBoxAt(tx,ty);
-  activeTouches[e.pointerId]={action:b?b.action:null,box:b};
-  if (b&&b.action==='jump') { touch.jump=true; setTimeout(()=>{touch.jump=false;},120); }
-  applyTouchState();
-  selfHealBgm();   // AUDIO-3-MUSIC-UX — heal silent BGM on gameplay touch (R2/R3/R4 residuals)
+  // PC-HIDE-DPAD-JUMP — d-pad/jump hit-test gated to mobile. Belt-and-suspenders:
+  // pointerdown also early-returns on mobile (PAUSE-MOBILE-TOUCHSTART-ONLY at line 4818),
+  // so this branch is currently unreachable from either platform — but the explicit
+  // IS_MOBILE wrap documents intent and survives any future change to the early-return.
+  if (IS_MOBILE) {
+    canvas.setPointerCapture(e.pointerId);
+    const r=canvas.getBoundingClientRect();
+    const tx=(e.clientX-r.left)/scale, ty=(e.clientY-r.top)/scale;
+    const b=getBoxAt(tx,ty);
+    activeTouches[e.pointerId]={action:b?b.action:null,box:b};
+    if (b&&b.action==='jump') { touch.jump=true; setTimeout(()=>{touch.jump=false;},120); }
+    applyTouchState();
+  }
+  selfHealBgm();   // AUDIO-3-MUSIC-UX — heal silent BGM on gameplay touch (R2/R3/R4 residuals); fires on PC click too
 });
 canvas.addEventListener('pointermove', e => {
   e.preventDefault();
   if (!(e.pointerId in activeTouches)) return;
-  const r=canvas.getBoundingClientRect();
-  const tx=(e.clientX-r.left)/scale, ty=(e.clientY-r.top)/scale;
-  const b=getBoxAt(tx,ty);
-  const prev=activeTouches[e.pointerId];
-  if (b&&b.action==='jump'&&prev.action!=='jump') { touch.jump=true; setTimeout(()=>{touch.jump=false;},120); }
-  activeTouches[e.pointerId]={action:b?b.action:null,box:b};
-  applyTouchState();
+  // PC-HIDE-DPAD-JUMP — d-pad drag-tracking gated to mobile. On PC, activeTouches won't
+  // contain the pointerId anyway (pointerdown's d-pad block is also gated), but the
+  // explicit gate makes the intent obvious.
+  if (IS_MOBILE) {
+    const r=canvas.getBoundingClientRect();
+    const tx=(e.clientX-r.left)/scale, ty=(e.clientY-r.top)/scale;
+    const b=getBoxAt(tx,ty);
+    const prev=activeTouches[e.pointerId];
+    if (b&&b.action==='jump'&&prev.action!=='jump') { touch.jump=true; setTimeout(()=>{touch.jump=false;},120); }
+    activeTouches[e.pointerId]={action:b?b.action:null,box:b};
+    applyTouchState();
+  }
 });
 canvas.addEventListener('pointerup',     e=>{delete activeTouches[e.pointerId]; applyTouchState(); endInitialsArrowHold(); /* K-FIX-5 — release initials arrow hold */});
 canvas.addEventListener('pointercancel', e=>{delete activeTouches[e.pointerId]; applyTouchState(); endInitialsArrowHold();});
@@ -4950,16 +4961,21 @@ canvas.addEventListener('touchstart', e=>{
   if (state.indexOf('CUTSCENE_') === 0) { cutsceneAdvance(); return; }
   if (state === 'INTRO_BLACK') return;                     // N-FIX-5 BUG 2 — prime audio only, don't skip intro
   if (state !== 'GAMEPLAY') { skipToGame(); return; }
-  for (const t of e.changedTouches) {
-    const r=canvas.getBoundingClientRect();
-    const tx=(t.clientX-r.left)/scale, ty=(t.clientY-r.top)/scale;
-    const b=getBoxAt(tx,ty);
-    if (!b) continue;
-    // Use touch identifier offset to avoid collision with pointer IDs
-    activeTouches['t'+t.identifier]={action:b.action,box:b};
-    if (b.action==='jump'){touch.jump=true;setTimeout(()=>{touch.jump=false;},120);}
+  // PC-HIDE-DPAD-JUMP — d-pad/jump touchstart hit-test gated to mobile. PC users with
+  // touchscreens (rare on Windows hybrids) won't get phantom d-pad triggers from a stray
+  // touch on the now-invisible zones.
+  if (IS_MOBILE) {
+    for (const t of e.changedTouches) {
+      const r=canvas.getBoundingClientRect();
+      const tx=(t.clientX-r.left)/scale, ty=(t.clientY-r.top)/scale;
+      const b=getBoxAt(tx,ty);
+      if (!b) continue;
+      // Use touch identifier offset to avoid collision with pointer IDs
+      activeTouches['t'+t.identifier]={action:b.action,box:b};
+      if (b.action==='jump'){touch.jump=true;setTimeout(()=>{touch.jump=false;},120);}
+    }
+    applyTouchState();
   }
-  applyTouchState();
   selfHealBgm();   // AUDIO-3-MUSIC-UX — heal silent BGM on iOS Safari touch (R2/R3/R4 residuals)
 },{passive:false});
 canvas.addEventListener('touchend', e=>{
@@ -4976,15 +4992,18 @@ canvas.addEventListener('touchcancel', e=>{
 },{passive:false});
 canvas.addEventListener('touchmove', e=>{
   e.preventDefault();
-  for (const t of e.changedTouches) {
-    const r=canvas.getBoundingClientRect();
-    const tx=(t.clientX-r.left)/scale, ty=(t.clientY-r.top)/scale;
-    const b=getBoxAt(tx,ty);
-    const prev=activeTouches['t'+t.identifier];
-    if (b&&b.action==='jump'&&(!prev||prev.action!=='jump')){touch.jump=true;setTimeout(()=>{touch.jump=false;},120);}
-    activeTouches['t'+t.identifier]={action:b?b.action:null,box:b};
+  // PC-HIDE-DPAD-JUMP — d-pad/jump touchmove drag-tracking gated to mobile.
+  if (IS_MOBILE) {
+    for (const t of e.changedTouches) {
+      const r=canvas.getBoundingClientRect();
+      const tx=(t.clientX-r.left)/scale, ty=(t.clientY-r.top)/scale;
+      const b=getBoxAt(tx,ty);
+      const prev=activeTouches['t'+t.identifier];
+      if (b&&b.action==='jump'&&(!prev||prev.action!=='jump')){touch.jump=true;setTimeout(()=>{touch.jump=false;},120);}
+      activeTouches['t'+t.identifier]={action:b?b.action:null,box:b};
+    }
+    applyTouchState();
   }
-  applyTouchState();
 },{passive:false});
 
 function drawDpad() {
@@ -5737,7 +5756,13 @@ function drawGameplay(shake) {
 
   drawHUD();
   drawTicker();
-  drawDpad();
+  // PC-HIDE-DPAD-JUMP — d-pad + jump-button visuals only render on mobile. PC users have
+  // keyboard arrows / WASD / space for movement and jump, so the on-canvas controls are
+  // clutter. drawDpad's loop renders boxLeft/boxRight/boxUp/boxDown AND boxJump/boxJump2/
+  // boxJump3, so this single gate covers both d-pad and jump button. Touch-input hit-tests
+  // are gated separately below to prevent PC clicks in the (now invisible) zones from
+  // registering phantom d-pad/jump actions.
+  if (IS_MOBILE) drawDpad();
   // N — icons + pause overlay drawn at outer-loop level (after the state switch) so they're
   // always on top regardless of which state's case body rendered.
 }
