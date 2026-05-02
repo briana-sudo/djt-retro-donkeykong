@@ -73,6 +73,20 @@ PHASE2_PHRASES = [
     ('(angry, emphatic) Witch hunt!',   'trump_witchhunt_cutscene'),
 ]
 
+# REPORTER-CLIPS — 3 press-chaos voice clips, each on a DIFFERENT Fish Audio
+# voice model (varied reporter voices for the press scrum overlay). Picked by
+# Brian from fish.audio/discovery — different speakers per clip so the press
+# layer doesn't sound like one person echoing themselves.
+# Each tuple: (text, reference_id, output_filename_without_extension, voice_label).
+REPORTER_CLIPS = [
+    ("You can't win!",                  'a00ddfe2c5754b019ad2de0b5b709ce8',
+     'reporter_you_cant_win',           'USA female reporter'),
+    ("What about Russia?",              '6972ae9185854c03bcbff1f84a570b2a',
+     'reporter_what_about_russia',      'Reporter ABC News - M'),
+    ("One more question, Mr. Trump!",   '80b0962985d244eca7d96d91985618c0',
+     'reporter_one_more_question',      'REPORTER - male urgent'),
+]
+
 
 def loudnorm(src_path: Path, dst_path: Path) -> bool:
     """Single-pass ffmpeg loudnorm to project standard. Returns True on success.
@@ -184,6 +198,34 @@ def phase2():
     return 1 if fail_count else 0
 
 
+def reporters():
+    """Generate 3 press-chaos reporter clips, each on a different voice model."""
+    api_key = os.environ.get('FISH_API_KEY')
+    if not api_key:
+        print('FISH_API_KEY env var not set. Aborting.')
+        return 1
+    SFX_DIR.mkdir(parents=True, exist_ok=True)
+    from fish_audio_sdk import Session
+    session = Session(api_key)
+    print(f'\n==> Reporter clips — {len(REPORTER_CLIPS)} clips, mixed voices\n')
+    results = []
+    for text, reference_id, name_short, voice_label in REPORTER_CLIPS:
+        dst = SFX_DIR / f'{name_short}.mp3'
+        print(f'  - "{text}"  ({voice_label})  -> {dst.name}')
+        ok = generate_clip(session, text, reference_id, dst)
+        if ok and dst.exists():
+            size_kb = dst.stat().st_size / 1024
+            results.append((dst.name, size_kb, True))
+        else:
+            results.append((dst.name, 0, False))
+    print('\n--- Reporter clips results ---')
+    for name, size_kb, ok in results:
+        status = 'OK' if ok else 'FAIL'
+        print(f'  [{status}] {name}  ({size_kb:.1f} KB)')
+    fail_count = sum(1 for _, _, ok in results if not ok)
+    return 1 if fail_count else 0
+
+
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         print('Usage: py scripts/fish_audio_generate.py {phase1|phase2}')
@@ -193,6 +235,8 @@ if __name__ == '__main__':
         sys.exit(phase1())
     elif arg == 'phase2':
         sys.exit(phase2())
+    elif arg == 'reporters':
+        sys.exit(reporters())
     else:
         print(f'Unknown phase: {arg}')
         sys.exit(2)

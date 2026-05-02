@@ -26,29 +26,28 @@ YT_DLP       = WINGET_BIN + r'\yt-dlp.yt-dlp_Microsoft.Winget.Source_8wekyb3d8bb
 # Title blacklist is case-insensitive; if ANY blacklisted token appears in the
 # candidate's title, that candidate is rejected.
 RESOURCE_SPEC = [
+    # SFX-RESOURCE round 2 — revised queries after vibe-failure on first re-source.
+    # Each query is more specific to the desired in-game sound, asmr added to all
+    # blacklists (ASMR clips are too soft/breathy for arcade-game SFX).
+    # Note: sfx_pelosi_tear.mp3 from the prior round PASSED field test, so it's
+    # NOT in this spec — it stays as committed.
     (
         'sfx_ragdoll_thud.mp3',
-        'heavy body fall thud foley sound effect',
+        'heavy sandbag drop floor sound effect',
         1.0,                                       # mid of 0.8-1.2s target
-        ['music', 'song', 'beat', 'remix'],
-    ),
-    (
-        'sfx_pelosi_tear.mp3',
-        'paper rip tear sound effect foley',
-        0.7,                                       # mid of 0.5-0.8s target
-        ['music', 'song', 'asmr'],
+        ['music', 'song', 'beat', 'remix', 'soundtrack', 'asmr'],
     ),
     (
         'sfx_stairs_collapse.mp3',
-        'wood debris falling crash foley',
+        'object tumbling down wooden stairs sound effect',
         1.5,                                       # mid of 1.2-1.8s target
-        ['music', 'song', 'beat', 'remix', 'soundtrack'],
+        ['music', 'song', 'beat', 'remix', 'soundtrack', 'asmr'],
     ),
     (
         'sfx_capsule_destruction.mp3',
-        'glass bottle smash break foley sound effect',
+        'glass window shatter break sound effect',
         1.0,                                       # mid of 0.8-1.2s target
-        ['music', 'song', 'beat', 'remix'],
+        ['music', 'song', 'beat', 'remix', 'soundtrack', 'asmr'],
     ),
 ]
 DURATION_CEILING_SEC = 30
