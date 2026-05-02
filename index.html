@@ -511,6 +511,12 @@ let   initialsCursor        = 0;
 const initialsLetters       = ['A', 'A', 'A'];
 let   initialsConfirmedT    = 0;                          // post-submit "INITIALS SAVED" timer (s)
 const INITIALS_CONFIRM_DURATION = 1.0;
+// P-DIFFICULTY-1-FIX-V2 ITEM 4: 15s auto-lock timer for initials entry. Ticks while
+// initialsEntryActive=true; at 15s, calls submitInitialsEntry() which locks whatever
+// initialsLetters[] currently contains (defaults to 'AAA' from line 511 / 2949-2951
+// reset, plus any letter changes the player made before timeout).
+let   initialsEntryT        = 0;
+const INITIALS_AUTO_LOCK_SEC = 15.0;
 
 // K-FIX-5 — leaderboard storage. Replaces K's single highScore + highScoreInitials pair.
 // loadHighScores: read 'djt_high_scores' JSON array. Validate each entry (3-char A-Z+space
@@ -1923,17 +1929,14 @@ function tickDtjDance(dt) {
 //   Anything else (FADE_IN, WIN_FREEZE, early PHASE1/PHASE3): input ignored
 function cutsceneAdvance() {
   if (state === 'CUTSCENE_PHASE1' || state === 'CUTSCENE_PHASE3') {
-    if (cutsceneT >= CUTSCENE_SKIP_THRESHOLD) {
-      // I-CORR-3 — skipping past the dialogue phases drops any still-queued captions so they
-      // don't carry into SCORE. The SCORE breakdown is read silently.
-      clearCaptions();
-      // I-EAGLE-REWRITE — SCORE has no DTJ render at all. comboActive cleared so the BETWEEN
-      // re-init path below sets up combo cleanly.
-      dtjStageMode = 'NONE';
-      comboActive  = false;
-      state = 'CUTSCENE_SCORE';
-      stateT = 0;
-    }
+    // P-DIFFICULTY-1-FIX-V2 ITEM 3: removed `if (cutsceneT >= CUTSCENE_SKIP_THRESHOLD)`
+    // gate (was 10s minimum hold). Per Brian: ONE TAP = SKIP ENTIRE CURRENT SCENE.
+    // Drops captions, resets eagle combo, jumps straight to SCORE.
+    clearCaptions();
+    dtjStageMode = 'NONE';
+    comboActive  = false;
+    state = 'CUTSCENE_SCORE';
+    stateT = 0;
     return;
   }
   if (state === 'CUTSCENE_SCORE') {
@@ -1959,9 +1962,9 @@ function cutsceneAdvance() {
     return;
   }
   if (state === 'CUTSCENE_BETWEEN') {
-    // K-FIX-2 — gate restart until LEVEL 2 COMING SOON reveal appears at t=5.0s. Without this
-    // guard, a single tap during the 5+ second sky-flight phase bypasses the entire reveal.
-    if (stateT < 5.0) return;
+    // P-DIFFICULTY-1-FIX-V2 ITEM 3: removed `if (stateT < 5.0) return;` gate.
+    // Per Brian: ONE TAP = SKIP ENTIRE CURRENT SCENE. Tap during BETWEEN
+    // immediately fires resetForLevelTransition (which transitions to GAMEPLAY).
     // K-FIX-3 — BETWEEN tap now carries score + lives forward into the new level. Distinct from
     // the GAME_OVER tap (resetForGameOver) which wipes everything. Both BETWEEN and GAME_OVER
     // tap paths are now clearly distinct, no flag-driven shared helper.
@@ -2552,21 +2555,24 @@ function spawnCapsule() {
     return;
   }
   if (!firstCapsuleDropped) {
-    // P-DIFFICULTY-1-FIX BUG 7: spawn first capsule from DTJ's BARREL_X position
-    // (top of screen) with 2.5× speed boost. Existing cascade physics carry it
-    // to FLOOR in ~5s. Was: spawn at top of ladders[0] (FLOOR↔P1 ladder, x=80,
-    // y=654) which appeared near FLOOR — confused the player. Now it visibly
-    // falls from DTJ's throw spot like every other capsule, just faster.
-    const _firstMult = _p.capsuleSpeedMult * 2.5;
+    // P-DIFFICULTY-1-FIX-V2 BUG E: ghost-fall capsule. Spawns at top-of-canvas on
+    // LEFT side (x=80, aligned with ladders[0]). Falls straight DOWN through every
+    // platform via the ghostFall flag (skips platform-landing collision in the
+    // updateCapsules falling block). Lands on FLOOR, converts to normal rolling
+    // capsule (rolls right per FLOOR rule). Visual: visible fast vertical drop on
+    // the left side of the screen, then natural FLOOR roll toward Pelosi.
+    // Was: BARREL_X spawn with speedMult×2.5 — natural cascade went RIGHT-side via
+    // ladders[5] which violated Brian's left-side spec.
     capsules.push({
-      x: BARREL_X,
-      y: TOP.y - CAPSULE_R,
-      vx: CAPSULE_THROW_DIR * _firstMult * CAPSULE_ROLL_SPD,
-      vy: 0,
-      rolling: true,
-      onPlat: TOP,
+      x: 80,
+      y: -CAPSULE_R,                  // start above canvas, falls in
+      vx: 0,
+      vy: 0,                          // gravity accelerates from rest
+      rolling: false,
+      onPlat: null,
       rot: 0,
-      speedMult: _firstMult,
+      speedMult: _p.capsuleSpeedMult,
+      ghostFall: true,                // skip platform collision until FLOOR landing
     });
     firstCapsuleDropped = true;
     return;
@@ -2642,6 +2648,16 @@ function updateCapsules(dt) {
     // gets despawned at SLAM (capsule spliced from array).
     if (c.carried) continue;
 
+    // P-DIFFICULTY-1-FIX-V2 BUG G: invisible left/right boundary clamp on ALL
+    // capsules. Catches high-speedMult flyaway + any future runaway-velocity bug.
+    // Once vx is zeroed at the boundary, gravity continues; the capsule drops to
+    // the next platform via natural fall. Skipped for ghost-fall capsules (which
+    // spawn at x=80 already inside the boundary).
+    if (!c.ghostFall) {
+      if      (c.x < CAPSULE_R)        { c.x = CAPSULE_R;        c.vx = 0; }
+      else if (c.x > W - CAPSULE_R)    { c.x = W - CAPSULE_R;    c.vx = 0; }
+    }
+
     if (c.rolling && c.onPlat) {
       // D2 — FLOOR is the only flat platform where direction is forced (rightward, toward Pelosi).
       // Tilted platforms snap vx to downhill direction. TOP (flat) keeps the spawn-set vx (left).
@@ -2689,7 +2705,21 @@ function updateCapsules(dt) {
       c.y += c.vy * dt;
       c.rot += 0.18;
 
-      for (const plat of platforms) {
+      // P-DIFFICULTY-1-FIX-V2 BUG E: ghost-fall capsule lands on FLOOR directly,
+      // ignoring all intermediate platforms. Sets up FLOOR rolling state inline
+      // and clears the ghostFall flag so subsequent frames hit the normal rolling
+      // branch. The platforms loop below is skipped while ghostFall is true.
+      if (c.ghostFall) {
+        if (c.y >= FLOOR.y - CAPSULE_R) {
+          c.y       = FLOOR.y - CAPSULE_R;
+          c.vy      = 0;
+          c.rolling = true;
+          c.onPlat  = FLOOR;
+          c.ghostFall = false;
+          c.vx      = (c.speedMult || 1) * CAPSULE_ROLL_SPD;   // FLOOR rule: roll RIGHT toward Pelosi
+        }
+        // Player-collision + off-screen-exit + jumped-over checks below still apply.
+      } else for (const plat of platforms) {
         if (c.x < plat.x - 4 || c.x > plat.x + plat.w + 4) continue;
         const surfaceTarget = getPlatY(plat, c.x) - CAPSULE_R;
         if (prevY > surfaceTarget + 1) continue;   // was already below this plat
@@ -6251,6 +6281,19 @@ function loop(ts) {
   // K — initials-entry "INITIALS SAVED" confirmation timer ticks here so the 1.0s display
   // shows even if the GAME_OVER case re-renders from scratch each frame.
   if (initialsConfirmedT > 0) initialsConfirmedT = Math.max(0, initialsConfirmedT - dt);
+  // P-DIFFICULTY-1-FIX-V2 ITEM 4: initials entry 15s auto-lock. Ticks while
+  // initialsEntryActive=true; reset to 0 when entry begins (in GAMEPLAY→GAME_OVER
+  // transition, line ~6864 area). At 15s: call submitInitialsEntry() to lock
+  // whatever letters the player has set (defaults to 'AAA' from initial reset).
+  if (initialsEntryActive) {
+    initialsEntryT += dt;
+    if (initialsEntryT >= INITIALS_AUTO_LOCK_SEC) {
+      submitInitialsEntry();
+      // initialsEntryT not zeroed — held value lets DUMP LOGS show the trigger fired.
+      // Next initials-entry session (next game-over with new high) re-zeros it via
+      // the entry-begin reset at line ~6864.
+    }
+  }
 
   // Shake decay
   if (shakeAmt>0) shakeAmt=Math.max(0,shakeAmt-18*dt);
@@ -6857,6 +6900,7 @@ function loop(ts) {
           initialsLetters[0]  = 'A';
           initialsLetters[1]  = 'A';
           initialsLetters[2]  = 'A';
+          initialsEntryT      = 0;     // P-DIFFICULTY-1-FIX-V2 ITEM 4: zero the 15s auto-lock at entry start
           initialsConfirmedT  = 0;
           playSfx_newHighScore();                                  // N — chime ladder on new high
         }
@@ -7079,6 +7123,10 @@ function loop(ts) {
       });
       // I-CORR-3 — render any caption that's still fading out from PHASE3 ascent.
       renderCutsceneCaption();
+      // P-DIFFICULTY-1-FIX-V2 ITEM 1: auto-advance after 4s (delegate to cutsceneAdvance
+      // which runs the BETWEEN setup). Tap-to-skip works via cutsceneAdvance immediately
+      // (no gate post-V2 BUG C).
+      if (stateT >= 4.0) cutsceneAdvance();
       break;
     }
 
@@ -7112,43 +7160,34 @@ function loop(ts) {
       // sounded like game-over language; "CONTINUE" reads as forward progress (which is what
       // K-FIX-3 made it — score and lives carry through). GAME_OVER overlay still uses
       // "TAP TO RESTART" because that IS a restart.
-      if (stateT >= 5.0) {
-        // Line 1 — hero header (gold, larger weight matching breakdown TOTAL styling).
-        ctx.fillStyle = '#ffcc00';
-        ctx.font = 'bold 28px monospace';
-        ctx.textAlign = 'center';
-        // P-DIFFICULTY-1-FIX BUG 2: dynamic level number. At WIN cutscene render
-        // time, currentLevel is still the level just completed (resetForLevelTransition
-        // only increments on BETWEEN tap). So currentLevel = "completed" and
-        // currentLevel + 1 = "next."
-        ctx.fillText('LEVEL ' + currentLevel + ' COMPLETE!', W/2, 200);
-        // Line 2 — subtitle (white, current size from prior reveal).
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 22px monospace';
-        ctx.fillText('LEVEL ' + (currentLevel + 1) + ' COMING SOON', W/2, 240);
-        // Line 3 — pulsing action prompt.
-        const pulseB = 0.5 + 0.5 * Math.sin(stateT * 4);
-        ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulseB).toFixed(3) + ')';
-        ctx.font = 'bold 14px monospace';
-        ctx.fillText('TAP TO CONTINUE', W/2, 278);
-        // K-FIX-5 — auto-continue countdown. 10-second window starts at t=5.0s; at t=15.0s the
-        // level transition fires automatically via resetForLevelTransition() (same path as a
-        // tap). Tap remains available throughout — K-FIX-2 guard in cutsceneAdvance allows tap
-        // from t>=5.0s, so player can skip the countdown by tapping.
-        const elapsedSinceReveal = stateT - 5.0;
-        const secondsLeft = Math.max(0, Math.ceil(10.0 - elapsedSinceReveal));
-        ctx.fillStyle = 'rgba(255,255,255,0.7)';
-        ctx.font = '11px monospace';
-        ctx.fillText('(AUTO-CONTINUE IN ' + secondsLeft + ')', W/2, 296);
-        // Line 4 — K-FIX-3 dark gold credit. Pushed down 4px to clear the countdown line.
-        ctx.fillStyle = '#9a7a00';
-        ctx.font = '10px monospace';
-        ctx.fillText('Created by Brian Albert', W/2, 322);
-        // Auto-continue trigger.
-        if (stateT >= 15.0) {
-          resetForLevelTransition();
-          break;
-        }
+      // P-DIFFICULTY-1-FIX-V2 BUG 2 + 5: dropped `if (stateT >= 5.0)` reveal gate so
+      // text renders immediately on BETWEEN entry. Removed "LEVEL N+1 COMING SOON"
+      // line entirely (cluttered the eagle visual). Repositioned TAP/AUTO/CREDIT
+      // BELOW the eagle (eagle visually spans y≈261-421; below-eagle clear space
+      // y=421 to y=854). Auto-advance shortened 15s → 6s per Brian field test.
+      // Line 1 — hero header (gold) at y=200, ABOVE eagle.
+      ctx.fillStyle = '#ffcc00';
+      ctx.font = 'bold 28px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('LEVEL ' + currentLevel + ' COMPLETE!', W/2, 200);
+      // Line 2 — pulsing action prompt at y=600, BELOW eagle.
+      const pulseB = 0.5 + 0.5 * Math.sin(stateT * 4);
+      ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + 0.55 * pulseB).toFixed(3) + ')';
+      ctx.font = 'bold 14px monospace';
+      ctx.fillText('TAP TO CONTINUE', W/2, 600);
+      // Line 3 — auto-continue countdown at y=620. Window: 0-6s from BETWEEN entry.
+      const secondsLeft = Math.max(0, Math.ceil(6.0 - stateT));
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.font = '11px monospace';
+      ctx.fillText('(AUTO-CONTINUE IN ' + secondsLeft + ')', W/2, 620);
+      // Line 4 — credit at y=830 (canvas bottom).
+      ctx.fillStyle = '#9a7a00';
+      ctx.font = '10px monospace';
+      ctx.fillText('Created by Brian Albert', W/2, 830);
+      // Auto-continue trigger at 6s.
+      if (stateT >= 6.0) {
+        resetForLevelTransition();
+        break;
       }
 
       // I-CORR-3 — caption strip flush above sky horizon.
