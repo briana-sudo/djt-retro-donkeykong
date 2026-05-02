@@ -2695,7 +2695,11 @@ function hit(source, capsule) {
     source:    source,
     livesNow:  player.lives,
   });
-  playSfx_capsuleHitsPlayer();                            // N — thwack on hit moment
+  // SFX-PACK-FIX-V3: synth stripped per Brian field test, no mp3 replacement (silent on player-hit)
+  // playSfx_capsuleHitsPlayer();
+  // The visual capsule-hits-player moment now goes audio-silent — death scream
+  // (line 2670 area), Trump death lines (AUDIO-3F at line 1842), and ragdoll thud
+  // (line ~6413) handle the player-death audio at their own beats.
 }
 
 // L — per-respawn reset (renamed from J's respawnPlayer + extended). Lives already decremented
