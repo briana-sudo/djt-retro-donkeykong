@@ -5387,7 +5387,7 @@ function drawDpad() {
     ctx.fillStyle=active?'#fff':'rgba(255,255,255,0.55)';
     ctx.font=big?'bold 28px monospace':'bold 16px monospace';
     ctx.textAlign='center';
-    ctx.fillText(icon, b.x+b.w/2, b.y+b.h/2+big?10:6);
+    ctx.fillText(icon, b.x+b.w/2, b.y+b.h/2+(big?10:6));   // MOBILE-LABELS-FIX: parens added — JS operator precedence (+ binds tighter than ?:) made the unparenthesized form parse as `(b.y+b.h/2+big) ? 10 : 6`, always returning 10. Every icon rendered at y=10 (behind the news ticker at y=0-18) since the F2 commit that first added the labels.
   }
   ctx.restore();
 }
