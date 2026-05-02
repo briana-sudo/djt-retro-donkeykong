@@ -226,6 +226,30 @@ def reporters():
     return 1 if fail_count else 0
 
 
+def dnc():
+    """Generate the single DNC voice line for INTRO_TAUNT V3."""
+    api_key = os.environ.get('FISH_API_KEY')
+    if not api_key:
+        print('FISH_API_KEY env var not set. Aborting.')
+        return 1
+    SFX_DIR.mkdir(parents=True, exist_ok=True)
+    from fish_audio_sdk import Session
+    session = Session(api_key)
+    text         = "You're fired, Mr. President!"
+    reference_id = '802e3bc2b27e49c2995d23ef70e6ac89'
+    dst          = SFX_DIR / 'dnc_youre_fired.mp3'
+    print(f'\n==> DNC voice line — model {reference_id} (Energetic Male)')
+    print(f'    text: {text!r}')
+    print(f'    dst:  {dst}')
+    ok = generate_clip(session, text, reference_id, dst)
+    if ok and dst.exists():
+        size_kb = dst.stat().st_size / 1024
+        print(f'\n[OK] {dst.name}  ({size_kb:.1f} KB)')
+        return 0
+    print(f'\n[FAIL] {dst.name}')
+    return 1
+
+
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         print('Usage: py scripts/fish_audio_generate.py {phase1|phase2}')
@@ -237,6 +261,8 @@ if __name__ == '__main__':
         sys.exit(phase2())
     elif arg == 'reporters':
         sys.exit(reporters())
+    elif arg == 'dnc':
+        sys.exit(dnc())
     else:
         print(f'Unknown phase: {arg}')
         sys.exit(2)

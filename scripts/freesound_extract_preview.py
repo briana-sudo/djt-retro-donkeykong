@@ -31,6 +31,10 @@ TARGETS = [
     ('MrFossy',          547209, 'cand_player_death_scream_pain_grunt_09'),
     ('EvilOldScratch',   667697, 'cand_player_death_scream_strong_grunt'),
     ('miksmusic',        497713, 'cand_player_death_scream_punch_grunt'),
+    # INTRO_TAUNT-V3 — USA chant candidates for crowd_usa_chant.mp3.
+    ('FlatHill',         324752, 'cand_usa_chant_rwc'),
+    ('listentostatic',   417950, 'cand_usa_chant_seatac'),
+    ('mloveless89',      392343, 'cand_usa_chant_trumpprotest'),
 ]
 
 

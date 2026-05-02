@@ -68,6 +68,22 @@ TARGETS = [
         'title':      'Voice_AdultMale_PainGrunts_09.wav',
         'src_dur':    0.0,                                     # not measured pre-download; reported by ffprobe post
     },
+    # INTRO_TAUNT-V3 — USA chant for crowd_usa_chant.mp3 (eagle-entry / RNC stage
+    # rally vibe). Picked from 3 candidates returned by "USA chant" search.
+    # FlatHill/324752 chosen: CC0 (no attribution), explicit title match for
+    # "USA Chant" (Rugby World Cup context — neutral sports rally vs the
+    # politically-charged protest alternatives). Loops in-game so target trim
+    # captures a clean rhythmic loop.
+    {
+        'filename':   'crowd_usa_chant.mp3',
+        'preview':    'https://cdn.freesound.org/previews/324/324752_3839718-hq.mp3',
+        'target_sec': 4.0,                                     # mid of 3.0-5.0 spec range
+        'page':       'https://freesound.org/people/FlatHill/sounds/324752/',
+        'license':    'CC0 (Public Domain)',
+        'author':     'FlatHill',
+        'title':      'JAPAN VS USA RWC Chant',
+        'src_dur':    0.0,                                     # not measured pre-download
+    },
 ]
 
 

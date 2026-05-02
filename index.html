@@ -1075,7 +1075,7 @@ const SOUND_LIBRARY = {
   brown:        new Howl({ src: ['audio/brown.mp3'],        loop: false, volume: 0.10 }), // AUDIO-3k — uniform 0.10
   free_world:   new Howl({ src: ['audio/free_world.mp3'],   loop: false, volume: 0.6 }),
   ave_maria:    new Howl({ src: ['audio/ave_maria.mp3'],    loop: false, volume: 0.7 }),
-  nessun_dorma: new Howl({ src: ['audio/nessun_dorma.mp3'], loop: false, volume: 0.7 }),
+  nessun_dorma: new Howl({ src: ['audio/nessun_dorma.mp3'], loop: true,  volume: 0.7 }),  // INTRO_TAUNT-V3: loop:true so it sustains if user lingers on PHASE3 past the ~35s natural duration. Cleanup at lines ~2863 / 2927 stops it via forEach over BGM Howls — handles loop:true cleanly.
 };
 let currentlyPlayingSound = null;
 
@@ -1138,6 +1138,14 @@ const GAME_SFX = {
   player_death_scream:  new Howl({ src: ['audio/sfx/sfx_player_death_scream.mp3'],  volume: 0.75, preload: true }),
   ragdoll_thud:         new Howl({ src: ['audio/sfx/sfx_ragdoll_thud.mp3'],         volume: 0.7,  preload: true }),
   media_chaos:          new Howl({ src: ['audio/sfx/media_chaos.mp3'],              volume: 0.6,  preload: true }),
+  // INTRO_TAUNT-V3 — 2 new entries for the cutscene audio layer.
+  // dnc_youre_fired: voice of DNC at PHASE1 caption push (line ~6651). Fish Audio TTS
+  //   model 802e3bc2b27e49c2995d23ef70e6ac89 (Energetic Male).
+  // crowd_usa_chant: CC0 sports-stadium "USA" chant (FlatHill/324752 RWC), LOOPS
+  //   from STEP3 entry (1.4s into PHASE3, DTJ looks up — anticipates the eagle hard
+  //   cut at 2.0s) until PHASE3 exits to CUTSCENE_SCORE (line ~6755 area).
+  dnc_youre_fired:      new Howl({ src: ['audio/sfx/dnc_youre_fired.mp3'],           volume: 0.85,                preload: true }),
+  crowd_usa_chant:      new Howl({ src: ['audio/sfx/crowd_usa_chant.mp3'],           volume: 0.7,  loop: true,   preload: true }),
 };
 
 // BGM rotation: 3 songs cycle on song-end. bgmRotationIdx persists across cutscene/death
@@ -5319,6 +5327,11 @@ const CUTSCENE_CLOUDS = [];
 //           sprites in the same frame.
 let dtjStageMode = 'NONE';
 let comboActive  = false;
+// INTRO_TAUNT-V3 — one-shot guard for crowd_usa_chant.play() at STEP3 entry of
+// CUTSCENE_PHASE3. Reset to false on every PHASE3 entry (line ~6700 area) so the
+// chant fires fresh on each playthrough; flipped to true after the first STEP3
+// frame to prevent re-fire every frame while DTJ stays in STEP3.
+let usaChantFired = false;
 const combo = { x: 0, y: 0 };
 const COMBO_H = 160;                                  // combined eagle_carry render height (px)
 function seedCutsceneClouds() {
@@ -6649,6 +6662,10 @@ function loop(ts) {
         // I-CORR-3 — push the two PHASE1 dialogue captions on transition entry. They render in the
         // top-of-canvas strip (single visible at a time, fade-in/hold/fade-out).
         pushCaption('DNC', "YOU'RE FIRED, MR. PRESIDENT!", 1.8);
+        // INTRO_TAUNT-V3 — DNC voice fires alongside her caption push (per GLOBAL
+        // AUDIO RULE). Lands first; WITCH HUNT Trump voice at line ~6656 fires
+        // immediately after, creating the call-and-response cutscene beat.
+        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.dnc_youre_fired) GAME_SFX.dnc_youre_fired.play();
         pushCaption('DJT', 'WITCH HUNT!', 1.2);
         // AUDIO-3F — Trump voice for WITCH HUNT! cutscene caption. Fired once per
         // CUTSCENE_PHASE1 entry (the surrounding state-machine block executes exactly
@@ -6697,6 +6714,9 @@ function loop(ts) {
         // + 200ms fade-in to 1.0 + playNessunDorma scheduling).
         state = 'CUTSCENE_PHASE3';
         stateT = 0;
+        // INTRO_TAUNT-V3 — reset USA chant guard so STEP3 entry fires the chant fresh
+        // on this PHASE3 entry. Flag flips back to true on first STEP3 frame below.
+        usaChantFired = false;
       }
       break;
     }
@@ -6728,6 +6748,14 @@ function loop(ts) {
         dtjStageMode = 'WALK';      comboActive = false;
       } else if (stateT < 2.0) {
         dtjStageMode = 'SURPRISED'; comboActive = false;
+        // INTRO_TAUNT-V3 — fire USA chant ONCE at STEP3 entry (DTJ looks up,
+        // anticipating the eagle hard cut at 2.0s). Per Brian's Option A: chant
+        // builds tension 0.6s before the eagle visual lands. Loop:true on the
+        // Howl + .stop() at PHASE3 exit (line ~6755) handles sustain.
+        if (!usaChantFired) {
+          if (typeof GAME_SFX !== 'undefined' && GAME_SFX.crowd_usa_chant) GAME_SFX.crowd_usa_chant.play();
+          usaChantFired = true;
+        }
       } else {
         // First frame of STEP4: hard cut. Lazy-init combo position + push the THANK YOU caption.
         if (!comboActive) {
@@ -6753,6 +6781,10 @@ function loop(ts) {
 
       // Phase exit: combo foot < 0 means the entire combined sprite is above the canvas top.
       if (comboActive && combo.y < 0) {
+        // INTRO_TAUNT-V3 — stop the looping USA chant cleanly at PHASE3 exit so
+        // it doesn't bleed into CUTSCENE_SCORE. Placed BEFORE the state assignment
+        // for symmetry with the crowd_cheer.stop() at PHASE1 exit (line ~6674).
+        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.crowd_usa_chant) GAME_SFX.crowd_usa_chant.stop();
         state = 'CUTSCENE_SCORE';
         stateT = 0;
         comboActive  = false;                             // SCORE has no combo render
