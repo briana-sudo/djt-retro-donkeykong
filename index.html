@@ -58,7 +58,7 @@ console.log = function() {
   // (Trump-throws-but-no-capsule symptom). Logs full capsule census at the bail moment
   // so Brian can DUMP LOGS and report which slot-class is dominant (FLOOR pile-up,
   // Pelosi-carry hold, or mid-cascade stall).
-  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V2-DIAG]') === 0)) {
+  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V3-DIAG]') === 0)) {
     window.bgmLogBuffer.push({
       prefix: arguments[0],
       data:   arguments.length > 1 ? arguments[1] : null,
@@ -349,23 +349,25 @@ const platforms = [
   { x: 10, y: 270, w: 370, h: 14, tilt:  2.5 },  // P4
   { x: 60, y: 140, w: 420, h: 14, tilt:  0   }   // TOP — F1: extends to right screen edge (x=480)
 ];
-// LADDER-LAYOUT-V2: 1:1 swap of 4 ladders per Brian's markup. Total count
-// stays at 6. ladders[5] (P4→TOP) and ladders[1] (FLOOR→P1 right) UNCHANGED
+// LADDER-LAYOUT-V3: 3-ladder swap per Brian's second markup. Builds on V2's
+// 4-ladder swap (commit fd44ee4). Total count stays at 6. ladders[5] (P4→TOP)
+// and ladders[1] (FLOOR→P1 right) and ladders[2] (P1→P2) UNCHANGED in V3
 // — [5] is hard-coded as the win-trigger + SS-guard ladder via
 // SS_TARGET_LADDER_IX=5 and `lad === ladders[5]` checks at lines 2258/2291/2362.
-// Other 4 ladders relocated toward center to break left-side cascade dominance
-// and shift player climb path away from the old left-edge zigzag. Band y/h
-// values reused per-band (y depends on dest platform — P1 uses +12, P2/P3/P4/TOP
-// use +18 or +19) so climb-snap math in updatePlayer stays correct.
+// V3 changes: [0] 195→300 (FLOOR→P1 right of center), [3] 230→170 (P2→P3
+// shifted left), [4] 220→270 (P3→P4 shifted right). Net: zigzag pattern
+// pushed further from the old V2 center-cluster. Band y/h values unchanged
+// (y depends on dest platform — P1 uses +12, P2/P3/P4/TOP use +18 or +19)
+// so climb-snap math in updatePlayer stays correct.
 const ladders = [
-  { x: 195, y: 672, h: 118 },  // [0] NEW FLOOR -> P1 center  (was: x=80 left)
-  { x: 370, y: 672, h: 118 },  // [1] FLOOR -> P1 right       (UNCHANGED)
-  { x: 175, y: 548, h: 118 },  // [2] NEW P1   -> P2          (was: x=120 left)
-  { x: 230, y: 419, h: 118 },  // [3] NEW P2   -> P3          (was: x=340 right)
-  { x: 220, y: 289, h: 118 },  // [4] NEW P3   -> P4          (was: x=90 left)
+  { x: 300, y: 672, h: 118 },  // [0] FLOOR -> P1, V3: x=300 (was 195 in V2)
+  { x: 370, y: 672, h: 118 },  // [1] FLOOR -> P1 right       (UNCHANGED V2/V3)
+  { x: 175, y: 548, h: 118 },  // [2] P1   -> P2              (UNCHANGED V3 — was new in V2)
+  { x: 170, y: 419, h: 118 },  // [3] P2 -> P3, V3: x=170 (was 230 in V2)
+  { x: 270, y: 289, h: 118 },  // [4] P3 -> P4, V3: x=270 (was 220 in V2)
   { x: 350, y: 159, h: 118 }   // [5] P4 -> TOP               (UNCHANGED — win trigger)
 ];
-console.log('[LAYOUT-V2-DIAG]', 'new ladder layout',
+console.log('[LAYOUT-V3-DIAG]', 'new ladder layout',
   ladders.map(function (l, i) { return { i: i, x: l.x, y: l.y, h: l.h }; }));
 const LADDER_W = 24;
 const TOP = platforms[5];
