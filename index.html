@@ -224,16 +224,17 @@ function processSprite(name, img) {
     return;
   }
 
-  // P-ENEMY-1-FIX — runtime white-key flood-fill from corners. Triggered
-  // when a corner pixel is OPAQUE near-white (R≥240, G≥240, B≥240, a=255).
-  // Source: sprites/maga_hat.png shipped with 60.8% near-white-opaque pixels
-  // around the hat shape — the rembg-style alpha-key wasn't applied at export
-  // time. Flood-fill from each opaque-near-white corner, 4-neighbor connected,
-  // marks reachable near-white-opaque pixels as alpha=0. Preserves interior
-  // white pixels (e.g., hat's "MAGA" text — surrounded by red, unreachable
-  // from corners). Re-runs bounding box AFTER keying so the trim is tight.
-  // Skipped if no corner is opaque-near-white (i.e., sprite is already
-  // properly alpha-keyed — typical case for rembg-converted sprites).
+  // P-ENEMY-1-FIX V2 — runtime AGGRESSIVE white-key. Triggered when ANY
+  // corner pixel is OPAQUE near-white (R≥240, G≥240, B≥240, alpha=255).
+  // Replaces V1 corner-flood-fill which only keyed pixels CONNECTED to a
+  // corner — V1 missed scattered opaque-white blobs interior to the image
+  // because the hat's red boundary broke 4-connectivity. V2 scans every
+  // pixel and zeros alpha for all opaque-near-white pixels regardless of
+  // position. Tradeoff: any white text inside a hat shape (e.g., the "MAGA"
+  // letters) also gets keyed. Acceptable — source PNG can be iterated for
+  // text-on-red contrast (e.g., yellow or black text) if needed. Skipped
+  // entirely if no corner is opaque-near-white (i.e., sprite is properly
+  // alpha-keyed — typical case for rembg-converted sprites).
   const NEAR_WHITE_R = 240, NEAR_WHITE_G = 240, NEAR_WHITE_B = 240;
   const isNearWhiteOpaque = function (off4) {
     return d[off4 + 3] === 255 &&
@@ -247,25 +248,18 @@ function processSprite(name, img) {
     ((h - 1) * w) * 4,                  // bottom-left
     ((h - 1) * w + (w - 1)) * 4,        // bottom-right
   ];
-  const stack = [];
-  let keyedCount = 0;
+  let needsKey = false;
   for (const cOff of cornerOffsets) {
-    if (isNearWhiteOpaque(cOff)) stack.push(cOff);
+    if (isNearWhiteOpaque(cOff)) { needsKey = true; break; }
   }
-  while (stack.length > 0) {
-    const off4 = stack.pop();
-    if (!isNearWhiteOpaque(off4)) continue;
-    d[off4 + 3] = 0;                    // mark transparent
-    keyedCount++;
-    const pidx = off4 / 4;
-    const px = pidx % w;
-    const py = (pidx / w) | 0;
-    if (px > 0)        stack.push(off4 - 4);
-    if (px < w - 1)    stack.push(off4 + 4);
-    if (py > 0)        stack.push(off4 - w * 4);
-    if (py < h - 1)    stack.push(off4 + w * 4);
-  }
-  if (keyedCount > 0) {
+  if (needsKey) {
+    let keyedCount = 0;
+    for (let off4 = 0; off4 < d.length; off4 += 4) {
+      if (isNearWhiteOpaque(off4)) {
+        d[off4 + 3] = 0;
+        keyedCount++;
+      }
+    }
     ictx.putImageData(id, 0, 0);
     // Re-run bounding box (now without the keyed-out region).
     minX = w; maxX = -1; minY = h; maxY = -1;
@@ -281,6 +275,7 @@ function processSprite(name, img) {
       }
     }
     console.log('White-keyed sprite:', name, 'keyed pixels:', keyedCount,
+                'of', (w * h), '(', (100 * keyedCount / (w * h)).toFixed(1), '%)',
                 'new bbox:', (maxX - minX + 1) + 'x' + (maxY - minY + 1));
   }
 
@@ -2629,7 +2624,11 @@ let capsulesReachedFloor = 0;
 // ('level-entry' or 'capsule-reached-floor').
 function spawnHat(reason) {
   if (hats.length >= HAT_MAX_ONSCREEN) return;
-  const upperPlats = [platforms[3], platforms[4], platforms[5]];   // P3, P4, TOP
+  // P-ENEMY-1-FIX ADDENDUM: spawn pool restricted to [P3, P4] only.
+  // TOP removed — TOP is the boss zone (DTJ's domain) and hats must never
+  // appear there. Combined with findLadderForHat skipping ladders[5], hats
+  // can never reach TOP via climb either.
+  const upperPlats = [platforms[3], platforms[4]];                 // P3, P4 only
   const playerPlat = (typeof player !== 'undefined') ? player.lastGroundedPlat : null;
   const candidates = upperPlats.filter(function (p) { return p !== playerPlat; });
   if (candidates.length === 0) return;
@@ -2696,8 +2695,16 @@ function findHatLadderBottomPlat(ladder) {
 // Find a ladder centerline within tolerance of hat.x where the hat's current
 // onPlat is one of the ladder's two endpoint platforms (so the hat can
 // actually transition to climbing on it).
+// P-ENEMY-1-FIX ADDENDUM: SKIP ladders[5] (the win-ladder, P4↔TOP). The
+// win-ladder is the player's victory path and TOP is the boss zone — hats
+// must NEVER climb up to TOP via this ladder, both to keep TOP hat-free
+// (DTJ's domain) and to avoid blocking the player's win climb. Same index
+// is hard-coded as SS_TARGET_LADDER_IX = 5 elsewhere — single source of
+// truth for "the win ladder."
 function findLadderForHat(hat) {
-  for (const lad of ladders) {
+  for (let li = 0; li < ladders.length; li++) {
+    if (li === 5) continue;                                          // skip win-ladder (P4↔TOP)
+    const lad = ladders[li];
     const ladCx = lad.x + LADDER_W / 2;
     if (Math.abs(hat.x - ladCx) > HAT_LADDER_X_TOLERANCE) continue;
     const topPlat = findHatLadderTopPlat(lad);
@@ -4197,25 +4204,26 @@ function drawCapsules() {
   }
 }
 
-// P-ENEMY-1: render MAGA hats. Direct ctx transform (drawSprite helper has
-// no scale-pulse param). Uses spriteCache directly so we skip if sprite
-// isn't loaded yet (matches drawSprite's safe-no-draw behavior). Centered
-// on hat.x/hat.y. Scale-pulse: sine-wave between HAT_PULSE_MIN and
-// HAT_PULSE_MAX over HAT_PULSE_PERIOD. P-ENEMY-1-FIX: bob removed (movement
-// is now platform-snapped, not free-floating).
+// P-ENEMY-1: render MAGA hats. P-ENEMY-1-FIX V2: aligned with drawSprite()
+// aspect-correct pattern (line 327) — prior render forced HAT_SPRITE_SIZE
+// square, squashing non-square cached canvases. Now computes targetW from
+// cached.aspect so the trimmed hat sprite renders without distortion.
+// Pulse scales the targetH (and targetW via aspect) directly — no
+// ctx.save/scale needed. Centered on hat.x/hat.y. Skips if sprite not
+// loaded yet (matches drawSprite's safe-no-draw behavior).
 function drawHats() {
   const cached = spriteCache['maga_hat'];
   if (!cached) return;
+  const aspect = cached.width / cached.height;
   for (const hat of hats) {
     const _pulsePhase = (hat.pulseT * 2 * Math.PI / HAT_PULSE_PERIOD);
     const _pulseScale = HAT_PULSE_MIN + (HAT_PULSE_MAX - HAT_PULSE_MIN) *
                         (Math.sin(_pulsePhase) * 0.5 + 0.5);
-    ctx.save();
-    ctx.translate(hat.x, hat.y);
-    ctx.scale(_pulseScale, _pulseScale);
-    ctx.drawImage(cached, -HAT_SPRITE_SIZE / 2, -HAT_SPRITE_SIZE / 2,
-                  HAT_SPRITE_SIZE, HAT_SPRITE_SIZE);
-    ctx.restore();
+    const targetH = HAT_SPRITE_SIZE * _pulseScale;
+    const targetW = targetH * aspect;
+    const drawX   = hat.x - targetW / 2;
+    const drawY   = hat.y - targetH / 2;
+    ctx.drawImage(cached, drawX, drawY, targetW, targetH);
   }
 }
 
