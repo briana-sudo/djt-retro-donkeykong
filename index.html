@@ -2495,14 +2495,17 @@ const FLOOR_TTL = 8.0;
 // Capsule launches at constant velocity (no gravity), passes visually through
 // P4/P3/P2 girders without colliding (matches arcade DK throw-through-girders
 // convention per Wikipedia + Cutting Room Floor research), lands on P1.
-// Trajectory: spawn (BARREL_X=230, TOP.y+16=156), vx=180, vy=720, slope 4.0,
-// time-to-land 0.67s, landing x ≈ 350 on P1 (capsule center at y=642 = P1
-// surface 660 - CAPSULE_R 18). Lethal in flight (AABB collision unchanged).
-// First throw of every level is diagonal (matches arcade "first barrel ignites
-// oil drum" convention — forces immediate player engagement). Subsequent
-// throws: per-level frequency via getDiagonalEveryN(level).
-const DIAGONAL_THROW_VX = 180;
-const DIAGONAL_THROW_VY = 720;
+// Trajectory: spawn (BARREL_X=230, TOP.y+16=156), slope 4.0 (vy/vx), no gravity
+// during flight. From spawn, capsule lands at x=350 on P1 (capsule center at
+// y=642 = P1 surface 660 - CAPSULE_R 18) in 0.8s.
+// DK-GATE-PHASE-3: slowed from vx=180/vy=720 (flight 0.67s) to vx=150/vy=600
+// (flight 0.8s). Slope unchanged. Reads more clearly as a thrown projectile.
+// NON-LETHAL in flight (DK-DIAGONAL-THROW V2 gates AABB on c.thrown).
+// Cap #2 of every life is the mandatory diagonal (DK-DIAGONAL-CAP-2; cap #1 is
+// the "crazy barrel" normal Path C). Cap #3+ uses per-level frequency via
+// getDiagonalEveryN(level).
+const DIAGONAL_THROW_VX = 150;
+const DIAGONAL_THROW_VY = 600;
 function getDiagonalEveryN(level) {
   if (level <= 3) return 6;
   if (level <= 6) return 5;
@@ -3878,19 +3881,26 @@ let dkDifficultyEffective   = 1;             // recomputed at every reset; init 
 // `threshold = floor(diff/2) + 1`, drop if roll<threshold over roll∈{0,1,2}:
 //   diff=1 → 33% pass, diff=2-3 → 67% pass, diff=4-5 → 100% pass.
 // Adjacent-value adjustments (2→3, 4→5) are NO-OPS by design — three plateaus
-// matches the ROM's coarse curve. Phase 3 tuning should use the three plateaus,
-// not adjacent-value tweaks.
+// matches the ROM's coarse curve.
+//
+// DK-GATE-PHASE-3: dkDifficulty starting values revised to match arcade DK
+// exactly per Don Hodges Z80 disasm: "this difficulty level starts out as the
+// same as the level number, up to a maximum of 5." So L1=1, L2=2, L3=3, L4=4,
+// L5+=5. Combined with DK-DIFFICULTY-RAMP's 33s in-level bumps, every level
+// reaches difficulty 5 within 132 seconds. Earlier levels start gentler than
+// the prior phase-1 curve (which used three plateaus 1/2/3/4/5 spread across
+// L1-L9-L10 pairs) — gives players a real ramp-in.
 const DIFFICULTY_TABLE = [
   [1.00, 2.5, 0.30, true, 0.00, 25, 1, 2000, 1],   // L1   dkDiff=1 (33%)
   [1.07, 2.3, 0.28, true, 0.00, 23, 1, 2400, 2],   // L2   dkDiff=2 (67%)
-  [1.14, 2.1, 0.25, true, 0.00, 21, 1, 2800, 2],   // L3   dkDiff=2 (67%)
-  [1.20, 1.9, 0.23, true, 0.00, 19, 2, 3200, 2],   // L4   dkDiff=2 (67%)
-  [1.27, 1.7, 0.21, true, 0.00, 18, 2, 3600, 3],   // L5   dkDiff=3 (67% — same as 2)
-  [1.33, 1.6, 0.20, true, 0.00, 16, 2, 4000, 3],   // L6   dkDiff=3 (67% — same as 2)
-  [1.40, 1.4, 0.18, true, 0.00, 15, 3, 4400, 4],   // L7   dkDiff=4 (100%)
-  [1.47, 1.3, 0.17, true, 0.00, 14, 3, 4800, 4],   // L8   dkDiff=4 (100%)
-  [1.53, 1.2, 0.16, true, 0.00, 13, 3, 5200, 5],   // L9   dkDiff=5 (100% — same as 4)
-  [1.60, 1.0, 0.15, true, 0.00, 12, 3, 6000, 5],   // L10  dkDiff=5 (100% — same as 4)
+  [1.14, 2.1, 0.25, true, 0.00, 21, 1, 2800, 3],   // L3   dkDiff=3 (67% — same as 2)
+  [1.20, 1.9, 0.23, true, 0.00, 19, 2, 3200, 4],   // L4   dkDiff=4 (100%)
+  [1.27, 1.7, 0.21, true, 0.00, 18, 2, 3600, 5],   // L5   dkDiff=5 (100% — same as 4)
+  [1.33, 1.6, 0.20, true, 0.00, 16, 2, 4000, 5],   // L6   dkDiff=5 (capped)
+  [1.40, 1.4, 0.18, true, 0.00, 15, 3, 4400, 5],   // L7   dkDiff=5 (capped)
+  [1.47, 1.3, 0.17, true, 0.00, 14, 3, 4800, 5],   // L8   dkDiff=5 (capped)
+  [1.53, 1.2, 0.16, true, 0.00, 13, 3, 5200, 5],   // L9   dkDiff=5 (capped)
+  [1.60, 1.0, 0.15, true, 0.00, 12, 3, 6000, 5],   // L10  dkDiff=5 (capped)
 ];
 
 function getLevelParams() {
