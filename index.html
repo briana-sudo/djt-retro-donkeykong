@@ -58,7 +58,7 @@ console.log = function() {
   // (Trump-throws-but-no-capsule symptom). Logs full capsule census at the bail moment
   // so Brian can DUMP LOGS and report which slot-class is dominant (FLOOR pile-up,
   // Pelosi-carry hold, or mid-cascade stall).
-  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0 || arguments[0].indexOf('[FLOOR-TTL]') === 0 || arguments[0].indexOf('[DIAGONAL-THROW]') === 0 || arguments[0].indexOf('[DK-DIFFICULTY-RAMP]') === 0)) {
+  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0 || arguments[0].indexOf('[FLOOR-TTL]') === 0 || arguments[0].indexOf('[DIAGONAL-THROW]') === 0 || arguments[0].indexOf('[DK-DIFFICULTY-RAMP]') === 0 || arguments[0].indexOf('[LEFT-WALL]') === 0)) {
     window.bgmLogBuffer.push({
       prefix: arguments[0],
       data:   arguments.length > 1 ? arguments[1] : null,
@@ -2491,6 +2491,18 @@ const CAPSULE_DESCEND_SPD = 130;
 // backstop and the 40%-on-expiry Burning Briefcase spawn are both deleted here. Burning Briefcase
 // was removed from design April 30 2026.
 const MAX_CAPSULES = 8;
+// DK-LEFT-WALL: hard left-edge boundary at x=CAPSULE_R for ALL capsules
+// regardless of state (rolling, falling, descending, thrown, FLOOR or non-FLOOR).
+// Matches arcade DK convention — barrels never leave the canvas via the left
+// edge. Capsules hitting the wall reverse vx to rightward (forces continued
+// cascade rather than pinning at the wall). Right edge intentionally has NO
+// equivalent hard wall: FLOOR right-edge is the primary cascade drain (per
+// V3 BUG 4c FLOOR exception + DK-FLOOR-EDGE-FIX). Pre-DK-LEFT-WALL: capsules
+// rolling left off P1's left edge (x=80) entered falling state with leftward
+// vx, no clamp caught them (DK-FLOOR-EDGE-FIX exempts onPlat=null), they
+// despawned at off-screen-left (x<-36). Brian observed at L6 — visually a
+// capsule "flying off canvas." Now they bounce back rightward.
+const LEFT_WALL_X = CAPSULE_R;
 // DK-FLOOR-TTL: seconds a capsule can survive on FLOOR before TTL despawn
 // fires. Restores FLOOR drainage that DK-LADDER-DODGE-FIX correctly removed
 // (the H2 walk-past clear path was the dominant FLOOR drain; airborne-only
@@ -3125,9 +3137,35 @@ function updateCapsules(dt) {
       }
     }
 
-    // C2 v2 / D2 — off-screen exit (left or right) + off-bottom backstop destroy a capsule.
-    // FLOOR capsules now roll RIGHT toward Pelosi, so off-screen-RIGHT is the new normal exit.
-    // Off-screen-LEFT survives as the cascade exit if a capsule somehow reaches it.
+    // DK-LEFT-WALL: hard left-edge boundary. Applies to ALL capsule states
+    // (rolling, falling, descending, thrown, FLOOR or non-FLOOR). Runs AFTER
+    // state-update branches so it catches any leftward drift that occurred this
+    // frame, BEFORE the off-screen splice — capsules can no longer despawn off
+    // the canvas left edge. Capsules hitting the wall reverse vx to rightward
+    // so they continue cascading rather than pinning. Right edge intentionally
+    // has NO equivalent (FLOOR drainage requires off-screen-right exit).
+    if (c.x < LEFT_WALL_X) {
+      const _wasVx = c.vx;
+      c.x = LEFT_WALL_X;
+      if (c.vx < 0) c.vx = Math.abs(c.vx);
+      console.log('[LEFT-WALL]', {
+        level:  currentLevel,
+        capX:   Math.round(c.x),
+        prevVx: Math.round(_wasVx),
+        newVx:  Math.round(c.vx),
+        state:  (c.descending ? 'descending'
+              :  c.thrown     ? 'thrown'
+              :  c.rolling    ? 'rolling'
+              :                  'falling'),
+        onPlat: (c.onPlat === FLOOR ? 'FLOOR'
+              :  c.onPlat            ? ('P' + platforms.indexOf(c.onPlat))
+              :                         'null'),
+      });
+    }
+
+    // C2 v2 / D2 — off-screen exit (right) + off-bottom backstop destroy a capsule.
+    // FLOOR capsules roll RIGHT toward Pelosi, so off-screen-RIGHT is the normal exit.
+    // Off-screen-LEFT removed by DK-LEFT-WALL — left wall now reflects capsules.
     // Helper kill + Pelosi grab handle their own splice elsewhere.
     if (c.x < -CAPSULE_R * 2 || c.x > W + CAPSULE_R * 2 || c.y > H + 30) {
       capsules.splice(i, 1);
