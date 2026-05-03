@@ -58,7 +58,7 @@ console.log = function() {
   // (Trump-throws-but-no-capsule symptom). Logs full capsule census at the bail moment
   // so Brian can DUMP LOGS and report which slot-class is dominant (FLOOR pile-up,
   // Pelosi-carry hold, or mid-cascade stall).
-  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0)) {
+  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DK-GATE-SHADOW]') === 0)) {
     window.bgmLogBuffer.push({
       prefix: arguments[0],
       data:   arguments.length > 1 ? arguments[1] : null,
@@ -2645,6 +2645,68 @@ function spawnCapsule() {
   });
 }
 
+// DK-GATE-PHASE-1: DK-faithful ladder-drop decision routine. Port of original
+// arcade DK Z80 ROM addresses $2178-$219E per Don Hodges' disassembly:
+//   http://donhodges.com/Controlling_the_barrels_in_Donkey_Kong.htm
+// Three chained gates:
+//   Step 1 (vertical filter): capsule must be ABOVE player. Capsules at or
+//     below player level never drop. (DK arcade rule — barrels can't materialize
+//     beneath the player's feet.)
+//   Step 2 (difficulty roll): random(0..2) vs threshold = floor(diff/2)+1.
+//     Per Q6 audit: only 3 distinct outcomes — diff=1→33%, diff=2-3→67%,
+//     diff=4-5→100%. Adjacent-value adjustments (2→3, 4→5) are NO-OPS by
+//     design. Faithful to ROM.
+//   Step 3 (player alignment): if capsule.x near player.x → drop. If capsule
+//     to one side and player moving toward that side ("commanding" the barrel)
+//     → drop. Otherwise 25% fallback chance via second independent RNG draw.
+//
+// PHASE 1 STATUS: parallel-shadow only. NOT wired into the actual drop
+// decision. Called from the crossing block in updateCapsules; result logged
+// via [DK-GATE-SHADOW] alongside the existing [LADDER-DROP-DIAG] for
+// side-by-side comparison. Phase 2 will replace the four current bias
+// behaviors (anti-camp force-drop, under-ladder, fleeing, forcedLadderDrop)
+// with this routine as authoritative.
+//
+// Returns an OBJECT (not a boolean) so the diagnostic can show WHY the routine
+// decided as it did — gives Brian a structured comparison vs the existing
+// bias-bucket reasons in DUMP LOGS.
+function shouldDropDownLadder(capsule, ladder, player, levelParams) {
+  // Step 1: vertical filter
+  const VERT_TOLERANCE = 4;
+  if (capsule.y >= player.y - VERT_TOLERANCE) {
+    return { drop: false, reason: 'step1-vertical' };
+  }
+  // Step 2: difficulty roll
+  const threshold = Math.floor(levelParams.dkDifficulty / 2) + 1;
+  const roll = Math.floor(Math.random() * 3);
+  if (roll >= threshold) {
+    return { drop: false, reason: 'step2-difficulty', roll: roll, threshold: threshold };
+  }
+  // Step 3: player alignment
+  // PLAYER_X_TOLERANCE = 12px — Brian-confirmed. CRT-era arcade DK was
+  // pixel-perfect; modern displays need slack. 12px catches climbers
+  // auto-snapped to lad.x + LADDER_W/2 and gives "near alignment" feel.
+  const PLAYER_X_TOLERANCE = 12;
+  const dx = capsule.x - player.x;
+  if (Math.abs(dx) <= PLAYER_X_TOLERANCE) {
+    return { drop: true, reason: 'step3-aligned', roll: roll, threshold: threshold };
+  }
+  // Velocity threshold of 50 matches existing fleeing-bias floor (line ~2828).
+  // Players using button input have vx of 0 or ±WALK_SPD, so |vx|>50 is
+  // effectively "moving left/right".
+  if (dx < 0 && player.vx < -50) {
+    return { drop: true, reason: 'step3-flee-left', roll: roll, threshold: threshold };
+  }
+  if (dx > 0 && player.vx > 50) {
+    return { drop: true, reason: 'step3-flee-right', roll: roll, threshold: threshold };
+  }
+  // Fallback 25% — second independent Math.random() draw (NOT the Step 2 roll).
+  if (Math.random() < 0.25) {
+    return { drop: true, reason: 'step3-fallback-hit', roll: roll, threshold: threshold };
+  }
+  return { drop: false, reason: 'step3-fallback-miss', roll: roll, threshold: threshold };
+}
+
 function updateCapsules(dt) {
   // C3 — drive DTJ throw animation. State transitions handle their own x interpolation and the
   // capsule entity spawn (at the start of the THROW phase).
@@ -2825,6 +2887,29 @@ function updateCapsules(dt) {
             forced:           _forced,
             gateForced:       _gateForced,
             willDrop:         _willDrop,
+          });
+          // DK-GATE-PHASE-1: parallel-shadow comparison. Run the new DK-faithful
+          // routine on the same crossing and log what IT would decide. Result is
+          // NOT consumed — _willDrop above remains authoritative. Side-by-side
+          // logging in DUMP LOGS lets Brian verify the new routine before Phase 2
+          // commits to it. agree:true means both routines reached the same
+          // decision; agree:false flags an interesting case for review.
+          const _shadowResult = shouldDropDownLadder(c, lad, player, getLevelParams());
+          console.log('[DK-GATE-SHADOW]', {
+            currentLevel:    currentLevel,
+            capX:            Math.round(c.x),
+            capY:            Math.round(c.y),
+            playerX:         Math.round(player.x),
+            playerY:         Math.round(player.y),
+            playerVx:        Math.round(player.vx),
+            ladCx:           ladCx,
+            actualDecision:  _willDrop,
+            actualReason:    _biasReason,
+            shadowDecision:  _shadowResult.drop,
+            shadowReason:    _shadowResult.reason,
+            shadowRoll:      _shadowResult.roll,
+            shadowThreshold: _shadowResult.threshold,
+            agree:           (_willDrop === _shadowResult.drop),
           });
           if (_willDrop) {
             c.rolling = false;
@@ -3592,7 +3677,8 @@ let levelStartLockT     = 0;
 // 10-level parameter table. Index = currentLevel - 1 (clamped to 9 for L11+ which
 // reuses L10 row; winBonus extends linearly via getLevelParams).
 // Columns: capsuleSpeedMult, spawnIntervalAvg, spawnVariance, fastDropOn,
-//          ladderDropChance, antiCampSec, pelosiInterval, antifaWaveSize, winBonus
+//          ladderDropChance, antiCampSec, pelosiInterval, antifaWaveSize, winBonus,
+//          dkDifficulty
 // P-DIFFICULTY-1-FIX BUG 11: ladderDropChance ([4] column) curve revised per Brian
 // field test. Was: 0/0.05/0.10/0.20/0.30/0.35/0.40/0.50/0.55/0.60 (too gradual, L2-3
 // felt no different from L1). Now: 0/0.25/0.30/0.35/0.40/0.45/0.50/0.55/0.58/0.60
@@ -3605,17 +3691,27 @@ let levelStartLockT     = 0;
 // whether bias hunting actually fires in isolation. REVERT to the V6 row before
 // next non-diagnostic commit. Original values preserved in inline comment per
 // row: |orig=0.XX|.
+//
+// DK-GATE-PHASE-1: dkDifficulty ([9] column) added per Don Hodges' Z80 disassembly
+// of original DK arcade ROM (addresses $2178-$219E). Used by shouldDropDownLadder()
+// in parallel-shadow mode (NOT wired into drop decision in Phase 1; logs only).
+// Step-2 pass rates per ROM formula `threshold = floor(diff/2) + 1`, drop if
+// roll<threshold over roll∈{0,1,2}:
+//   diff=1 → 33% pass, diff=2-3 → 67% pass, diff=4-5 → 100% pass.
+// Adjacent-value adjustments (2→3, 4→5) are NO-OPS by design — three plateaus
+// matches the ROM's coarse curve. Phase 3 tuning should use the three plateaus,
+// not adjacent-value tweaks. Phase 2 will replace bias buckets with this routine.
 const DIFFICULTY_TABLE = [
-  [1.00, 2.5, 0.30, true, 0.00, 10, 25, 1, 2000],   // L1   |orig=0.00|
-  [1.07, 2.3, 0.28, true, 0.00, 9,  23, 1, 2400],   // L2   |orig=0.25|
-  [1.14, 2.1, 0.25, true, 0.00, 8,  21, 1, 2800],   // L3   |orig=0.30|
-  [1.20, 1.9, 0.23, true, 0.00, 7,  19, 2, 3200],   // L4   |orig=0.35|
-  [1.27, 1.7, 0.21, true, 0.00, 6,  18, 2, 3600],   // L5   |orig=0.40|
-  [1.33, 1.6, 0.20, true, 0.00, 6,  16, 2, 4000],   // L6   |orig=0.45|
-  [1.40, 1.4, 0.18, true, 0.00, 5,  15, 3, 4400],   // L7   |orig=0.50|
-  [1.47, 1.3, 0.17, true, 0.00, 5,  14, 3, 4800],   // L8   |orig=0.55|
-  [1.53, 1.2, 0.16, true, 0.00, 4,  13, 3, 5200],   // L9   |orig=0.58|
-  [1.60, 1.0, 0.15, true, 0.00, 4,  12, 3, 6000],   // L10  |orig=0.60|
+  [1.00, 2.5, 0.30, true, 0.00, 10, 25, 1, 2000, 1],   // L1   |orig=0.00|  dkDiff=1 (33%)
+  [1.07, 2.3, 0.28, true, 0.00, 9,  23, 1, 2400, 2],   // L2   |orig=0.25|  dkDiff=2 (67%)
+  [1.14, 2.1, 0.25, true, 0.00, 8,  21, 1, 2800, 2],   // L3   |orig=0.30|  dkDiff=2 (67%)
+  [1.20, 1.9, 0.23, true, 0.00, 7,  19, 2, 3200, 2],   // L4   |orig=0.35|  dkDiff=2 (67%)
+  [1.27, 1.7, 0.21, true, 0.00, 6,  18, 2, 3600, 3],   // L5   |orig=0.40|  dkDiff=3 (67% — same as 2)
+  [1.33, 1.6, 0.20, true, 0.00, 6,  16, 2, 4000, 3],   // L6   |orig=0.45|  dkDiff=3 (67% — same as 2)
+  [1.40, 1.4, 0.18, true, 0.00, 5,  15, 3, 4400, 4],   // L7   |orig=0.50|  dkDiff=4 (100%)
+  [1.47, 1.3, 0.17, true, 0.00, 5,  14, 3, 4800, 4],   // L8   |orig=0.55|  dkDiff=4 (100%)
+  [1.53, 1.2, 0.16, true, 0.00, 4,  13, 3, 5200, 5],   // L9   |orig=0.58|  dkDiff=5 (100% — same as 4)
+  [1.60, 1.0, 0.15, true, 0.00, 4,  12, 3, 6000, 5],   // L10  |orig=0.60|  dkDiff=5 (100% — same as 4)
 ];
 
 function getLevelParams() {
@@ -3631,6 +3727,7 @@ function getLevelParams() {
     pelosiInterval:    row[6],
     antifaWaveSize:    row[7],
     winBonus:          currentLevel <= 10 ? row[8] : 6000 + (currentLevel - 10) * 400,
+    dkDifficulty:      row[9],
   };
 }
 const BRIEFCASE_RESPAWN_MIN = 8.0;
