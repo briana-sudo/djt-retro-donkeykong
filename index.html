@@ -2609,9 +2609,12 @@ const HAT_PULSE_PERIOD            = 1.0;    // scale-pulse cycle (sec) — kept 
 const HAT_PULSE_MIN               = 1.0;
 const HAT_PULSE_MAX               = 1.1;
 const HAT_MAX_ONSCREEN            = 5;      // hard ceiling per arcade DK (was 8)
-const HAT_AABB_W                  = 22;     // collision width (32→22 for 30% size reduction)
-const HAT_AABB_H                  = 17;     // collision height (24→17)
-const HAT_SPRITE_SIZE             = 34;     // render box size (48→34)
+// P-WEAPON-1-FIX (May 3 2026): additional 25% reduction per Brian field-test.
+// 34→26 sprite, 22→17 AABB W, 17→13 AABB H. FBI badge constants UNCHANGED (Brian:
+// "FBI badge is perfect size"). Ratio: 26 * 0.75 = 19.5 if Brian wants another pass.
+const HAT_AABB_W                  = 17;     // collision width (32→22→17)
+const HAT_AABB_H                  = 13;     // collision height (24→17→13)
+const HAT_SPRITE_SIZE             = 26;     // render box size (48→34→26)
 const HAT_DODGE_SCORE             = 100;    // pts for jumping over hat
 const CAPSULE_PER_HAT             = 8;      // capsules reaching FLOOR per bonus hat spawn
 
@@ -2641,7 +2644,7 @@ function getHatInitialCount(level) { return Math.min(Math.max(level, 1), 5); }
 const BADGE_SPRITE_SIZE     = 28;       // render size (scaled from cached aspect)
 const BADGE_AABB_W          = 22;       // pickup + kill-zone width
 const BADGE_AABB_H          = 22;       // pickup + kill-zone height
-const BADGE_HOVER_OFFSET    = 24;       // px above platform surface (jump clearance)
+const BADGE_HOVER_OFFSET    = 32;       // P-WEAPON-1-FIX: 24→32, more clearance so badge clearly hovers above platform (was visually "sitting on")
 const BADGE_FLASH_DURATION  = 0.15;     // sec, white-yellow kill flash
 const BADGE_FADE_DURATION   = 0.3;      // sec, expiration fade
 const BADGE_KILL_SCORE      = 50;       // base score per kill (× multiplier via addScore)
@@ -2890,7 +2893,10 @@ function updateHats(dt) {
               playerY: Math.round(player.y),
             });
           }
-        } else {
+        } else if (!player.wieldingBadge) {
+          // P-WEAPON-1-FIX: badge wield protects from contact death. updateBadges()
+          // runs later this same frame and its kill loop splices the hat + awards
+          // score. Symmetric to the capsule guard at line ~3745 (search 'P-WEAPON-1-FIX').
           console.log('[HAT-DEATH]', {
             level:    currentLevel,
             hatX:     Math.round(hat.x),
@@ -2946,6 +2952,13 @@ function updateBadges(dt) {
           plat:     'P' + badge.platIdx,
           duration: getBadgeDuration(currentLevel),
         });
+        // P-WEAPON-1-FIX: explicit wield-start log per spec — confirms wieldingBadge
+        // state actually transitioned to true (Brian DUMP LOGS verification).
+        console.log('[BADGE-WIELD-START]', {
+          level:       currentLevel,
+          endTime:     +player.badgeWieldEndTime.toFixed(2),
+          currentTime: +levelTime.toFixed(2),
+        });
         break;
       }
     }
@@ -2964,6 +2977,16 @@ function updateBadges(dt) {
     }
     if (state !== 'GAMEPLAY') return;
 
+    // P-WEAPON-1-FIX: per-frame tick log per Brian's spec — confirms the wielding
+    // kill loop is being reached every frame while badge is active. Brian DUMP LOGS
+    // should show ~60 entries/sec during a wield. Verbose by design.
+    console.log('[BADGE-WIELD-TICK]', {
+      level:        currentLevel,
+      remaining:    +(player.badgeWieldEndTime - levelTime).toFixed(2),
+      capsuleCount: capsules.length,
+      hatCount:     hats.length,
+    });
+
     // Kill capsules — backward iter for splice safety. Capsule center ±
     // CAPSULE_R vs player x±10, y in [py-32, py-4].
     for (let i = capsules.length - 1; i >= 0; i--) {
@@ -2974,12 +2997,20 @@ function updateBadges(dt) {
       const cOverlapY = (cap.y + CAPSULE_R > player.y - 32) &&
                        (cap.y - CAPSULE_R < player.y - 4);
       if (cOverlapX && cOverlapY) {
+        const _scoreBefore = playerScore;
         addScore(BADGE_KILL_SCORE, true, cap.x, cap.y - 20, '#ffffaa');
         killFlashes.push({ x: cap.x, y: cap.y, startTime: levelTime, duration: BADGE_FLASH_DURATION });
         if (typeof GAME_SFX !== 'undefined' && GAME_SFX.capsule_destruction) {
           GAME_SFX.capsule_destruction.play();
         }
         console.log('[BADGE-KILL]', { target: 'capsule', level: currentLevel, capX: Math.round(cap.x), capY: Math.round(cap.y) });
+        // P-WEAPON-1-FIX: explicit kill-fired log per spec, with score delta proof.
+        console.log('[BADGE-KILL-FIRED]', {
+          target:      'capsule',
+          level:       currentLevel,
+          scoreBefore: _scoreBefore,
+          scoreAfter:  playerScore,
+        });
         capsules.splice(i, 1);
       }
     }
@@ -2992,12 +3023,20 @@ function updateBadges(dt) {
       const hOverlapY = (hat.y + HAT_AABB_H / 2 > player.y - 32) &&
                        (hat.y - HAT_AABB_H / 2 < player.y - 4);
       if (hOverlapX && hOverlapY) {
+        const _scoreBefore = playerScore;
         addScore(BADGE_KILL_SCORE, true, hat.x, hat.y - 20, '#ffffaa');
         killFlashes.push({ x: hat.x, y: hat.y, startTime: levelTime, duration: BADGE_FLASH_DURATION });
         if (typeof GAME_SFX !== 'undefined' && GAME_SFX.player_death_scream) {
           GAME_SFX.player_death_scream.play();
         }
         console.log('[BADGE-KILL]', { target: 'hat', level: currentLevel, hatX: Math.round(hat.x), hatY: Math.round(hat.y) });
+        // P-WEAPON-1-FIX: explicit kill-fired log per spec, with score delta proof.
+        console.log('[BADGE-KILL-FIRED]', {
+          target:      'hat',
+          level:       currentLevel,
+          scoreBefore: _scoreBefore,
+          scoreAfter:  playerScore,
+        });
         hats.splice(i, 1);
       }
     }
@@ -3742,7 +3781,12 @@ function updateCapsules(dt) {
     }
     // H1 — capsule kills suppressed during WIN_FREEZE / WIN_SEQUENCE so a stray capsule on TOP
     // doesn't cost a life after the win trigger has fired.
-    if (state === 'GAMEPLAY' && !capsuleOnAbove && playerOverlap) {
+    // P-WEAPON-1-FIX: !player.wieldingBadge guard — when wielding badge, contact does NOT kill
+    // the player here. updateBadges() runs later this same frame at line ~7941 and its kill loop
+    // (line ~2967) splices the capsule + awards score. Without this guard, hit() flipped state to
+    // DEATH_REACTION before updateBadges fired, and its `if (state !== 'GAMEPLAY') return` exited
+    // the kill loop early — so wielding-state kills were silent (Brian field-test bug #2).
+    if (state === 'GAMEPLAY' && !capsuleOnAbove && playerOverlap && !player.wieldingBadge) {
       c.collided = true;
       hit('capsule', c);                                  // J — pass capsule ref so DEATH_REACTION ragdoll launches in capsule.vx direction
     }
