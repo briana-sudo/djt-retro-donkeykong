@@ -2602,8 +2602,13 @@ const LEFT_WALL_X = CAPSULE_R;
 // Speed scales per level (B5c — Donkey Blog plateau):
 //   L1=55, L2=60, L3=65, L4=70, L5+=75 walk; climb is walk-10.
 // Persists through respawn; resets on level transition / game over / skipToGame.
-const HAT_LADDER_CHANCE_PER_SEC   = 0.5;    // 50%/s when on ladder x to start climbing
-const HAT_REVERSE_CHANCE_PER_SEC  = 0.1;    // 10%/s to reverse direction mid-climb (firefox)
+// P-ENEMY-1-FIX-2 (May 3 2026): tuning for upward migration. P-ENEMY-1-FIX values
+// (0.5/0.1) caused all hats to cluster on P4 with little climbing activity. New
+// values 3× the climb-start chance and halve the mid-climb reverse chance so hats
+// commit to climbs and disperse upward. Combined with single-spawn-on-P1 + 65/35
+// upward bias in findLadderForHat — emergent migration like arcade DK fireballs.
+const HAT_LADDER_CHANCE_PER_SEC   = 1.5;    // 150%/s when on ladder x to start climbing (was 0.5)
+const HAT_REVERSE_CHANCE_PER_SEC  = 0.05;   // 5%/s to reverse direction mid-climb (was 0.1) — smoother climb-through
 const HAT_LADDER_X_TOLERANCE      = 12;     // px proximity to ladCx for "on ladder" detection
 const HAT_PULSE_PERIOD            = 1.0;    // scale-pulse cycle (sec) — kept for visual flair
 const HAT_PULSE_MIN               = 1.0;
@@ -2702,24 +2707,21 @@ let capsulesReachedFloor = 0;
 // ('level-entry' or 'capsule-reached-floor').
 function spawnHat(reason) {
   if (hats.length >= HAT_MAX_ONSCREEN) return;
-  // P-ENEMY-1-FIX ADDENDUM: spawn pool restricted to [P3, P4] only.
-  // TOP removed — TOP is the boss zone (DTJ's domain) and hats must never
-  // appear there. Combined with findLadderForHat skipping ladders[5], hats
-  // can never reach TOP via climb either.
-  const upperPlats = [platforms[3], platforms[4]];                 // P3, P4 only
-  const playerPlat = (typeof player !== 'undefined') ? player.lastGroundedPlat : null;
-  const candidates = upperPlats.filter(function (p) { return p !== playerPlat; });
-  if (candidates.length === 0) return;
-  const plat = candidates[Math.floor(Math.random() * candidates.length)];
-  const margin = HAT_SPRITE_SIZE / 2 + 4;
-  const xMin = plat.x + margin;
-  const xMax = plat.x + plat.w - margin;
-  const x = xMin + Math.random() * (xMax - xMin);
-  const y = getPlatY(plat, x) - HAT_SPRITE_SIZE / 2;
+  // P-ENEMY-1-FIX-2 (May 3 2026): single fixed spawn point on P1 right (x=420).
+  // Matches arcade DK fireball spawn from oil drum at bottom-left of 25m. Prior
+  // P-ENEMY-1-FIX random P3/P4 spawn caused all hats to cluster on P4 with no
+  // upward migration (Brian L5 field-test). Combined with HAT_LADDER_CHANCE
+  // bumped to 1.5/s + 65/35 upward bias in findLadderForHat, hats now disperse
+  // organically upward through the level via emergent random-walk. Player-plat
+  // exclusion REMOVED — arcade DK fireballs spawn regardless of Mario's position;
+  // single spawn point makes the exclusion incompatible with respawn cadence.
+  const plat = platforms[1];                                       // P1 always
+  const x    = 420;                                                // P1 right side; P1 spans x=80..480
+  const y    = getPlatY(plat, x) - HAT_SPRITE_SIZE / 2;
   hats.push({
     x: x, y: y,
     state:      'WALKING',
-    dir:        Math.random() < 0.5 ? -1 : 1,
+    dir:        -1,                                                // start LEFT, like arcade DK fireballs walking away from oil drum
     onPlat:     plat,
     ladderRef:  null,
     climbDir:   0,
@@ -2734,8 +2736,8 @@ function spawnHat(reason) {
     cap:       HAT_MAX_ONSCREEN,
     spawnX:    Math.round(x),
     spawnY:    Math.round(y),
-    plat:      'P' + platforms.indexOf(plat),
-    dir:       hats[hats.length - 1].dir,
+    plat:      'P1',
+    dir:       -1,
   });
 }
 
@@ -2779,7 +2781,17 @@ function findHatLadderBottomPlat(ladder) {
 // (DTJ's domain) and to avoid blocking the player's win climb. Same index
 // is hard-coded as SS_TARGET_LADDER_IX = 5 elsewhere — single source of
 // truth for "the win ladder."
+// P-ENEMY-1-FIX-2: 65/35 upward bias. Previously returned the first in-range
+// ladder; the deterministic climbDir at the call site (line ~2821) then forced
+// the only valid direction. With single P1 spawn + need to migrate upward,
+// middle-platform hats need to PREFER the upward ladder when both an up-ladder
+// and a down-ladder are within tolerance. Build two candidate lists by
+// direction-from-here, weighted-pick. If only one direction available, take it.
+// climbDir at call site still computes correctly from the chosen ladder's
+// topPlat/botPlat vs hat.onPlat — no change needed there.
 function findLadderForHat(hat) {
+  const upwardCandidates   = [];                                   // hat ascends from this plat (hat.onPlat === botPlat)
+  const downwardCandidates = [];                                   // hat descends from this plat (hat.onPlat === topPlat)
   for (let li = 0; li < ladders.length; li++) {
     if (li === 5) continue;                                          // skip win-ladder (P4↔TOP)
     const lad = ladders[li];
@@ -2787,7 +2799,21 @@ function findLadderForHat(hat) {
     if (Math.abs(hat.x - ladCx) > HAT_LADDER_X_TOLERANCE) continue;
     const topPlat = findHatLadderTopPlat(lad);
     const botPlat = findHatLadderBottomPlat(lad);
-    if (hat.onPlat === topPlat || hat.onPlat === botPlat) return lad;
+    if (hat.onPlat === botPlat)      upwardCandidates.push(lad);
+    else if (hat.onPlat === topPlat) downwardCandidates.push(lad);
+  }
+  // Weighted pick: 65% upward, 35% downward when both available. Falls back to
+  // the other set when first choice is empty so a hat near a one-way ladder
+  // still climbs.
+  const goUpward = Math.random() < 0.65;
+  if (goUpward && upwardCandidates.length > 0) {
+    return upwardCandidates[Math.floor(Math.random() * upwardCandidates.length)];
+  }
+  if (downwardCandidates.length > 0) {
+    return downwardCandidates[Math.floor(Math.random() * downwardCandidates.length)];
+  }
+  if (upwardCandidates.length > 0) {
+    return upwardCandidates[Math.floor(Math.random() * upwardCandidates.length)];
   }
   return null;
 }
