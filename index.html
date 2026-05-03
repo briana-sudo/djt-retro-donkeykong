@@ -2649,7 +2649,14 @@ function getHatInitialCount(level) { return Math.min(Math.max(level, 1), 5); }
 const BADGE_SPRITE_SIZE     = 28;       // render size (scaled from cached aspect)
 const BADGE_AABB_W          = 22;       // pickup + kill-zone width
 const BADGE_AABB_H          = 22;       // pickup + kill-zone height
-const BADGE_HOVER_OFFSET    = 32;       // P-WEAPON-1-FIX: 24→32, more clearance so badge clearly hovers above platform (was visually "sitting on")
+// P-WEAPON-1-FIX-2 (May 3 2026): now 2× sprite size (56 vs prior 32). Brian
+// field-test: 32 px gap was visually ambiguous on the right badge (P2 x=300 sits
+// over the down-sloping right side of P2's +2.5° tilt — sprite bottom only ~18
+// px above the local tilted surface, looked like contact). 2× sprite height
+// gives a ~42 px gap from sprite bottom to surface — unambiguous hover. Both
+// badges still use the same getPlatY(plat, pos.x) tilt-adjusted formula in
+// spawnBadges (line ~2685) — no per-spawn divergence.
+const BADGE_HOVER_OFFSET    = BADGE_SPRITE_SIZE * 2;       // = 56 (was 32, was 24)
 const BADGE_FLASH_DURATION  = 0.15;     // sec, white-yellow kill flash
 const BADGE_FADE_DURATION   = 0.3;      // sec, expiration fade
 const BADGE_KILL_SCORE      = 50;       // base score per kill (× multiplier via addScore)
