@@ -58,7 +58,7 @@ console.log = function() {
   // (Trump-throws-but-no-capsule symptom). Logs full capsule census at the bail moment
   // so Brian can DUMP LOGS and report which slot-class is dominant (FLOOR pile-up,
   // Pelosi-carry hold, or mid-cascade stall).
-  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0 || arguments[0].indexOf('[FLOOR-TTL]') === 0)) {
+  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0 || arguments[0].indexOf('[FLOOR-TTL]') === 0 || arguments[0].indexOf('[DIAGONAL-THROW]') === 0)) {
     window.bgmLogBuffer.push({
       prefix: arguments[0],
       data:   arguments.length > 1 ? arguments[1] : null,
@@ -2009,7 +2009,7 @@ function skipToGame() {
   // out PELOSI_INTERVAL_MIN/MAX constants → ReferenceError on tap during non-GAMEPLAY
   // state (intro/cutscene). Replaced with the same per-level pelosi-timer formula
   // used elsewhere. Also using getLevelParams for capsuleSpawnInterval.
-  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance; capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; } dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; resetStats(); pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; { const _pp = getLevelParams().pelosiInterval; pelosi.timer = _pp * 0.8 + Math.random() * _pp * 0.4; } pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; climberCampT = 0; }
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance; capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; } dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; resetStats(); pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; { const _pp = getLevelParams().pelosiInterval; pelosi.timer = _pp * 0.8 + Math.random() * _pp * 0.4; } pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; climberCampT = 0; throwCounter = 0; }
 }
 
 // ─────────────────────────────────────────────
@@ -2491,6 +2491,24 @@ const MAX_CAPSULES = 8;
 // crowded (lower) or too sparse (raise). Off-screen-right exit at x > 516
 // usually wins first; TTL is the safety net for capsules that stall.
 const FLOOR_TTL = 8.0;
+// DK-DIAGONAL-THROW: pass-through diagonal trajectory from DTJ position.
+// Capsule launches at constant velocity (no gravity), passes visually through
+// P4/P3/P2 girders without colliding (matches arcade DK throw-through-girders
+// convention per Wikipedia + Cutting Room Floor research), lands on P1.
+// Trajectory: spawn (BARREL_X=230, TOP.y+16=156), vx=180, vy=720, slope 4.0,
+// time-to-land 0.67s, landing x ≈ 350 on P1 (capsule center at y=642 = P1
+// surface 660 - CAPSULE_R 18). Lethal in flight (AABB collision unchanged).
+// First throw of every level is diagonal (matches arcade "first barrel ignites
+// oil drum" convention — forces immediate player engagement). Subsequent
+// throws: per-level frequency via getDiagonalEveryN(level).
+const DIAGONAL_THROW_VX = 180;
+const DIAGONAL_THROW_VY = 720;
+function getDiagonalEveryN(level) {
+  if (level <= 3) return 6;
+  if (level <= 6) return 5;
+  if (level <= 9) return 4;
+  return 3;
+}
 // G4 — initial throw direction. -1 = leftward (current Level 1), +1 = rightward.
 // Used to derive (a) capsule spawn vx sign and (b) the dtj_throw render flip — keeping them
 // in lockstep so changing one constant flips both. After spawn, capsule vx still snaps to platform
@@ -2603,34 +2621,78 @@ function spawnCapsule() {
   }
   // DK-GATE-PHASE-2: anti-camp branch + first-pair branch + throw-cycle
   // suppression all REMOVED. Capsule cascade is now driven entirely by
-  // shouldDropDownLadder() at the crossing-decision site. spawnCapsule is now
-  // a single-purpose function: every DTJ throw cycle pushes one Path C capsule
-  // from BARREL_X on TOP. Player camping is punished naturally via Step 3
-  // alignment in shouldDropDownLadder (camped player is at lad.x, so any
-  // capsule that passes Step 1 + Step 2 will drop on the camped ladder).
+  // shouldDropDownLadder() at the crossing-decision site. spawnCapsule
+  // pushes one capsule per DTJ throw cycle. DK-DIAGONAL-THROW (added later):
+  // first throw of every level is diagonal; subsequent throws are mostly
+  // normal Path C (TOP roll) with diagonal frequency scaling per level.
+  // Player camping is punished naturally via Step 3 alignment in
+  // shouldDropDownLadder (camped player is at lad.x, so any capsule that
+  // passes Step 1 + Step 2 will drop on the camped ladder).
   const _p = getLevelParams();
-  // Normal spawn from BARREL_X.
-  capsules.push({
-    x: BARREL_X,                                // spawns from the static barrel decoration
-    y: TOP.y - CAPSULE_R,                       // sitting on TOP platform
-    vx: CAPSULE_THROW_DIR * _p.capsuleSpeedMult * CAPSULE_ROLL_SPD,   // G4 — sign × per-level speed
-    vy: 0,
-    rolling: true,
-    onPlat: TOP,
-    rot: 0,
-    speedMult: _p.capsuleSpeedMult,             // P-DIFFICULTY-1: cached for per-frame velocity re-application
-    // DK-DESCENT-V1: ladder-descent state fields. Initialized false/null on
-    // spawn; set when the drop decision fires (line ~2960). Cleared when
-    // descent reaches destination platform (line ~2826).
-    descending:        false,
-    descendLadder:     null,
-    descendDestY:      null,
-    descendDestPlat:   null,
-    // DK-FLOOR-TTL: per-capsule cumulative FLOOR-time accumulator. Spawned at
-    // 0 (capsule starts on TOP). Ticks per dt while onPlat === FLOOR. When
-    // floorTime >= FLOOR_TTL, capsule despawns. See update loop ~line 2790.
-    floorTime:         0,
-  });
+  // DK-DIAGONAL-THROW: increment throw counter and decide diagonal vs normal.
+  // First throw of level is ALWAYS diagonal (throwCounter just incremented to
+  // 1 from a level-reset 0). Subsequent throws: every Nth throw is diagonal
+  // where N = getDiagonalEveryN(currentLevel) — L1-3:6, L4-6:5, L7-9:4, L10+:3.
+  throwCounter++;
+  const _isFirstOfLevel = (throwCounter === 1);
+  const _diagonalEveryN = getDiagonalEveryN(currentLevel);
+  const _isDiagonal     = _isFirstOfLevel || (throwCounter % _diagonalEveryN === 0);
+  if (_isDiagonal) {
+    // Diagonal throw: pass-through trajectory from DTJ position. Capsule
+    // visually passes through P4/P3/P2 (no platform collision during flight),
+    // lands on P1 surface via the thrown-state branch in updateCapsules.
+    // Lethal mid-flight (AABB collision unaffected by thrown state).
+    capsules.push({
+      x:                 BARREL_X,
+      y:                 TOP.y + 16,                   // just below TOP, capsule center
+      vx:                DIAGONAL_THROW_VX,
+      vy:                DIAGONAL_THROW_VY,
+      rolling:           false,
+      onPlat:            null,
+      thrown:            true,                          // NEW state flag
+      rot:               0,
+      speedMult:         _p.capsuleSpeedMult,
+      descending:        false,
+      descendLadder:     null,
+      descendDestY:      null,
+      descendDestPlat:   null,
+      floorTime:         0,
+    });
+    console.log('[DIAGONAL-THROW]', 'spawn', {
+      throwCount:     throwCounter,
+      isFirstOfLevel: _isFirstOfLevel,
+      level:          currentLevel,
+      everyN:         _diagonalEveryN,
+      spawnX:         BARREL_X,
+      spawnY:         TOP.y + 16,
+      vx:             DIAGONAL_THROW_VX,
+      vy:             DIAGONAL_THROW_VY,
+    });
+  } else {
+    // Normal Path C spawn from BARREL_X.
+    capsules.push({
+      x: BARREL_X,                                // spawns from the static barrel decoration
+      y: TOP.y - CAPSULE_R,                       // sitting on TOP platform
+      vx: CAPSULE_THROW_DIR * _p.capsuleSpeedMult * CAPSULE_ROLL_SPD,   // G4 — sign × per-level speed
+      vy: 0,
+      rolling: true,
+      onPlat: TOP,
+      rot: 0,
+      speedMult: _p.capsuleSpeedMult,             // P-DIFFICULTY-1: cached for per-frame velocity re-application
+      thrown: false,                              // DK-DIAGONAL-THROW: explicit false on normal Path C
+      // DK-DESCENT-V1: ladder-descent state fields. Initialized false/null on
+      // spawn; set when the drop decision fires (line ~2960). Cleared when
+      // descent reaches destination platform (line ~2826).
+      descending:        false,
+      descendLadder:     null,
+      descendDestY:      null,
+      descendDestPlat:   null,
+      // DK-FLOOR-TTL: per-capsule cumulative FLOOR-time accumulator. Spawned at
+      // 0 (capsule starts on TOP). Ticks per dt while onPlat === FLOOR. When
+      // floorTime >= FLOOR_TTL, capsule despawns. See update loop ~line 2790.
+      floorTime:         0,
+    });
+  }
   // P-DIFFICULTY-1-FIX-V3 BUG 10 diagnostic: log spawn-time speedMult so Brian
   // can confirm via DUMP LOGS what value is actually applied at L8+ (Bug 10
   // field test report: "capsules at L8+ NOT visibly faster").
@@ -2842,11 +2904,42 @@ function updateCapsules(dt) {
       else if (c.x > W - CAPSULE_R)    { c.x = W - CAPSULE_R;    c.vx = 0; }
     }
 
-    // DK-DESCENT-V1: descent state takes priority over rolling/falling. Per-
-    // frame y advance at fixed rate. When destDestY reached, transition to
-    // rolling on destination platform. Does NOT `continue` — falls through to
-    // the AABB collision check below so descending capsules remain lethal.
-    if (c.descending) {
+    // DK-DIAGONAL-THROW: thrown state takes priority over descending/rolling/
+    // falling. Constant-velocity straight-line trajectory (no gravity). Lands
+    // ONLY on P1 (or FLOOR backstop) — passes visually through P4/P3/P2
+    // girders during flight. Does NOT `continue` — falls through to AABB
+    // collision so thrown capsules remain lethal mid-flight.
+    if (c.thrown) {
+      const _prevYThrown = c.y;
+      c.x += c.vx * dt;
+      c.y += c.vy * dt;
+      c.rot += 0.18;
+      // Landing detection: only P1 + FLOOR. P4/P3/P2 deliberately ignored.
+      const _landingPlats = [platforms[1], FLOOR];   // P1 then FLOOR backstop
+      for (const _lplat of _landingPlats) {
+        if (c.x < _lplat.x - 4 || c.x > _lplat.x + _lplat.w + 4) continue;
+        const _surfT = getPlatY(_lplat, c.x) - CAPSULE_R;
+        if (_prevYThrown > _surfT + 1) continue;     // was already below
+        if (c.y < _surfT) continue;                  // hasn't reached
+        // Land on this platform.
+        c.y       = _surfT;
+        c.thrown  = false;
+        c.rolling = true;
+        c.onPlat  = _lplat;
+        c.vy      = 0;
+        const _rsT = (c.speedMult || 1) * CAPSULE_ROLL_SPD;
+        if (_lplat === FLOOR)        c.vx =  _rsT;
+        else if (_lplat.tilt >  0.1) c.vx =  _rsT;
+        else if (_lplat.tilt < -0.1) c.vx = -_rsT;
+        else                         c.vx = c.vx >= 0 ? _rsT : -_rsT;
+        console.log('[DIAGONAL-THROW]', 'land', {
+          capX:  Math.round(c.x),
+          capY:  Math.round(c.y),
+          plat:  (_lplat === FLOOR) ? 'FLOOR' : ('P' + platforms.indexOf(_lplat)),
+        });
+        break;
+      }
+    } else if (c.descending) {
       c.y += CAPSULE_DESCEND_SPD * dt;
       c.rot += 0.18;
       if (c.y >= c.descendDestY) {
@@ -3306,6 +3399,7 @@ function resetForLevelTransition() {
   // forceNextDropAtLadder) removed.
   currentLevel++;
   climberCampT = 0;                              // DK-CLIMBER-TIMER: reset on level transition
+  throwCounter = 0;                              // DK-DIAGONAL-THROW: reset so first throw of new level is diagonal
   _resetEntitiesAndPerLevel();
   // AUDIO-3e Fix A — advance bgmRotationIdx by 1 (with wrap) so each new level opens with
   // the song AFTER whatever was current at the prior win. Within a level the once('end')
@@ -3379,6 +3473,7 @@ function resetForGameOver() {
   // forceNextDropAtLadder) removed.
   currentLevel = 1;
   climberCampT = 0;                              // DK-CLIMBER-TIMER: reset on game-over
+  throwCounter = 0;                              // DK-DIAGONAL-THROW: reset so first throw of L1 is diagonal
   _resetEntitiesAndPerLevel();
   // AUDIO-1 — state-driven: state→INTRO_BLACK maps to ESCALATOR (audible after first user
   // gesture unlocks Howler's audio context). No flag reset needed (bgmDeathMuted gone).
@@ -3713,6 +3808,12 @@ let levelStartLockT     = 0;
 // THIS player and all ladders go hostile until the player gets off and
 // back on. Forces forward motion. Per-player not per-ladder by design.
 let climberCampT        = 0;
+// DK-DIAGONAL-THROW: counts every spawnCapsule call that successfully pushes
+// (incremented after MAX_CAPSULES bail). throwCounter === 1 → first throw of
+// the level → ALWAYS diagonal. Subsequent throws: every getDiagonalEveryN(level)
+// throws are diagonal. Reset to 0 on level transition / game over / skipToGame
+// so each level's first throw fires diagonal.
+let throwCounter        = 0;
 
 // 10-level parameter table. Index = currentLevel - 1 (clamped to 9 for L11+ which
 // reuses L10 row; winBonus extends linearly via getLevelParams).
