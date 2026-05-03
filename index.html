@@ -58,7 +58,7 @@ console.log = function() {
   // (Trump-throws-but-no-capsule symptom). Logs full capsule census at the bail moment
   // so Brian can DUMP LOGS and report which slot-class is dominant (FLOOR pile-up,
   // Pelosi-carry hold, or mid-cascade stall).
-  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DK-GATE-SHADOW]') === 0)) {
+  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DK-GATE-SHADOW]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0)) {
     window.bgmLogBuffer.push({
       prefix: arguments[0],
       data:   arguments.length > 1 ? arguments[1] : null,
@@ -2470,6 +2470,12 @@ let capsuleSpawnInterval = 2.5;
 const CAPSULE_R = 18;                              // Block 2.5 — bumped from 12
 const CAPSULE_ROLL_SPD = 75;
 const CAPSULE_GRAV = 1100;
+// DK-DESCENT-V1: fixed per-frame rate during ladder descent. Mirrors arcade DK
+// behavior (Barrel_State_VertMovement per RussianManSMWC NES disassembly +
+// jotd666 Amiga port) — constant rate, NOT gravity-accelerated. Slightly
+// faster than player CLIMB_SPD=110 since capsules visually roll, not climb.
+// At 130 px/s a typical ~120px descent takes ~0.92s. Tunable in field test.
+const CAPSULE_DESCEND_SPD = 130;
 // P-DIFFICULTY-1: now per-level via getLevelParams().ladderDropChance (used at line ~2566).
 // const CAPSULE_LADDER_DROP_CHANCE = 0.65;           // Block 2.5 — bumped from 0.5
 // C2 v2 — capsules have NO lifeTimer. They persist until off-screen-left exit (after rolling off
@@ -2634,6 +2640,13 @@ function spawnCapsule() {
     onPlat: TOP,
     rot: 0,
     speedMult: _p.capsuleSpeedMult,             // P-DIFFICULTY-1: cached for per-frame velocity re-application
+    // DK-DESCENT-V1: ladder-descent state fields. Initialized false/null on
+    // spawn; set when the drop decision fires (line ~2960). Cleared when
+    // descent reaches destination platform (line ~2826).
+    descending:        false,
+    descendLadder:     null,
+    descendDestY:      null,
+    descendDestPlat:   null,
   });
   // P-DIFFICULTY-1-FIX-V3 BUG 10 diagnostic: log spawn-time speedMult so Brian
   // can confirm via DUMP LOGS what value is actually applied at L8+ (Bug 10
@@ -2791,7 +2804,40 @@ function updateCapsules(dt) {
       else if (c.x > W - CAPSULE_R)    { c.x = W - CAPSULE_R;    c.vx = 0; }
     }
 
-    if (c.rolling && c.onPlat) {
+    // DK-DESCENT-V1: descent state takes priority over rolling/falling. Per-
+    // frame y advance at fixed rate. When destDestY reached, transition to
+    // rolling on destination platform. Does NOT `continue` — falls through to
+    // the AABB collision check below so descending capsules remain lethal.
+    if (c.descending) {
+      c.y += CAPSULE_DESCEND_SPD * dt;
+      c.rot += 0.18;
+      if (c.y >= c.descendDestY) {
+        if (c.descendDestPlat) {
+          // Reached destination platform surface — transition to rolling.
+          c.descending      = false;
+          c.rolling         = true;
+          c.onPlat          = c.descendDestPlat;
+          c.y               = c.descendDestY;
+          // Seed vx from destination tilt (mirrors falling-block landing logic
+          // at line ~2963). FLOOR + tilted plats snap to downhill direction.
+          const _rs = (c.speedMult || 1) * CAPSULE_ROLL_SPD;
+          if (c.onPlat === FLOOR)         c.vx =  _rs;
+          else if (c.onPlat.tilt >  0.1)  c.vx =  _rs;
+          else if (c.onPlat.tilt < -0.1)  c.vx = -_rs;
+          else                            c.vx = c.vx >= 0 ? _rs : -_rs;
+          console.log('[DESCENT-DIAG]', 'end', {
+            capX:  Math.round(c.x),
+            capY:  Math.round(c.y),
+            platY: Math.round(c.onPlat.y),
+          });
+          c.descendLadder    = null;
+          c.descendDestY     = null;
+          c.descendDestPlat  = null;
+        }
+        // If no destPlat (FLOOR-source ladder), capsule continues past H+30
+        // and the existing off-screen splice at line ~2976 destroys it.
+      }
+    } else if (c.rolling && c.onPlat) {
       // D2 — FLOOR is the only flat platform where direction is forced (rightward, toward Pelosi).
       // Tilted platforms snap vx to downhill direction. TOP (flat) keeps the spawn-set vx (left).
       // P-DIFFICULTY-1: per-capsule speedMult cached at spawn (see spawnCapsule line ~2478).
@@ -2912,18 +2958,44 @@ function updateCapsules(dt) {
             agree:           (_willDrop === _shadowResult.drop),
           });
           if (_willDrop) {
-            c.rolling = false;
-            c.onPlat = null;
-            c.x = ladCx;
-            // DK-CADENCE-A-V4: snap capsule to ladder TOP (mirrors anti-camp's
-            // spawn at line 2593 `y: _campedLadder.y - CAPSULE_R`). Without this,
-            // c.y stays at the source platform's surfaceTarget; the next-frame
-            // falling-block then re-lands the capsule on the same platform via
-            // the prevY > surfaceTarget+1 guard's failure to skip. Anti-camp
-            // works because its push starts at this exact y. Fix mirrors it.
-            c.y = lad.y - CAPSULE_R;
-            c.vx = 0;
-            c.vy = 30;
+            // DK-DESCENT-V1: enter descending state (replaces V4's teleport-to-
+            // ladder-top + gravity fall). Mirrors arcade DK Barrel_State_
+            // VertMovement per RussianManSMWC NES disassembly. Capsule snaps x
+            // to ladder centerline, descends at fixed rate from current y, lands
+            // on next platform below source. No teleport — visually rolls down.
+            // Find destination platform: closest plat BELOW source at ladCx.
+            // For FLOOR-source ladders ([0]/[1]) no platform exists below;
+            // descendDestY = H + 30 so capsule descends past FLOOR and the
+            // existing off-screen splice (line ~2976) handles cleanup.
+            let _destPlat = null;
+            let _destY    = H + 30;                      // off-bottom default for FLOOR sources
+            let _bestY    = Infinity;
+            for (const _p2 of platforms) {
+              if (_p2 === c.onPlat) continue;
+              if (ladCx < _p2.x - 4 || ladCx > _p2.x + _p2.w + 4) continue;
+              const _pY = getPlatY(_p2, ladCx);
+              if (_pY <= c.onPlat.y) continue;            // must be BELOW source
+              if (_pY < _bestY) { _bestY = _pY; _destPlat = _p2; }
+            }
+            if (_destPlat) _destY = getPlatY(_destPlat, ladCx) - CAPSULE_R;
+            c.rolling          = false;
+            c.onPlat           = null;
+            c.descending       = true;
+            c.descendLadder    = lad;
+            c.x                = ladCx;
+            // y stays at current capsule position (rolling on source plat surface).
+            // No snap to ladder top — descent starts from where the capsule was.
+            c.descendDestY     = _destY;
+            c.descendDestPlat  = _destPlat;
+            c.vx               = 0;
+            c.vy               = 0;                      // no gravity during descent
+            console.log('[DESCENT-DIAG]', 'start', {
+              capX:      Math.round(c.x),
+              capY:      Math.round(c.y),
+              ladCx:     ladCx,
+              destY:     Math.round(_destY),
+              destPlatY: _destPlat ? Math.round(_destPlat.y) : 'OFF-BOTTOM',
+            });
             dropped = true;
             break;
           }
