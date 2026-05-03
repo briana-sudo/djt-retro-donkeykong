@@ -2735,6 +2735,21 @@ function updateCapsules(dt) {
 
   for (let i = capsules.length - 1; i >= 0; i--) {
     const c = capsules[i];
+    // P-DIFFICULTY-1-FIX-V4: splice-on-cleared. The "jumped over" dodge bonus at
+    // line ~2920 sets c.cleared = true but never spliced — pre-V4, cleared capsules
+    // kept rolling, eating MAX_CAPSULES slots until helper-kill / Pelosi-smash /
+    // off-screen exit removed them. V4-DIAG census confirmed this was the dominant
+    // slot-class (i=0 carried cleared:true ~11s across 7 bails). Splicing here
+    // closes the despawn gap. Guarded by !c.carried so we don't yank from Pelosi
+    // mid-CARRY_TO_ANCHOR (her state machine has a stale ref recovery path at
+    // line ~4219 but the spec is explicit: don't rely on it). Backward iteration
+    // (line above) keeps splice index-safe. One-frame latency vs the SET site at
+    // line ~2920 is intentional — same-frame splice would skip the dodge-bonus
+    // award block. Strip after V4 field test confirms the fix landed.
+    if (c.cleared && !c.carried) {
+      capsules.splice(i, 1);
+      continue;
+    }
     // J — Pelosi-carried capsules are position-controlled by updatePelosi (CARRY_TO_ANCHOR).
     // Skip ALL physics, off-screen despawn, player-collision, and clear-bonus checks for these.
     // The carried capsule rejoins normal flow only if Pelosi shrugs (carried flag cleared) or
