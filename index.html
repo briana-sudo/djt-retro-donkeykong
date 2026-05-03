@@ -2884,6 +2884,25 @@ function updateCapsules(dt) {
     const overlapX = c.x + CAPSULE_R > player.x - 10 && c.x - CAPSULE_R < player.x + 10;
     const overlapY = c.y + CAPSULE_R > player.y - 32 && c.y - CAPSULE_R < player.y - 4;
     const playerOverlap = overlapX && overlapY;
+    // DK-CADENCE-E: capsule jump-clearance scoring. Original DK awards 100 pts per
+    // barrel jumped. Test: player airborne (not on ground, not on ladder) AND
+    // player foot strictly above capsule top AND horizontal overlap AND capsule in
+    // player's space (!capsuleOnAbove — same filter as the collision check). When
+    // jumping clear, the existing collision overlapY is naturally FALSE because
+    // player.y < c.y - CAPSULE_R puts the player body above the capsule, so this
+    // path and the collision path are mutually exclusive on vertical position.
+    // Sets c.cleared so the V4 splice at line ~2738 removes the capsule next frame
+    // (drains MAX_CAPSULES backlog naturally + provides DK-feel agency). De-dup
+    // via !c.cleared prevents the existing dodge-bonus path at line ~2895 from
+    // also firing on the same capsule. Flat 100 pts (no multiplier per spec); gold
+    // float popup distinguishes from the greenish dodge bonus.
+    const playerAirborne = !player.onGround && !player.onLadder;
+    const playerAboveCapsule = player.y < c.y - CAPSULE_R;
+    if (state === 'GAMEPLAY' && !c.cleared && !capsuleOnAbove
+        && playerAirborne && overlapX && playerAboveCapsule) {
+      c.cleared = true;
+      addScore(100, false, c.x, c.y - 30, '#ffd700');
+    }
     // H1 — capsule kills suppressed during WIN_FREEZE / WIN_SEQUENCE so a stray capsule on TOP
     // doesn't cost a life after the win trigger has fired.
     if (state === 'GAMEPLAY' && !capsuleOnAbove && playerOverlap) {
