@@ -2629,17 +2629,22 @@ function spawnCapsule() {
   // shouldDropDownLadder (camped player is at lad.x, so any capsule that
   // passes Step 1 + Step 2 will drop on the camped ladder).
   const _p = getLevelParams();
-  // DK-DIAGONAL-THROW: increment throw counter and decide diagonal vs normal.
-  // First throw of level is ALWAYS diagonal (throwCounter just incremented to
-  // 1 from a level-reset 0). Subsequent throws: every Nth throw is diagonal
-  // where N = getDiagonalEveryN(currentLevel) — L1-3:6, L4-6:5, L7-9:4, L10+:3.
+  // DK-DIAGONAL-THROW + DK-DIAGONAL-CAP-2: increment throw counter and decide
+  // diagonal vs normal. Cap #1 of every life is NORMAL Path C ("crazy barrel"
+  // per Don Hodges Z80 disassembly — uncontrollable, rolls across TOP
+  // naturally). Cap #2 is the MANDATORY diagonal throw (per Cutting Room Floor:
+  // "Donkey Kong's first barrel is always thrown directly downwards to ignite
+  // the oil can"). Cap #3+ uses per-level diagonal frequency via
+  // getDiagonalEveryN(currentLevel) — L1-3:6, L4-6:5, L7-9:4, L10+:3.
+  // throwCounter resets to 0 on level transition AND on respawn, so cap #1
+  // and cap #2 both fire fresh after every death (mirrors arcade behavior).
+  // The explicit `throwCounter > 2` guard on the frequency check prevents
+  // double-fire if a future per-level frequency ever hits 2 (current min is 3).
   throwCounter++;
-  // throwCounter resets to 0 on level transition AND on respawn, so
-  // throwCounter === 1 is "first throw since player gained control" —
-  // covers both fresh-level and post-death cases per Brian's spec.
-  const _isFirstThrow   = (throwCounter === 1);
-  const _diagonalEveryN = getDiagonalEveryN(currentLevel);
-  const _isDiagonal     = _isFirstThrow || (throwCounter % _diagonalEveryN === 0);
+  const _isMandatoryDiagonal = (throwCounter === 2);
+  const _diagonalEveryN      = getDiagonalEveryN(currentLevel);
+  const _isDiagonal          = _isMandatoryDiagonal
+                            || (throwCounter > 2 && throwCounter % _diagonalEveryN === 0);
   if (_isDiagonal) {
     // Diagonal throw: pass-through trajectory from DTJ position. Capsule
     // visually passes through P4/P3/P2 (no platform collision during flight),
@@ -2662,14 +2667,14 @@ function spawnCapsule() {
       floorTime:         0,
     });
     console.log('[DIAGONAL-THROW]', 'spawn', {
-      throwCount:     throwCounter,
-      isFirstThrow:   _isFirstThrow,
-      level:          currentLevel,
-      everyN:         _diagonalEveryN,
-      spawnX:         BARREL_X,
-      spawnY:         TOP.y + 16,
-      vx:             DIAGONAL_THROW_VX,
-      vy:             DIAGONAL_THROW_VY,
+      throwCount:           throwCounter,
+      isMandatoryDiagonal:  _isMandatoryDiagonal,
+      level:                currentLevel,
+      everyN:               _diagonalEveryN,
+      spawnX:               BARREL_X,
+      spawnY:               TOP.y + 16,
+      vx:                   DIAGONAL_THROW_VX,
+      vy:                   DIAGONAL_THROW_VY,
     });
   } else {
     // Normal Path C spawn from BARREL_X.
