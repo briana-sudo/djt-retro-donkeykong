@@ -2627,7 +2627,13 @@ function spawnCapsule() {
 // DK-GATE-PHASE-1: DK-faithful ladder-drop decision routine. Port of original
 // arcade DK Z80 ROM addresses $2178-$219E per Don Hodges' disassembly:
 //   http://donhodges.com/Controlling_the_barrels_in_Donkey_Kong.htm
-// Three chained gates:
+// Three chained gates plus a climber-protection pre-check:
+//   Step 0 (DK-CLIMBER-PROTECT — JP arcade rule per Cutting Room Floor):
+//     If player is climbing THIS ladder and capsule is within 16px vertically
+//     of the ladder top, skip the drop. Gives the player a brief safe window
+//     to wait for a gap. Famous "ladder cheat" — disabled in US Set 1
+//     (reduced to 4px). https://tcrf.net/Donkey_Kong_(Arcade)
+//     20s camp timer follows in DK-CLIMBER-TIMER.
 //   Step 1 (vertical filter): capsule must be ABOVE player. Capsules at or
 //     below player level never drop. (DK arcade rule — barrels can't materialize
 //     beneath the player's feet.)
@@ -2648,6 +2654,23 @@ function spawnCapsule() {
 // Returns an OBJECT (not a boolean) so the diagnostic can show WHY the routine
 // decided as it did — gives Brian a structured payload in DUMP LOGS.
 function shouldDropDownLadder(capsule, ladder, player, levelParams) {
+  // Step 0: DK-CLIMBER-PROTECT (JP arcade DK rule). If player is climbing
+  // THIS ladder (player.x snapped to ladCx by climb code at line 2237) AND
+  // the capsule is within 16px vertically of the ladder top (lad.y), skip
+  // the drop. Capsule keeps rolling on the dest plat — may drop at a
+  // different ladder, may roll off the platform edge. Player gets a brief
+  // safe pocket on this ladder. Other ladders/platforms remain hostile.
+  // Threshold compared against capsule's expected rolling y on the dest
+  // plat (lad.y - CAPSULE_R) so the 16px is the literal arcade-rule slack
+  // around the ladder TOP. Climbers are auto-snapped exact to ladCx so
+  // LADDER_W (24px) tolerance on x uniquely identifies the climbed ladder
+  // (V4 layout's closest ladder pair is 130px apart).
+  const CLIMBER_PROTECT_PX = 16;
+  if (player.onLadder
+      && Math.abs(player.x - (ladder.x + LADDER_W / 2)) <= LADDER_W
+      && Math.abs(capsule.y - (ladder.y - CAPSULE_R)) <= CLIMBER_PROTECT_PX) {
+    return { drop: false, reason: 'step0-climber-protect' };
+  }
   // Step 1: vertical filter
   const VERT_TOLERANCE = 4;
   if (capsule.y >= player.y - VERT_TOLERANCE) {
