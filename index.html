@@ -2851,12 +2851,20 @@ function updateCapsules(dt) {
       c.y = getPlatY(c.onPlat, c.x) - CAPSULE_R;
       c.rot += c.vx * dt * 0.05;
 
-      // Ladder drop check — capsule must be on the ladder's BASE platform
+      // Ladder drop check — capsule must be on the ladder's TOP platform
+      // (the platform whose surface ≈ lad.y; the platform the ladder rises
+      // TO going up = the SOURCE of falling DOWN). DK-DESCENT-V2 fix: prior
+      // condition matched against (lad.y + lad.h) = ladder BOTTOM, which
+      // selected the destination platform as source — capsule then descended
+      // BELOW the ladder's bottom. V4 teleport-to-ladder-top masked this
+      // visually; DK-DESCENT-V1 surfaced it. Destination-finding logic at
+      // lines ~2970-2980 is unchanged — "next plat below source" still
+      // correctly lands the capsule at lad.y + lad.h (where the ladder ends).
       let dropped = false;
       for (const lad of ladders) {
         const ladCx = lad.x + LADDER_W / 2;
         const platYatLad = getPlatY(c.onPlat, ladCx);
-        if (Math.abs(platYatLad - (lad.y + lad.h)) > 20) continue;
+        if (Math.abs(platYatLad - lad.y) > 20) continue;
         const crossed = (prevX < ladCx && c.x >= ladCx) ||
                         (prevX > ladCx && c.x <= ladCx);
         if (crossed) {
