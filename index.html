@@ -3070,12 +3070,17 @@ function hit(source, capsule) {
 // real penalty). Capsules CLEARED for clean restart. Helpers / Pelosi / Secret Service /
 // briefcase pickups all LEFT IN PLACE — seeing them mid-action when DNC respawns is funny.
 function resetForRespawn() {
-  // P-DIFFICULTY-1-FIX-V3 BUG 4b: re-arm first-capsule pattern on respawn so the
-  // two-first-capsule spawn fires fresh after every death (was: pattern only fired
-  // on level entry, dying mid-level meant respawn skipped both first capsules).
+  // DK-CADENCE-A-V6: first-pair fires ONCE per level entry, not per respawn.
+  // Reverts P-DIFFICULTY-1-FIX-V3 BUG 4b (which re-armed firstCapsuleDropped
+  // here so two-first-capsule spawn fired fresh after every death). SPAWN-SITE-
+  // AUDIT proved that decision was the dominant source of extra mid-level
+  // spawn density Brian observed during V5 field test: every death produced 2
+  // fresh capsules on P2 + P4 within ~1-4s, on top of normal TOP cadence.
+  // Original DK convention: first-pair pattern fires once per level, deaths
+  // respawn player into existing cascade. firstCapsuleDropped still re-armed
+  // at level transitions (line ~3208) and game-over reset (line ~3282).
   // Brian's call: do NOT reset levelStartLockT (respawn = immediate control, no
   // 3s lock penalty after every death).
-  firstCapsuleDropped = false;
   player.x = FLOOR.x + 60;
   player.y = FLOOR.y - 1;
   player.vx = 0;
