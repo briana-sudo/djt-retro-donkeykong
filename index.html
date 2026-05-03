@@ -3012,7 +3012,12 @@ function updateCapsules(dt) {
     }
     // H2 — "jumped over" bonus: capsule's x crossed the player's x without ever colliding.
     // Same-platform OR fallen-below-player AND not-yet-counted. Award once per capsule.
-    if (state === 'GAMEPLAY' && !c.cleared && !c.collided) {
+    // DK-LADDER-DODGE-FIX: gate by playerAirborne (matches DK-CADENCE-E line 3000).
+    // Climbing under a capsule is NOT dodging it — pre-fix, ladder climbers
+    // x-crossed capsules on lower platforms and triggered c.cleared=true,
+    // despawning the capsule via V4 cleared-splice. Player must be airborne
+    // (not on ground, not on ladder) for any dodge-bonus path to fire.
+    if (state === 'GAMEPLAY' && !c.cleared && !c.collided && playerAirborne) {
       const lastX = (typeof c.lastX === 'number') ? c.lastX : c.x;
       const crossed = (lastX < player.x && c.x >= player.x) || (lastX > player.x && c.x <= player.x);
       if (crossed) {
