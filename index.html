@@ -58,7 +58,7 @@ console.log = function() {
   // (Trump-throws-but-no-capsule symptom). Logs full capsule census at the bail moment
   // so Brian can DUMP LOGS and report which slot-class is dominant (FLOOR pile-up,
   // Pelosi-carry hold, or mid-cascade stall).
-  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0 || arguments[0].indexOf('[FLOOR-TTL]') === 0 || arguments[0].indexOf('[DIAGONAL-THROW]') === 0 || arguments[0].indexOf('[DK-DIFFICULTY-RAMP]') === 0 || arguments[0].indexOf('[LEFT-WALL]') === 0 || arguments[0].indexOf('[HAT-') === 0)) {
+  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0 || arguments[0].indexOf('[FLOOR-TTL]') === 0 || arguments[0].indexOf('[DIAGONAL-THROW]') === 0 || arguments[0].indexOf('[DK-DIFFICULTY-RAMP]') === 0 || arguments[0].indexOf('[LEFT-WALL]') === 0 || arguments[0].indexOf('[HAT-') === 0 || arguments[0].indexOf('[BADGE-') === 0)) {
     window.bgmLogBuffer.push({
       prefix: arguments[0],
       data:   arguments.length > 1 ? arguments[1] : null,
@@ -174,6 +174,9 @@ const spriteData = {
   // P-ENEMY-1: MAGA hat — DTJ-aligned ambient floating threat. 64×64 PNG with
   // transparent background. Renders centered on hat.x/hat.y at HAT_SPRITE_SIZE.
   maga_hat: 'sprites/maga_hat.png',
+  // P-WEAPON-1: FBI badge — DK-hammer-pattern weapon. Pickup at fixed P2/P4
+  // positions. Wielding player kills hats AND capsules via AABB overlap.
+  fbi_badge: 'sprites/fbi_badge.png',
   // I2 — RNC convention stage background. 960×541 RGBA. Used as the cutscene backdrop in
   // CUTSCENE_PHASE1 / CUTSCENE_PHASE3 / CUTSCENE_SCORE (letterboxed in the canvas).
   rnc_stage: 'sprites/rnc_stage.png'
@@ -2068,7 +2071,7 @@ function skipToGame() {
   // out PELOSI_INTERVAL_MIN/MAX constants → ReferenceError on tap during non-GAMEPLAY
   // state (intro/cutscene). Replaced with the same per-level pelosi-timer formula
   // used elsewhere. Also using getLevelParams for capsuleSpawnInterval.
-  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance; capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; } dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; resetStats(); pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; { const _pp = getLevelParams().pelosiInterval; pelosi.timer = _pp * 0.8 + Math.random() * _pp * 0.4; } pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; climberCampT = 0; throwCounter = 0; levelTime = 0; dkDifficultyEffective = Math.min(currentLevel, 5); hats.length = 0; capsulesReachedFloor = 0; spawnInitialHats(); }
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance; capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; } dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; resetStats(); pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; { const _pp = getLevelParams().pelosiInterval; pelosi.timer = _pp * 0.8 + Math.random() * _pp * 0.4; } pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; climberCampT = 0; throwCounter = 0; levelTime = 0; dkDifficultyEffective = Math.min(currentLevel, 5); hats.length = 0; capsulesReachedFloor = 0; spawnInitialHats(); spawnBadges(); }
 }
 
 // ─────────────────────────────────────────────
@@ -2175,6 +2178,12 @@ const player = {
   lastGroundedPlat: FLOOR,// D3 — last platform the player stood on (used for above-platform kill block)
   platformsReached: new Set([0]), // H2 — platform indices visited this life (FLOOR=0 already counted as spawn; no bonus)
   shakeT: 0,              // K addendum — player-sprite jitter timer (s); set by ejectPlayerFromLadder5
+  // P-WEAPON-1: FBI badge wielding state. wieldingBadge true while badge
+  // active; badgeWieldEndTime is the levelTime threshold at which badge
+  // expires (compared to current levelTime per frame — auto-handles
+  // resets since levelTime resets too).
+  wieldingBadge: false,
+  badgeWieldEndTime: 0,
 };
 const PLAYER_SHAKE_AMPLITUDE = 4;        // K addendum — px horizontal jitter while shakeT > 0
 
@@ -2422,6 +2431,11 @@ function updatePlayer(dt) {
   if (climbU && player.ladderCooldown <= 0) {
     const lad = ladderAtBase(player.x, player.y);
     if (lad) {
+      // P-WEAPON-1: block win-ladder climb while wielding badge. Prevents
+      // grab-and-win exploit (player picks up badge then immediately climbs
+      // to TOP untouchable). Other ladders unrestricted. Same single-source-
+      // of-truth as SS_TARGET_LADDER_IX = 5.
+      if (lad === ladders[5] && player.wieldingBadge) return;
       player.onLadder = true;
       player.ladderEntryY = player.y;
       player.x = lad.x + LADDER_W / 2;
@@ -2439,6 +2453,10 @@ function updatePlayer(dt) {
       // also blocked while ss.active, so a player who somehow ended up on TOP during an SS
       // window can't climb DOWN through ladder[5] either. They must wait for SS to fade.
       if (lad === ladders[5] && ss.active) return;
+      // P-WEAPON-1: block win-ladder DOWN-grab while wielding badge (parallel
+      // to UP-grab block above — defensive even though player on TOP with
+      // badge is unlikely given the UP-grab block).
+      if (lad === ladders[5] && player.wieldingBadge) return;
       player.onLadder = true;
       player.ladderEntryY = player.y;
       player.x = lad.x + LADDER_W / 2;
@@ -2606,6 +2624,63 @@ function getHatClimbSpd(level) { return HAT_CLIMB_SPD_TABLE[Math.min(Math.max(le
 
 // Initial spawn count at level entry: min(level, 5) per arcade DK.
 function getHatInitialCount(level) { return Math.min(Math.max(level, 1), 5); }
+
+// ─────────────────────────────────────────────
+//  P-WEAPON-1 — FBI BADGE WEAPON
+// ─────────────────────────────────────────────
+// DK-hammer-pattern pickup at fixed P2/P4 positions. Player JUMPS under badge
+// to grab it (matches arcade DK). Wielding state lets player walk/jump/climb
+// regular ladders normally but BLOCKS the win-ladder (ladders[5]). AABB
+// overlap kills hats AND capsules — no swing animation, badge always
+// kill-active during wield. Score +50 × multiplier per kill. 0.15s
+// white-yellow flash at kill location. Duration scales L1=10s → L10=6s.
+// No in-level respawn (DK convention) — badges restore on level transition
+// AND on player respawn after death (different from hat behavior).
+// Audio: pickup briefcase_pickup.mp3, capsule kill capsule_destruction.mp3,
+// hat kill (by badge AND by helper) player_death_scream.mp3.
+const BADGE_SPRITE_SIZE     = 28;       // render size (scaled from cached aspect)
+const BADGE_AABB_W          = 22;       // pickup + kill-zone width
+const BADGE_AABB_H          = 22;       // pickup + kill-zone height
+const BADGE_HOVER_OFFSET    = 24;       // px above platform surface (jump clearance)
+const BADGE_FLASH_DURATION  = 0.15;     // sec, white-yellow kill flash
+const BADGE_FADE_DURATION   = 0.3;      // sec, expiration fade
+const BADGE_KILL_SCORE      = 50;       // base score per kill (× multiplier via addScore)
+const BADGE_DURATION_TABLE  = [10, 9.5, 9, 8.5, 8, 7.5, 7, 6.5, 6, 6];
+function getBadgeDuration(level) {
+  return BADGE_DURATION_TABLE[Math.min(Math.max(level, 1), 10) - 1];
+}
+// Fixed spawn positions per spec — diagonal opposite corners force traversal.
+const BADGE_SPAWN_POSITIONS = [
+  { platIdx: 2, x: 300 },                // P2 right side (P2 x=10..380)
+  { platIdx: 4, x:  80 },                // P4 left side  (P4 x=10..380)
+];
+// badges[]: { x, y, platIdx, collected, spawnIdx }. Reset on level entry +
+// respawn via spawnBadges(). Badge.collected blocks re-pickup AND render.
+const badges = [];
+// killFlashes[]: { x, y, startTime, duration }. Drained per-frame in update;
+// rendered as white-yellow circle that fades over duration.
+const killFlashes = [];
+
+// Spawn the 2 fixed badges at level entry / respawn. y computed from current
+// platform geometry + BADGE_HOVER_OFFSET. Resets player.wieldingBadge so a
+// player who died mid-wield doesn't carry phantom badge state into respawn.
+function spawnBadges() {
+  badges.length = 0;
+  killFlashes.length = 0;
+  player.wieldingBadge   = false;
+  player.badgeWieldEndTime = 0;
+  for (let i = 0; i < BADGE_SPAWN_POSITIONS.length; i++) {
+    const pos = BADGE_SPAWN_POSITIONS[i];
+    const plat = platforms[pos.platIdx];
+    badges.push({
+      x:         pos.x,
+      y:         getPlatY(plat, pos.x) - BADGE_HOVER_OFFSET,
+      platIdx:   pos.platIdx,
+      collected: false,
+      spawnIdx:  i,
+    });
+  }
+}
 
 // hats[]: ambient enemy entities. Each: {x, y, state, dir, onPlat, ladderRef,
 // climbDir, dodged, pulseT}. state ∈ {'WALKING', 'CLIMBING'}. dir ∈ {-1, +1}.
@@ -2832,6 +2907,103 @@ function updateHats(dt) {
     }
   }
 }
+
+// P-WEAPON-1: per-frame badge update. Three responsibilities:
+//   1. Pickup detection — player must be RISING (vy<0 = jumping) AND AABB
+//      overlap with an uncollected badge.
+//   2. Wielding state — if active, AABB-kill all overlapping capsules + hats,
+//      award score × multiplier, push kill flash, play SFX. Expire when
+//      levelTime reaches badgeWieldEndTime.
+//   3. Kill flash drain — remove flashes whose elapsed > duration.
+// Uses player hitbox convention from existing pickup AABB (line ~4478):
+// x±10 horizontal, y in [py-32, py-4] (player.y is foot).
+function updateBadges(dt) {
+  // Drain expired kill flashes (backward iteration so splice is index-safe).
+  for (let i = killFlashes.length - 1; i >= 0; i--) {
+    if (levelTime - killFlashes[i].startTime >= killFlashes[i].duration) {
+      killFlashes.splice(i, 1);
+    }
+  }
+
+  // Pickup detection: player rising (vy<0) + AABB overlap with uncollected badge.
+  if (!player.wieldingBadge && player.vy < 0 && state === 'GAMEPLAY') {
+    for (const badge of badges) {
+      if (badge.collected) continue;
+      const overlapX = (badge.x + BADGE_AABB_W / 2 > player.x - 10) &&
+                       (badge.x - BADGE_AABB_W / 2 < player.x + 10);
+      const overlapY = (badge.y + BADGE_AABB_H / 2 > player.y - 32) &&
+                       (badge.y - BADGE_AABB_H / 2 < player.y - 4);
+      if (overlapX && overlapY) {
+        badge.collected           = true;
+        player.wieldingBadge      = true;
+        player.badgeWieldEndTime  = levelTime + getBadgeDuration(currentLevel);
+        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.briefcase_pickup) {
+          GAME_SFX.briefcase_pickup.play();
+        }
+        console.log('[BADGE-PICKUP]', {
+          level:    currentLevel,
+          spawnIdx: badge.spawnIdx,
+          plat:     'P' + badge.platIdx,
+          duration: getBadgeDuration(currentLevel),
+        });
+        break;
+      }
+    }
+  }
+
+  // Wielding state — kill any overlapping capsule or hat.
+  if (player.wieldingBadge) {
+    if (levelTime >= player.badgeWieldEndTime) {
+      player.wieldingBadge = false;
+      console.log('[BADGE-EXPIRE]', {
+        level:   currentLevel,
+        playerX: Math.round(player.x),
+        playerY: Math.round(player.y),
+      });
+      return;
+    }
+    if (state !== 'GAMEPLAY') return;
+
+    // Kill capsules — backward iter for splice safety. Capsule center ±
+    // CAPSULE_R vs player x±10, y in [py-32, py-4].
+    for (let i = capsules.length - 1; i >= 0; i--) {
+      const cap = capsules[i];
+      if (cap.carried) continue;                                     // don't yank from Pelosi
+      const cOverlapX = (cap.x + CAPSULE_R > player.x - 10) &&
+                       (cap.x - CAPSULE_R < player.x + 10);
+      const cOverlapY = (cap.y + CAPSULE_R > player.y - 32) &&
+                       (cap.y - CAPSULE_R < player.y - 4);
+      if (cOverlapX && cOverlapY) {
+        addScore(BADGE_KILL_SCORE, true, cap.x, cap.y - 20, '#ffffaa');
+        killFlashes.push({ x: cap.x, y: cap.y, startTime: levelTime, duration: BADGE_FLASH_DURATION });
+        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.capsule_destruction) {
+          GAME_SFX.capsule_destruction.play();
+        }
+        console.log('[BADGE-KILL]', { target: 'capsule', level: currentLevel, capX: Math.round(cap.x), capY: Math.round(cap.y) });
+        capsules.splice(i, 1);
+      }
+    }
+
+    // Kill hats — same pattern. Backward iter; AABB on HAT_AABB_W/H.
+    for (let i = hats.length - 1; i >= 0; i--) {
+      const hat = hats[i];
+      const hOverlapX = (hat.x + HAT_AABB_W / 2 > player.x - 10) &&
+                       (hat.x - HAT_AABB_W / 2 < player.x + 10);
+      const hOverlapY = (hat.y + HAT_AABB_H / 2 > player.y - 32) &&
+                       (hat.y - HAT_AABB_H / 2 < player.y - 4);
+      if (hOverlapX && hOverlapY) {
+        addScore(BADGE_KILL_SCORE, true, hat.x, hat.y - 20, '#ffffaa');
+        killFlashes.push({ x: hat.x, y: hat.y, startTime: levelTime, duration: BADGE_FLASH_DURATION });
+        if (typeof GAME_SFX !== 'undefined' && GAME_SFX.player_death_scream) {
+          GAME_SFX.player_death_scream.play();
+        }
+        console.log('[BADGE-KILL]', { target: 'hat', level: currentLevel, hatX: Math.round(hat.x), hatY: Math.round(hat.y) });
+        hats.splice(i, 1);
+      }
+    }
+  }
+}
+
 // DK-FLOOR-TTL: seconds a capsule can survive on FLOOR before TTL despawn
 // fires. Restores FLOOR drainage that DK-LADDER-DODGE-FIX correctly removed
 // (the H2 walk-past clear path was the dominant FLOOR drain; airborne-only
@@ -3697,6 +3869,10 @@ function resetForRespawn() {
   // life starts the 33s ramp clean (per arcade DK Z80 disasm).
   levelTime = 0;
   dkDifficultyEffective = Math.min(currentLevel, 5);
+  // P-WEAPON-1: badges restore on respawn per spec (different from hat
+  // behavior — hats persist; badges reset because they're the player's
+  // arcade-DK-style consumable resource per life).
+  spawnBadges();
   player.x = FLOOR.x + 60;
   player.y = FLOOR.y - 1;
   player.vx = 0;
@@ -3778,6 +3954,8 @@ function _resetEntitiesAndPerLevel() {
   hats.length          = 0;
   capsulesReachedFloor = 0;
   spawnInitialHats();
+  // P-WEAPON-1: badges restore at level entry (level transition + game over).
+  spawnBadges();
   particles            = [];
   bricks               = [];
   scoreFloats.length   = 0;
@@ -4201,6 +4379,62 @@ function drawCapsules() {
   for (const c of capsules) {
     // Block 2.5 — always barrel_endview (rolling/falling distinction dropped)
     drawSprite('barrel_endview', c.x, c.y + CAPSULE_R, CAPSULE_R * 2, c.vx < 0, 1.0);
+  }
+}
+
+// P-WEAPON-1: render uncollected badges hovering at fixed positions.
+// Aspect-correct render aligned with drawSprite() pattern. Skip collected
+// badges — they re-render via drawBadgeWieldOverlay() in player's hand.
+function drawBadges() {
+  const cached = spriteCache['fbi_badge'];
+  if (!cached) return;
+  const aspect = cached.width / cached.height;
+  for (const badge of badges) {
+    if (badge.collected) continue;
+    const targetH = BADGE_SPRITE_SIZE;
+    const targetW = targetH * aspect;
+    ctx.drawImage(cached, badge.x - targetW / 2, badge.y - targetH / 2, targetW, targetH);
+  }
+}
+
+// P-WEAPON-1: render badge in player's hand while wielding. Composite atop
+// player sprite — outstretched arm offset toward facing direction. Fades
+// over BADGE_FADE_DURATION as expiration approaches.
+function drawBadgeWieldOverlay() {
+  if (!player.wieldingBadge) return;
+  const cached = spriteCache['fbi_badge'];
+  if (!cached) return;
+  const aspect  = cached.width / cached.height;
+  const targetH = BADGE_SPRITE_SIZE;
+  const targetW = targetH * aspect;
+  // Position: in front of player at chest height, offset by facing direction.
+  // player.y is foot; player.facing < 0 = facing left (drawDonkey flip true).
+  const facingRight = player.facing >= 0;
+  const badgeX = player.x + (facingRight ? 14 : -14);
+  const badgeY = player.y - 16;
+  // Fade: full opacity until last BADGE_FADE_DURATION sec, then linear ramp.
+  const remaining = player.badgeWieldEndTime - levelTime;
+  const alpha = (remaining < BADGE_FADE_DURATION) ? Math.max(0, remaining / BADGE_FADE_DURATION) : 1.0;
+  if (alpha <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(cached, badgeX - targetW / 2, badgeY - targetH / 2, targetW, targetH);
+  ctx.restore();
+}
+
+// P-WEAPON-1: render kill-flash circles. White-yellow, fades over duration.
+function drawKillFlashes() {
+  for (const flash of killFlashes) {
+    const elapsed = levelTime - flash.startTime;
+    if (elapsed >= flash.duration) continue;
+    const alpha = 1.0 - (elapsed / flash.duration);
+    ctx.save();
+    ctx.globalAlpha = alpha * 0.7;
+    ctx.fillStyle = '#ffffaa';
+    ctx.beginPath();
+    ctx.arc(flash.x, flash.y, 24, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
 }
 
@@ -4762,6 +4996,12 @@ function updateHelpers(dt) {
             hatX:   Math.round(hat.x),
             hatY:   Math.round(hat.y),
           });
+          // P-WEAPON-1: helper-vs-hat kill plays the same comedic SFX as
+          // player-badge-vs-hat kills (Brian's call — unified audio for
+          // hat destruction regardless of source).
+          if (typeof GAME_SFX !== 'undefined' && GAME_SFX.player_death_scream) {
+            GAME_SFX.player_death_scream.play();
+          }
           hats.splice(hi, 1);
           helperKilled = true;                                        // both helper types die
           break;
@@ -7058,6 +7298,7 @@ function drawGameplay(shake) {
   drawCapsules();
   drawPickup();
   drawHats();                                                         // P-ENEMY-1: rendered between caps and helpers (mid z-order)
+  drawBadges();                                                       // P-WEAPON-1: uncollected badge pickups
   drawHelpers();
   drawPelosi();
   // K — Secret Service rendered BEHIND DTJ (z-order: helpers → SS → DTJ → DNC). The 3 SS units
@@ -7126,7 +7367,13 @@ function drawGameplay(shake) {
     if (blinkDim) { ctx.save(); ctx.globalAlpha = 0.4; }
     drawDonkey(player.x + shakeDx, player.y, 0.65, player.facing < 0, walking, player.walkT);
     if (blinkDim) ctx.restore();
+    // P-WEAPON-1: render badge in player's hand while wielding (composite atop
+    // player sprite). Drawn AFTER drawDonkey so it sits in front.
+    drawBadgeWieldOverlay();
   }
+  // P-WEAPON-1: render kill flashes (drawn AFTER player so flash sits on
+  // top of any sprite at kill location).
+  drawKillFlashes();
 
   // Block 2.5 — green $ box decorations removed (Block 4 will replace with real briefcase pickups)
 
@@ -7691,6 +7938,7 @@ function loop(ts) {
       updateHelpers(dt);
       updatePelosi(dt);
       updateHats(dt);                                                 // P-ENEMY-1: ambient floating threats
+      updateBadges(dt);                                               // P-WEAPON-1: pickup + wielding + kill flashes
       updateSS(dt);
       drawGameplay(shakeAmt>0);
       // Particles leftover
