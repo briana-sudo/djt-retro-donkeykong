@@ -2799,7 +2799,11 @@ function updateCapsules(dt) {
           // DK-CADENCE-A: player-position-aware ladder drop. Original DK's "barrels
           // hunt the player" feel comes from biasing the drop probability by player
           // state. Three buckets (skipped entirely for forcedLadderDrop capsules):
-          //   1. player near ladder column (|player.x - ladCx| < 30) → force drop.
+          //   1. player near ladder column (|player.x - ladCx| < 80) → force drop.
+          //      DK-CADENCE-A-V3: widened from 30 → 80. V2 field test at L6 showed
+          //      under-ladder bucket dead-on-arrival because staggered ladder layout
+          //      blocks player from standing within 30px of most ladCx values; 80px
+          //      catches "in column" cases where layout pins player off-center.
           //      Catches ladder-climbers (auto-snapped to exact ladCx) AND players
           //      standing under the ladder.
           //   2. player fleeing capsule (left of capsule + moving left, OR right of
@@ -2817,7 +2821,7 @@ function updateCapsules(dt) {
           let   _chance  = _baseChance;
           let   _biasReason = 'base';
           if (!_forced) {
-            const _playerNearLadder = Math.abs(player.x - ladCx) < 30;
+            const _playerNearLadder = Math.abs(player.x - ladCx) < 80;
             const _playerLeftOfCap  = player.x < c.x;
             const _playerRightOfCap = player.x > c.x;
             const _movingLeft       = player.vx < -50;
