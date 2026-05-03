@@ -223,6 +223,67 @@ function processSprite(name, img) {
     console.warn('Sprite ' + name + ' is fully transparent — keeping as-is');
     return;
   }
+
+  // P-ENEMY-1-FIX — runtime white-key flood-fill from corners. Triggered
+  // when a corner pixel is OPAQUE near-white (R≥240, G≥240, B≥240, a=255).
+  // Source: sprites/maga_hat.png shipped with 60.8% near-white-opaque pixels
+  // around the hat shape — the rembg-style alpha-key wasn't applied at export
+  // time. Flood-fill from each opaque-near-white corner, 4-neighbor connected,
+  // marks reachable near-white-opaque pixels as alpha=0. Preserves interior
+  // white pixels (e.g., hat's "MAGA" text — surrounded by red, unreachable
+  // from corners). Re-runs bounding box AFTER keying so the trim is tight.
+  // Skipped if no corner is opaque-near-white (i.e., sprite is already
+  // properly alpha-keyed — typical case for rembg-converted sprites).
+  const NEAR_WHITE_R = 240, NEAR_WHITE_G = 240, NEAR_WHITE_B = 240;
+  const isNearWhiteOpaque = function (off4) {
+    return d[off4 + 3] === 255 &&
+           d[off4]     >= NEAR_WHITE_R &&
+           d[off4 + 1] >= NEAR_WHITE_G &&
+           d[off4 + 2] >= NEAR_WHITE_B;
+  };
+  const cornerOffsets = [
+    0,                                  // top-left
+    (w - 1) * 4,                        // top-right
+    ((h - 1) * w) * 4,                  // bottom-left
+    ((h - 1) * w + (w - 1)) * 4,        // bottom-right
+  ];
+  const stack = [];
+  let keyedCount = 0;
+  for (const cOff of cornerOffsets) {
+    if (isNearWhiteOpaque(cOff)) stack.push(cOff);
+  }
+  while (stack.length > 0) {
+    const off4 = stack.pop();
+    if (!isNearWhiteOpaque(off4)) continue;
+    d[off4 + 3] = 0;                    // mark transparent
+    keyedCount++;
+    const pidx = off4 / 4;
+    const px = pidx % w;
+    const py = (pidx / w) | 0;
+    if (px > 0)        stack.push(off4 - 4);
+    if (px < w - 1)    stack.push(off4 + 4);
+    if (py > 0)        stack.push(off4 - w * 4);
+    if (py < h - 1)    stack.push(off4 + w * 4);
+  }
+  if (keyedCount > 0) {
+    ictx.putImageData(id, 0, 0);
+    // Re-run bounding box (now without the keyed-out region).
+    minX = w; maxX = -1; minY = h; maxY = -1;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const a = d[(y * w + x) * 4 + 3];
+        if (a > 0) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    console.log('White-keyed sprite:', name, 'keyed pixels:', keyedCount,
+                'new bbox:', (maxX - minX + 1) + 'x' + (maxY - minY + 1));
+  }
+
   const tw = maxX - minX + 1;
   const th = maxY - minY + 1;
   if (tw === w && th === h) {
@@ -2012,7 +2073,7 @@ function skipToGame() {
   // out PELOSI_INTERVAL_MIN/MAX constants → ReferenceError on tap during non-GAMEPLAY
   // state (intro/cutscene). Replaced with the same per-level pelosi-timer formula
   // used elsewhere. Also using getLevelParams for capsuleSpawnInterval.
-  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance; capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; } dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; resetStats(); pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; { const _pp = getLevelParams().pelosiInterval; pelosi.timer = _pp * 0.8 + Math.random() * _pp * 0.4; } pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; climberCampT = 0; throwCounter = 0; levelTime = 0; dkDifficultyEffective = Math.min(currentLevel, 5); hats.length = 0; hatBonusLastSpawnT = 0; spawnInitialHats(); }
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance; capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; } dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; resetStats(); pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; { const _pp = getLevelParams().pelosiInterval; pelosi.timer = _pp * 0.8 + Math.random() * _pp * 0.4; } pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; climberCampT = 0; throwCounter = 0; levelTime = 0; dkDifficultyEffective = Math.min(currentLevel, 5); hats.length = 0; capsulesReachedFloor = 0; spawnInitialHats(); }
 }
 
 // ─────────────────────────────────────────────
@@ -2508,163 +2569,258 @@ const MAX_CAPSULES = 8;
 const LEFT_WALL_X = CAPSULE_R;
 
 // ─────────────────────────────────────────────
-//  P-ENEMY-1 — MAGA HAT
+//  P-ENEMY-1 — MAGA HAT (P-ENEMY-1-FIX: fireball/firefox AI + arcade-DK
+//  spawn rules)
 // ─────────────────────────────────────────────
-// Floating ambient threat aligned with DTJ. Hybrid drift/track movement,
-// kills player on AABB overlap, destroyed by Antifa or Zombie Voter contact
-// (BOTH die — different from helper-vs-capsule rule where Antifa survives).
-// Spawns on UPPER platforms only (P3/P4/TOP), never on player's current
-// platform. Base count L1=1, L5=3, L10=5 + 1 per 30s in-life capped at
-// base+3, hard ceiling HAT_MAX_ONSCREEN. No platform collision — hat floats
-// freely through entire level, bounces off canvas edges. Persists through
-// player respawn (per spec); resets on level transition / game over /
-// skipToGame via _resetEntitiesAndPerLevel + skipToGame inline.
-const HAT_DRIFT_SPD       = 30;     // px/sec random drift max (magnitude)
-const HAT_TRACK_RANGE     = 150;    // px proximity that triggers tracking
-const HAT_TRACK_DURATION  = 3.0;    // seconds of tracking before reverting to drift
-const HAT_PULSE_PERIOD    = 1.0;    // scale-pulse cycle (sec)
-const HAT_PULSE_MIN       = 1.0;
-const HAT_PULSE_MAX       = 1.1;
-const HAT_BOB_AMPLITUDE   = 3;      // px vertical bob (superimposed on drift)
-const HAT_BOB_PERIOD      = 0.8;    // bob cycle (sec) — distinct from pulse for organic feel
-const HAT_SPAWN_INTERVAL  = 30.0;   // seconds between bonus spawns in-life
-const HAT_MAX_ONSCREEN    = 8;      // hard ceiling regardless of base+bonus
-const HAT_AABB_W          = 32;     // collision width
-const HAT_AABB_H          = 24;     // collision height
-const HAT_SPRITE_SIZE     = 48;     // render box size (64×64 source scaled down)
+// DTJ-aligned ambient enemy. Walks platforms + climbs ladders per arcade DK
+// fireball/firefox AI (mariowiki / Donkey Blog research):
+//   - "Fireballs can climb ladders, no matter if they are broken or fixed.
+//     They cannot fall from ledges or cross gaps." (mariowiki)
+//   - "Firefoxes can reverse their direction while climbing ladders" — random
+//     mid-climb reversal per HAT_REVERSE_CHANCE_PER_SEC.
+//   - Random AI: hat does NOT track player, just walks + climbs randomly.
+// Kills player on AABB overlap UNLESS player is jumping over (player.y above
+// hat.y AND vy >= 0) — grants +100 pts (HAT_DODGE_SCORE), hat survives.
+// Destroyed by Antifa or Zombie Voter contact (BOTH die).
+// Spawn rules (B5b — arcade DK):
+//   - Initial count at level entry = min(level, 5).
+//   - Hard cap HAT_MAX_ONSCREEN = 5 (matches arcade).
+//   - One additional hat per CAPSULE_PER_HAT (8) capsules reaching FLOOR.
+// Speed scales per level (B5c — Donkey Blog plateau):
+//   L1=55, L2=60, L3=65, L4=70, L5+=75 walk; climb is walk-10.
+// Persists through respawn; resets on level transition / game over / skipToGame.
+const HAT_LADDER_CHANCE_PER_SEC   = 0.5;    // 50%/s when on ladder x to start climbing
+const HAT_REVERSE_CHANCE_PER_SEC  = 0.1;    // 10%/s to reverse direction mid-climb (firefox)
+const HAT_LADDER_X_TOLERANCE      = 12;     // px proximity to ladCx for "on ladder" detection
+const HAT_PULSE_PERIOD            = 1.0;    // scale-pulse cycle (sec) — kept for visual flair
+const HAT_PULSE_MIN               = 1.0;
+const HAT_PULSE_MAX               = 1.1;
+const HAT_MAX_ONSCREEN            = 5;      // hard ceiling per arcade DK (was 8)
+const HAT_AABB_W                  = 22;     // collision width (32→22 for 30% size reduction)
+const HAT_AABB_H                  = 17;     // collision height (24→17)
+const HAT_SPRITE_SIZE             = 34;     // render box size (48→34)
+const HAT_DODGE_SCORE             = 100;    // pts for jumping over hat
+const CAPSULE_PER_HAT             = 8;      // capsules reaching FLOOR per bonus hat spawn
 
-// L1=1, L5=3, L10=5 — linear interp clamped to L10. Per spec table.
-function getHatBaseCount(level) {
-  const clamped = Math.min(Math.max(level, 1), 10);
-  return Math.round(1 + (clamped - 1) * (4 / 9));
-}
+// Per-level speed tables (Donkey Blog plateau-at-L5 convention, mirrors
+// capsuleSpeedMult curve from DK-GATE-PHASE-3).
+const HAT_WALK_SPD_TABLE  = [55, 60, 65, 70, 75, 75, 75, 75, 75, 75];
+const HAT_CLIMB_SPD_TABLE = [45, 50, 55, 60, 65, 65, 65, 65, 65, 65];
+function getHatWalkSpd(level)  { return HAT_WALK_SPD_TABLE [Math.min(Math.max(level, 1), 10) - 1]; }
+function getHatClimbSpd(level) { return HAT_CLIMB_SPD_TABLE[Math.min(Math.max(level, 1), 10) - 1]; }
 
-// hats[]: ambient enemy entities. Each: {x, y, vx, vy, tracking, trackStartTime,
-// pulseT, bobT, spawnTime}. pulseT/bobT init to random offsets so spawned hats
-// don't pulse/bob in sync.
+// Initial spawn count at level entry: min(level, 5) per arcade DK.
+function getHatInitialCount(level) { return Math.min(Math.max(level, 1), 5); }
+
+// hats[]: ambient enemy entities. Each: {x, y, state, dir, onPlat, ladderRef,
+// climbDir, dodged, pulseT}. state ∈ {'WALKING', 'CLIMBING'}. dir ∈ {-1, +1}.
+// pulseT init to random offset so spawned hats don't pulse in sync. dodged
+// resets on AABB-clear so each pass-over awards points once.
 const hats = [];
-// Bonus-spawn watermark — last in-life timer value at which a 30s threshold was
-// crossed. Reset to 0 in same paths that reset hats[]. Tracks per-life so
-// bonus spawns happen relative to player's continuous play.
-let hatBonusLastSpawnT = 0;
+// Counter of capsules that have reached FLOOR this level. Bumps a hat spawn
+// every CAPSULE_PER_HAT (=8) capsules. Reset to 0 in same paths that reset
+// hats[] (level transition, game over, skipToGame). Per-level not per-life.
+let capsulesReachedFloor = 0;
 
 // Spawn a single hat on a random upper platform (P3/P4/TOP), excluding the
-// player's current grounded platform. Random x within plat range. Initial
-// vx/vy random within ±HAT_DRIFT_SPD. Caps at HAT_MAX_ONSCREEN. Logs
-// [HAT-SPAWN] with reason ('level-entry' or 'bonus-30s').
+// player's current grounded platform. Initial state WALKING with random dir
+// (±1). Snapped to platform surface (y = getPlatY(plat) - HAT_SPRITE_SIZE/2).
+// Caps at HAT_MAX_ONSCREEN. Logs [HAT-SPAWN] with reason
+// ('level-entry' or 'capsule-reached-floor').
 function spawnHat(reason) {
   if (hats.length >= HAT_MAX_ONSCREEN) return;
   const upperPlats = [platforms[3], platforms[4], platforms[5]];   // P3, P4, TOP
   const playerPlat = (typeof player !== 'undefined') ? player.lastGroundedPlat : null;
   const candidates = upperPlats.filter(function (p) { return p !== playerPlat; });
-  if (candidates.length === 0) return;                              // shouldn't happen at level entry
+  if (candidates.length === 0) return;
   const plat = candidates[Math.floor(Math.random() * candidates.length)];
-  const margin = HAT_SPRITE_SIZE / 2;
+  const margin = HAT_SPRITE_SIZE / 2 + 4;
   const xMin = plat.x + margin;
   const xMax = plat.x + plat.w - margin;
   const x = xMin + Math.random() * (xMax - xMin);
-  const y = plat.y - 30;                                            // float above platform surface
-  const vx = (Math.random() - 0.5) * 2 * HAT_DRIFT_SPD;
-  const vy = (Math.random() - 0.5) * 2 * HAT_DRIFT_SPD;
+  const y = getPlatY(plat, x) - HAT_SPRITE_SIZE / 2;
   hats.push({
-    x: x, y: y, vx: vx, vy: vy,
-    tracking: false,
-    trackStartTime: 0,
-    pulseT: Math.random() * HAT_PULSE_PERIOD,                       // randomize so they don't pulse in sync
-    bobT:   Math.random() * HAT_BOB_PERIOD,
-    spawnTime: (typeof levelTime !== 'undefined') ? levelTime : 0,
+    x: x, y: y,
+    state:      'WALKING',
+    dir:        Math.random() < 0.5 ? -1 : 1,
+    onPlat:     plat,
+    ladderRef:  null,
+    climbDir:   0,
+    dodged:     false,
+    pulseT:     Math.random() * HAT_PULSE_PERIOD,
   });
   console.log('[HAT-SPAWN]', {
     reason:    reason,
     level:     currentLevel,
     totalHats: hats.length,
-    baseCount: getHatBaseCount(currentLevel),
-    cap:       Math.min(getHatBaseCount(currentLevel) + 3, HAT_MAX_ONSCREEN),
+    initial:   getHatInitialCount(currentLevel),
+    cap:       HAT_MAX_ONSCREEN,
     spawnX:    Math.round(x),
     spawnY:    Math.round(y),
     plat:      'P' + platforms.indexOf(plat),
+    dir:       hats[hats.length - 1].dir,
   });
 }
 
-// Initial spawn at level entry — fires getHatBaseCount(currentLevel) hats.
+// Initial spawn at level entry — fires getHatInitialCount(currentLevel) hats.
 function spawnInitialHats() {
-  hatBonusLastSpawnT = 0;
-  const count = getHatBaseCount(currentLevel);
+  capsulesReachedFloor = 0;
+  const count = getHatInitialCount(currentLevel);
   for (let i = 0; i < count; i++) spawnHat('level-entry');
 }
 
-// Per-frame hat update: bonus-spawn timer, motion + tracking + canvas-edge
-// bounce, AABB-vs-player. Hats persist through player death (do NOT despawn
-// when killing player). State-agnostic (no pause/cutscene gate — caller is
-// responsible for only invoking during GAMEPLAY).
-function updateHats(dt) {
-  // Bonus-spawn check: when in-life timer crosses a HAT_SPAWN_INTERVAL boundary,
-  // attempt one extra spawn. Capped at min(base+3, HAT_MAX_ONSCREEN).
-  const _newSpawnSlot = Math.floor(levelTime / HAT_SPAWN_INTERVAL);
-  const _lastSpawnSlot = Math.floor(hatBonusLastSpawnT / HAT_SPAWN_INTERVAL);
-  if (_newSpawnSlot > _lastSpawnSlot) {
-    hatBonusLastSpawnT = levelTime;
-    const _cap = Math.min(getHatBaseCount(currentLevel) + 3, HAT_MAX_ONSCREEN);
-    if (hats.length < _cap) spawnHat('bonus-30s');
+// Helpers for ladder-aware hat AI. Find the platform whose surface y at
+// ladCx is closest to a target y (lad.y for top, lad.y+lad.h for bottom).
+// Falls back to FLOOR if none found within tolerance (defensive).
+function findHatLadderTopPlat(ladder) {
+  const ladCx = ladder.x + LADDER_W / 2;
+  let bestPlat = null, bestDelta = Infinity;
+  for (const p of platforms) {
+    if (ladCx < p.x - 4 || ladCx > p.x + p.w + 4) continue;
+    const delta = Math.abs(getPlatY(p, ladCx) - ladder.y);
+    if (delta < bestDelta) { bestDelta = delta; bestPlat = p; }
   }
+  return bestPlat;
+}
+function findHatLadderBottomPlat(ladder) {
+  const ladCx = ladder.x + LADDER_W / 2;
+  const bottomY = ladder.y + ladder.h;
+  let bestPlat = null, bestDelta = Infinity;
+  for (const p of platforms) {
+    if (ladCx < p.x - 4 || ladCx > p.x + p.w + 4) continue;
+    const delta = Math.abs(getPlatY(p, ladCx) - bottomY);
+    if (delta < bestDelta) { bestDelta = delta; bestPlat = p; }
+  }
+  return bestPlat;
+}
+// Find a ladder centerline within tolerance of hat.x where the hat's current
+// onPlat is one of the ladder's two endpoint platforms (so the hat can
+// actually transition to climbing on it).
+function findLadderForHat(hat) {
+  for (const lad of ladders) {
+    const ladCx = lad.x + LADDER_W / 2;
+    if (Math.abs(hat.x - ladCx) > HAT_LADDER_X_TOLERANCE) continue;
+    const topPlat = findHatLadderTopPlat(lad);
+    const botPlat = findHatLadderBottomPlat(lad);
+    if (hat.onPlat === topPlat || hat.onPlat === botPlat) return lad;
+  }
+  return null;
+}
 
-  // Per-hat motion + tracking + bounce + AABB-vs-player.
+// Per-frame hat update: per-hat WALKING / CLIMBING state machine, AABB-vs-
+// player with jump-over scoring. Hats persist through player death (do NOT
+// despawn when killing player). State-agnostic (no pause/cutscene gate —
+// caller invokes only during GAMEPLAY).
+function updateHats(dt) {
+  const _walkSpd  = getHatWalkSpd(currentLevel);
+  const _climbSpd = getHatClimbSpd(currentLevel);
+
   for (let i = hats.length - 1; i >= 0; i--) {
     const hat = hats[i];
     hat.pulseT += dt;
-    hat.bobT   += dt;
 
-    // Tracking decision: enter tracking when player within HAT_TRACK_RANGE,
-    // exit after HAT_TRACK_DURATION seconds (revert to fresh random drift).
-    const dx = player.x - hat.x;
-    const dy = player.y - hat.y;
-    const dist = Math.sqrt(dx * dx + dy * dy) || 1;                 // avoid /0
-    if (!hat.tracking && dist < HAT_TRACK_RANGE) {
-      hat.tracking       = true;
-      hat.trackStartTime = levelTime;
+    if (hat.state === 'WALKING') {
+      // Walk along current platform. Tilt-snapped y.
+      hat.x += hat.dir * _walkSpd * dt;
+
+      // Ladder-transition decision: hat must be near a ladder centerline AND
+      // random-roll succeeds this frame. HAT_LADDER_CHANCE_PER_SEC is a
+      // per-second probability; multiplied by dt gives per-frame chance.
+      const lad = findLadderForHat(hat);
+      if (lad && Math.random() < HAT_LADDER_CHANCE_PER_SEC * dt) {
+        const ladCx   = lad.x + LADDER_W / 2;
+        const topPlat = findHatLadderTopPlat(lad);
+        const botPlat = findHatLadderBottomPlat(lad);
+        // Choose direction based on current platform: if hat is on the top
+        // platform, can only descend; if on bottom, can only ascend.
+        const climbDir = (hat.onPlat === topPlat) ? 1 : -1;
+        hat.state     = 'CLIMBING';
+        hat.ladderRef = lad;
+        hat.climbDir  = climbDir;
+        hat.x         = ladCx;
+        console.log('[HAT-CLIMB]', {
+          level:    currentLevel,
+          hatX:     Math.round(hat.x),
+          hatY:     Math.round(hat.y),
+          ladCx:    ladCx,
+          climbDir: climbDir,
+        });
+      } else {
+        // Edge-detection: turn around at platform boundaries (cannot fall off).
+        const margin = HAT_SPRITE_SIZE / 2;
+        if (hat.x <= hat.onPlat.x + margin)               { hat.dir =  1; hat.x = hat.onPlat.x + margin; }
+        else if (hat.x >= hat.onPlat.x + hat.onPlat.w - margin) { hat.dir = -1; hat.x = hat.onPlat.x + hat.onPlat.w - margin; }
+        // Snap y to current platform surface (handles tilt).
+        hat.y = getPlatY(hat.onPlat, hat.x) - HAT_SPRITE_SIZE / 2;
+      }
+    } else if (hat.state === 'CLIMBING') {
+      hat.y += hat.climbDir * _climbSpd * dt;
+
+      // Random reversal mid-climb (firefox AI).
+      if (Math.random() < HAT_REVERSE_CHANCE_PER_SEC * dt) {
+        hat.climbDir *= -1;
+      }
+
+      const lad = hat.ladderRef;
+      const ladTopY = lad.y;
+      const ladBotY = lad.y + lad.h;
+      const margin = HAT_SPRITE_SIZE / 2;
+
+      if (hat.y <= ladTopY - margin) {
+        // Reached ladder top → transition to walking on top platform.
+        hat.state     = 'WALKING';
+        hat.onPlat    = findHatLadderTopPlat(lad);
+        hat.ladderRef = null;
+        hat.dir       = Math.random() < 0.5 ? -1 : 1;
+        hat.y         = getPlatY(hat.onPlat, hat.x) - HAT_SPRITE_SIZE / 2;
+      } else if (hat.y >= ladBotY - margin) {
+        // Reached ladder bottom → transition to walking on bottom platform.
+        hat.state     = 'WALKING';
+        hat.onPlat    = findHatLadderBottomPlat(lad);
+        hat.ladderRef = null;
+        hat.dir       = Math.random() < 0.5 ? -1 : 1;
+        hat.y         = getPlatY(hat.onPlat, hat.x) - HAT_SPRITE_SIZE / 2;
+      }
     }
-    if (hat.tracking && (levelTime - hat.trackStartTime) > HAT_TRACK_DURATION) {
-      hat.tracking = false;
-      hat.vx = (Math.random() - 0.5) * 2 * HAT_DRIFT_SPD;
-      hat.vy = (Math.random() - 0.5) * 2 * HAT_DRIFT_SPD;
-    }
-    if (hat.tracking) {
-      const _trackSpd = HAT_DRIFT_SPD * 0.7;                        // slow tracking
-      hat.vx = (dx / dist) * _trackSpd;
-      hat.vy = (dy / dist) * _trackSpd;
-    }
 
-    // Position update.
-    hat.x += hat.vx * dt;
-    hat.y += hat.vy * dt;
-
-    // Canvas-edge bounce — keeps hats onscreen always (no off-screen despawn).
-    const _half = HAT_SPRITE_SIZE / 2;
-    if (hat.x < _half)         { hat.x = _half;       hat.vx =  Math.abs(hat.vx); }
-    if (hat.x > W - _half)     { hat.x = W - _half;   hat.vx = -Math.abs(hat.vx); }
-    if (hat.y < _half)         { hat.y = _half;       hat.vy =  Math.abs(hat.vy); }
-    if (hat.y > H - _half)     { hat.y = H - _half;   hat.vy = -Math.abs(hat.vy); }
-
-    // AABB-vs-player. Player hitbox per existing capsule collision: x±10,
-    // y in [player.y - 32, player.y - 4]. Hat hitbox: x±HAT_AABB_W/2,
-    // y±HAT_AABB_H/2 centered on hat.x/y. Hat does NOT despawn — keeps drifting
-    // after killing player (per spec). hit() guards on state/invuln so re-fire
-    // during DEATH_REACTION is suppressed.
+    // AABB-vs-player. Player hitbox: x±10, y in [player.y - 32, player.y - 4].
+    // Hat hitbox: x±HAT_AABB_W/2, y±HAT_AABB_H/2 centered on hat.x/y. Hat does
+    // NOT despawn — keeps moving after killing player. hit() guards on state/
+    // invuln so re-fire during DEATH_REACTION is suppressed.
     if (state === 'GAMEPLAY') {
       const overlapX = (hat.x + HAT_AABB_W / 2 > player.x - 10) &&
                        (hat.x - HAT_AABB_W / 2 < player.x + 10);
       const overlapY = (hat.y + HAT_AABB_H / 2 > player.y - 32) &&
                        (hat.y - HAT_AABB_H / 2 < player.y - 4);
       if (overlapX && overlapY) {
-        console.log('[HAT-DEATH]', {
-          level:    currentLevel,
-          hatX:     Math.round(hat.x),
-          hatY:     Math.round(hat.y),
-          playerX:  Math.round(player.x),
-          playerY:  Math.round(player.y),
-        });
-        hit('hat', null);                                            // null capsule → ragdoll uses player.facing
-        // Hat does NOT splice — keeps drifting per spec.
+        // Jump-over check: player feet ABOVE hat top AND descending/at apex.
+        const playerAboveHat = player.y < hat.y - HAT_AABB_H / 2;
+        const playerFalling  = player.vy >= 0;
+        if (playerAboveHat && playerFalling) {
+          if (!hat.dodged) {
+            hat.dodged = true;
+            addScore(HAT_DODGE_SCORE, true, hat.x, hat.y - 30, '#ffd700');
+            console.log('[HAT-DODGE]', {
+              level:   currentLevel,
+              hatX:    Math.round(hat.x),
+              hatY:    Math.round(hat.y),
+              playerX: Math.round(player.x),
+              playerY: Math.round(player.y),
+            });
+          }
+        } else {
+          console.log('[HAT-DEATH]', {
+            level:    currentLevel,
+            hatX:     Math.round(hat.x),
+            hatY:     Math.round(hat.y),
+            playerX:  Math.round(player.x),
+            playerY:  Math.round(player.y),
+          });
+          hit('hat', null);
+        }
+      } else {
+        // Reset dodged flag once separated, so each future jump-over scores.
+        hat.dodged = false;
       }
     }
   }
@@ -3146,6 +3302,15 @@ function updateCapsules(dt) {
           c.rolling         = true;
           c.onPlat          = c.descendDestPlat;
           c.y               = c.descendDestY;
+          // P-ENEMY-1-FIX (B5b): bump hat-spawn trigger when a capsule first
+          // reaches FLOOR via descent-end. Every CAPSULE_PER_HAT (=8) FLOOR
+          // arrivals attempts a hat spawn (capped at HAT_MAX_ONSCREEN).
+          if (c.onPlat === FLOOR) {
+            capsulesReachedFloor++;
+            if (capsulesReachedFloor % CAPSULE_PER_HAT === 0 && hats.length < HAT_MAX_ONSCREEN) {
+              spawnHat('capsule-reached-floor');
+            }
+          }
           // Seed vx from destination tilt (mirrors falling-block landing logic
           // at line ~2963). FLOOR + tilted plats snap to downhill direction.
           const _rs = (c.speedMult || 1) * CAPSULE_ROLL_SPD;
@@ -3291,6 +3456,14 @@ function updateCapsules(dt) {
         c.vy = 0;
         c.rolling = true;
         c.onPlat = plat;
+        // P-ENEMY-1-FIX (B5b): bump hat-spawn trigger on capsule reaching
+        // FLOOR via off-edge fall (sibling site to descent-end at line ~3303).
+        if (plat === FLOOR) {
+          capsulesReachedFloor++;
+          if (capsulesReachedFloor % CAPSULE_PER_HAT === 0 && hats.length < HAT_MAX_ONSCREEN) {
+            spawnHat('capsule-reached-floor');
+          }
+        }
         // D2 — FLOOR landing always sets vx rightward toward Pelosi. Tilted plats snap to downhill.
         // Other flat plats (TOP only, in practice) keep momentum sign.
         // P-DIFFICULTY-1: per-capsule speedMult cached at spawn.
@@ -3596,7 +3769,7 @@ function _resetEntitiesAndPerLevel() {
   // by the CALLER (resetForLevelTransition or resetForGameOver) before this
   // helper runs.
   hats.length          = 0;
-  hatBonusLastSpawnT   = 0;
+  capsulesReachedFloor = 0;
   spawnInitialHats();
   particles            = [];
   bricks               = [];
@@ -4024,12 +4197,12 @@ function drawCapsules() {
   }
 }
 
-// P-ENEMY-1: render MAGA hats with scale-pulse + vertical bob. Direct ctx
-// transform (drawSprite helper has no scale-pulse param). Uses spriteCache
-// directly so we skip if sprite isn't loaded yet (matches drawSprite's
-// safe-no-draw behavior). Centered on hat.x/hat.y. Pulse: sine-wave between
-// HAT_PULSE_MIN and HAT_PULSE_MAX over HAT_PULSE_PERIOD. Bob: sine-wave
-// ±HAT_BOB_AMPLITUDE over HAT_BOB_PERIOD.
+// P-ENEMY-1: render MAGA hats. Direct ctx transform (drawSprite helper has
+// no scale-pulse param). Uses spriteCache directly so we skip if sprite
+// isn't loaded yet (matches drawSprite's safe-no-draw behavior). Centered
+// on hat.x/hat.y. Scale-pulse: sine-wave between HAT_PULSE_MIN and
+// HAT_PULSE_MAX over HAT_PULSE_PERIOD. P-ENEMY-1-FIX: bob removed (movement
+// is now platform-snapped, not free-floating).
 function drawHats() {
   const cached = spriteCache['maga_hat'];
   if (!cached) return;
@@ -4037,9 +4210,8 @@ function drawHats() {
     const _pulsePhase = (hat.pulseT * 2 * Math.PI / HAT_PULSE_PERIOD);
     const _pulseScale = HAT_PULSE_MIN + (HAT_PULSE_MAX - HAT_PULSE_MIN) *
                         (Math.sin(_pulsePhase) * 0.5 + 0.5);
-    const _bobOffset  = Math.sin(hat.bobT * 2 * Math.PI / HAT_BOB_PERIOD) * HAT_BOB_AMPLITUDE;
     ctx.save();
-    ctx.translate(hat.x, hat.y + _bobOffset);
+    ctx.translate(hat.x, hat.y);
     ctx.scale(_pulseScale, _pulseScale);
     ctx.drawImage(cached, -HAT_SPRITE_SIZE / 2, -HAT_SPRITE_SIZE / 2,
                   HAT_SPRITE_SIZE, HAT_SPRITE_SIZE);
