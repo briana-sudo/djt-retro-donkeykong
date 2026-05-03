@@ -58,7 +58,7 @@ console.log = function() {
   // (Trump-throws-but-no-capsule symptom). Logs full capsule census at the bail moment
   // so Brian can DUMP LOGS and report which slot-class is dominant (FLOOR pile-up,
   // Pelosi-carry hold, or mid-cascade stall).
-  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0 || arguments[0].indexOf('[FLOOR-TTL]') === 0 || arguments[0].indexOf('[DIAGONAL-THROW]') === 0)) {
+  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0 || arguments[0].indexOf('[FLOOR-TTL]') === 0 || arguments[0].indexOf('[DIAGONAL-THROW]') === 0 || arguments[0].indexOf('[DK-DIFFICULTY-RAMP]') === 0)) {
     window.bgmLogBuffer.push({
       prefix: arguments[0],
       data:   arguments.length > 1 ? arguments[1] : null,
@@ -2009,7 +2009,7 @@ function skipToGame() {
   // out PELOSI_INTERVAL_MIN/MAX constants → ReferenceError on tap during non-GAMEPLAY
   // state (intro/cutscene). Replaced with the same per-level pelosi-timer formula
   // used elsewhere. Also using getLevelParams for capsuleSpawnInterval.
-  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance; capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; } dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; resetStats(); pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; { const _pp = getLevelParams().pelosiInterval; pelosi.timer = _pp * 0.8 + Math.random() * _pp * 0.4; } pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; climberCampT = 0; throwCounter = 0; }
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance; capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; } dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; resetStats(); pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; { const _pp = getLevelParams().pelosiInterval; pelosi.timer = _pp * 0.8 + Math.random() * _pp * 0.4; } pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; climberCampT = 0; throwCounter = 0; levelTime = 0; dkDifficultyEffective = Math.min(currentLevel, 5); }
 }
 
 // ─────────────────────────────────────────────
@@ -3013,7 +3013,11 @@ function updateCapsules(dt) {
           // forcedLadderDrop) with a single three-step routine implemented
           // by shouldDropDownLadder() at line ~2686. Phase 1 ran this in
           // parallel-shadow mode; Phase 2 wires it as authoritative.
-          const _gateResult = shouldDropDownLadder(c, lad, player, getLevelParams());
+          // DK-DIFFICULTY-RAMP: override dkDifficulty with the ramped effective
+          // value (recomputed in the GAMEPLAY case at line ~7180). Table value
+          // stays a fresh-life base; in-level pressure climbs every 33s.
+          const _gateResult = shouldDropDownLadder(c, lad, player,
+            { ...getLevelParams(), dkDifficulty: dkDifficultyEffective });
           const _willDrop   = _gateResult.drop;
           console.log('[LADDER-DROP-DIAG]', {
             currentLevel: currentLevel,
@@ -3294,6 +3298,10 @@ function resetForRespawn() {
   // diagonal (matches arcade DK convention — first capsule after gaining
   // control is the diagonal one, whether on a fresh level or post-death).
   throwCounter = 0;
+  // DK-DIFFICULTY-RAMP: reset in-level timer + effective dkDifficulty so each
+  // life starts the 33s ramp clean (per arcade DK Z80 disasm).
+  levelTime = 0;
+  dkDifficultyEffective = Math.min(currentLevel, 5);
   player.x = FLOOR.x + 60;
   player.y = FLOOR.y - 1;
   player.vx = 0;
@@ -3425,6 +3433,8 @@ function resetForLevelTransition() {
   currentLevel++;
   climberCampT = 0;                              // DK-CLIMBER-TIMER: reset on level transition
   throwCounter = 0;                              // DK-DIAGONAL-THROW: reset so first throw of new level is diagonal
+  levelTime = 0;                                 // DK-DIFFICULTY-RAMP: reset in-level timer
+  dkDifficultyEffective = Math.min(currentLevel, 5);  // DK-DIFFICULTY-RAMP: rebase to new level
   _resetEntitiesAndPerLevel();
   // AUDIO-3e Fix A — advance bgmRotationIdx by 1 (with wrap) so each new level opens with
   // the song AFTER whatever was current at the prior win. Within a level the once('end')
@@ -3499,6 +3509,8 @@ function resetForGameOver() {
   currentLevel = 1;
   climberCampT = 0;                              // DK-CLIMBER-TIMER: reset on game-over
   throwCounter = 0;                              // DK-DIAGONAL-THROW: reset so first throw of L1 is diagonal
+  levelTime = 0;                                 // DK-DIFFICULTY-RAMP: reset in-level timer
+  dkDifficultyEffective = Math.min(currentLevel, 5);  // DK-DIFFICULTY-RAMP: rebase to L1
   _resetEntitiesAndPerLevel();
   // AUDIO-1 — state-driven: state→INTRO_BLACK maps to ESCALATOR (audible after first user
   // gesture unlocks Howler's audio context). No flag reset needed (bgmDeathMuted gone).
@@ -3839,6 +3851,15 @@ let climberCampT        = 0;
 // throws are diagonal. Reset to 0 on level transition / game over / skipToGame
 // so each level's first throw fires diagonal.
 let throwCounter        = 0;
+// DK-DIFFICULTY-RAMP: in-level timer + effective dkDifficulty per arcade DK
+// (Don Hodges Z80 disasm, memory location #6380). dkDifficultyEffective starts
+// at min(currentLevel, 5) on level entry / respawn / game-over / skipToGame,
+// and bumps by 1 every DK_DIFFICULTY_RAMP_INTERVAL (33s) of in-level survival,
+// capped at 5. Read by shouldDropDownLadder() Step 2 via call-site override
+// of getLevelParams().dkDifficulty so the table value stays a fresh-life base.
+const DK_DIFFICULTY_RAMP_INTERVAL = 33.0;   // seconds per ramp bump
+let levelTime               = 0;
+let dkDifficultyEffective   = 1;             // recomputed at every reset; init defensive
 
 // 10-level parameter table. Index = currentLevel - 1 (clamped to 9 for L11+ which
 // reuses L10 row; winBonus extends linearly via getLevelParams).
@@ -7178,6 +7199,22 @@ function loop(ts) {
       // Survival category in score breakdown also removed (line ~5418). Score now
       // comes purely from event-driven sources: capsule clears, helper kills,
       // briefcases, platform-reach bonuses, Pelosi tears, time bonus, win bonus.
+      // DK-DIFFICULTY-RAMP: tick in-level timer + recompute effective dkDifficulty.
+      // Per arcade DK: difficulty starts at min(level, 5), bumps by 1 every 33s
+      // in-level, capped at 5. Logged on every change for tuning visibility.
+      levelTime += dt;
+      const _baseDiff = (getLevelParams().dkDifficulty || 1);
+      const _newDiff  = Math.min(_baseDiff + Math.floor(levelTime / DK_DIFFICULTY_RAMP_INTERVAL), 5);
+      if (_newDiff !== dkDifficultyEffective) {
+        console.log('[DK-DIFFICULTY-RAMP]', {
+          levelTime: levelTime.toFixed(1),
+          level:     currentLevel,
+          base:      _baseDiff,
+          effective: _newDiff,
+          prev:      dkDifficultyEffective,
+        });
+        dkDifficultyEffective = _newDiff;
+      }
       updatePlayer(dt);
       updateCapsules(dt);
       updatePickup(dt);
