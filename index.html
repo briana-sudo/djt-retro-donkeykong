@@ -2826,7 +2826,14 @@ function updateCapsules(dt) {
               _chance = 1.0;
               _biasReason = 'under-ladder';
             } else if ((_playerLeftOfCap && _movingLeft) || (_playerRightOfCap && _movingRight)) {
-              _chance = Math.min(1.0, _baseChance * 2.0);
+              // DK-CADENCE-A-V2: floor 0.85 + multiplier 3.0 (was: min(1.0, base*2.0)).
+              // V1 field test: 30% miss rate at base=0.35→biased=0.70 killed hunt-feel.
+              // New formula: L1/L3 base=0.30 → 0.90, L4 base=0.35 → 1.0 (cap), L5+ → 1.0.
+              // Floor guarantees fleeing always feels hostile; multiplier saturates by L4
+              // so high-level fleeing is near-deterministic. Mutually exclusive with
+              // under-ladder (set above at line 2826 in the prior if-branch) and base
+              // (the unchanged fall-through). forced bypass at line 2816 unaffected.
+              _chance = Math.max(0.85, Math.min(1.0, _baseChance * 3.0));
               _biasReason = 'fleeing';
             }
           }
