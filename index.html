@@ -3890,17 +3890,29 @@ let dkDifficultyEffective   = 1;             // recomputed at every reset; init 
 // reaches difficulty 5 within 132 seconds. Earlier levels start gentler than
 // the prior phase-1 curve (which used three plateaus 1/2/3/4/5 spread across
 // L1-L9-L10 pairs) — gives players a real ramp-in.
+//
+// DK-GATE-PHASE-3 (capsuleSpeedMult plateau): per Donkey Blog
+// (http://donkeykongblog.blogspot.com/2012/11/understanding-pace.html):
+// "Beginning at Level 5, the game reaches a plateau in its internal difficulty
+// setting, which controls factors such as the number of points available on
+// the bonus timer, the speed and quantity of obstacles, and the character of
+// 'wild' barrels. It remains at that plateau all the way through Level 21."
+// New curve: L1=1.00, L2=1.15, L3=1.30, L4=1.45, L5=1.60, L6-L10=1.60 (held).
+// Same L1 floor + same ceiling as prior linear curve, sharper L1→L5 ramp,
+// plateau from L5 onward. The Math.min(currentLevel,10) clamp at line ~3907
+// ensures L11+ also reads L10's value (1.60) — defensive even though L5-L10
+// are equal.
 const DIFFICULTY_TABLE = [
-  [1.00, 2.5, 0.30, true, 0.00, 25, 1, 2000, 1],   // L1   dkDiff=1 (33%)
-  [1.07, 2.3, 0.28, true, 0.00, 23, 1, 2400, 2],   // L2   dkDiff=2 (67%)
-  [1.14, 2.1, 0.25, true, 0.00, 21, 1, 2800, 3],   // L3   dkDiff=3 (67% — same as 2)
-  [1.20, 1.9, 0.23, true, 0.00, 19, 2, 3200, 4],   // L4   dkDiff=4 (100%)
-  [1.27, 1.7, 0.21, true, 0.00, 18, 2, 3600, 5],   // L5   dkDiff=5 (100% — same as 4)
-  [1.33, 1.6, 0.20, true, 0.00, 16, 2, 4000, 5],   // L6   dkDiff=5 (capped)
-  [1.40, 1.4, 0.18, true, 0.00, 15, 3, 4400, 5],   // L7   dkDiff=5 (capped)
-  [1.47, 1.3, 0.17, true, 0.00, 14, 3, 4800, 5],   // L8   dkDiff=5 (capped)
-  [1.53, 1.2, 0.16, true, 0.00, 13, 3, 5200, 5],   // L9   dkDiff=5 (capped)
-  [1.60, 1.0, 0.15, true, 0.00, 12, 3, 6000, 5],   // L10  dkDiff=5 (capped)
+  [1.00, 2.5, 0.30, true, 0.00, 25, 1, 2000, 1],   // L1   speed=1.00  dkDiff=1 (33%)
+  [1.15, 2.3, 0.28, true, 0.00, 23, 1, 2400, 2],   // L2   speed=1.15  dkDiff=2 (67%)
+  [1.30, 2.1, 0.25, true, 0.00, 21, 1, 2800, 3],   // L3   speed=1.30  dkDiff=3 (67% — same as 2)
+  [1.45, 1.9, 0.23, true, 0.00, 19, 2, 3200, 4],   // L4   speed=1.45  dkDiff=4 (100%)
+  [1.60, 1.7, 0.21, true, 0.00, 18, 2, 3600, 5],   // L5   speed=1.60  dkDiff=5 (100% — plateau begins)
+  [1.60, 1.6, 0.20, true, 0.00, 16, 2, 4000, 5],   // L6   speed=1.60  dkDiff=5 (plateau)
+  [1.60, 1.4, 0.18, true, 0.00, 15, 3, 4400, 5],   // L7   speed=1.60  dkDiff=5 (plateau)
+  [1.60, 1.3, 0.17, true, 0.00, 14, 3, 4800, 5],   // L8   speed=1.60  dkDiff=5 (plateau)
+  [1.60, 1.2, 0.16, true, 0.00, 13, 3, 5200, 5],   // L9   speed=1.60  dkDiff=5 (plateau)
+  [1.60, 1.0, 0.15, true, 0.00, 12, 3, 6000, 5],   // L10  speed=1.60  dkDiff=5 (plateau)
 ];
 
 function getLevelParams() {
