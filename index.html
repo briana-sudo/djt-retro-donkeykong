@@ -58,7 +58,7 @@ console.log = function() {
   // (Trump-throws-but-no-capsule symptom). Logs full capsule census at the bail moment
   // so Brian can DUMP LOGS and report which slot-class is dominant (FLOOR pile-up,
   // Pelosi-carry hold, or mid-cascade stall).
-  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DK-GATE-SHADOW]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0)) {
+  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0)) {
     window.bgmLogBuffer.push({
       prefix: arguments[0],
       data:   arguments.length > 1 ? arguments[1] : null,
@@ -2022,15 +2022,12 @@ window.addEventListener('keydown', e => {
   if (GAME_KEYS.has(e.code)) e.preventDefault();
   ensureAudioContext();                                          // L — first-input audio gate (PC keyboard path)
   // P-DIFFICULTY-1-FIX BUG 8 — Ctrl+Shift+L debug level skip. GAMEPLAY-only;
-  // increments currentLevel + re-arms first-capsule-fast-drop + resets
-  // ladderTime. DOES NOT advance bgmRotationIdx (per Brian: lets per-level
-  // audio testing stay isolated). e.repeat filter prevents held-key spam.
+  // increments currentLevel only. DOES NOT advance bgmRotationIdx (per Brian:
+  // lets per-level audio testing stay isolated). e.repeat filter prevents
+  // held-key spam. DK-GATE-PHASE-2: dead-state resets removed.
   if (state === 'GAMEPLAY' && !e.repeat && e.ctrlKey && e.shiftKey && e.code === 'KeyL') {
     e.preventDefault();
     currentLevel++;
-    firstCapsuleDropped = false;
-    ladderTime = 0;
-    forceNextDropAtLadder = null;             // DK-CADENCE-A-V5: gate cleared on debug skip
     return;
   }
   // N — global audio toggle (M-key). Works in any state.
@@ -2227,11 +2224,9 @@ function updatePlayer(dt) {
   // Block 3 — tick invulnerability timer, floored at 0
   if (player.invulnT > 0) player.invulnT = Math.max(0, player.invulnT - dt);
 
-  // P-DIFFICULTY-1 PART D — anti-camp ladder timer. Increments every frame the
-  // player is on a ladder; resets to 0 the moment they leave. Read in spawnCapsule
-  // (line ~2478) to detect camp; if >= getLevelParams().antiCampSec the next
-  // capsule spawns at top of camped ladder + drops straight down.
-  if (player.onLadder) ladderTime += dt; else ladderTime = 0;
+  // DK-GATE-PHASE-2: ladderTime tick removed — anti-camp behavior eliminated.
+  // Player camping is now punished naturally via shouldDropDownLadder() Step 3
+  // alignment (camped player at lad.x triggers drops on every Step 1+2 pass).
 
   // ══════════════════════════════════════════
   //  CLIMB STATE
@@ -2578,7 +2573,6 @@ function spawnCapsule() {
         vx:      Math.round(c.vx),
         vy:      Math.round(c.vy),
         carried: !!c.carried,
-        forced:  !!c.forcedLadderDrop,
         cleared: !!c.cleared,
       };
     });
@@ -2594,42 +2588,14 @@ function spawnCapsule() {
     });
     return;
   }
-  // P-DIFFICULTY-1 PART E — first-capsule-fast-drop. First capsule of each level
-  // spawns at top of leftmost ladder (ladders[0] x=80, top y=672 = P1 surface)
-  // with vy=200 initial + gravity. Loose ~3-4s target (per Brian's Q3) — actual
-  // timing is much faster (~0.4s) because ladders[0] connects FLOOR↔P1 only;
-  // tunable post-field-test if too fast.
-  // PART D — anti-camp ladder timer. If player is camped on a ladder for
-  // >= antiCampSec (per-level threshold), force the capsule to spawn at the top
-  // of THAT ladder (not BARREL_X). Resets ladderTime to prevent re-trigger.
+  // DK-GATE-PHASE-2: anti-camp branch + first-pair branch + throw-cycle
+  // suppression all REMOVED. Capsule cascade is now driven entirely by
+  // shouldDropDownLadder() at the crossing-decision site. spawnCapsule is now
+  // a single-purpose function: every DTJ throw cycle pushes one Path C capsule
+  // from BARREL_X on TOP. Player camping is punished naturally via Step 3
+  // alignment in shouldDropDownLadder (camped player is at lad.x, so any
+  // capsule that passes Step 1 + Step 2 will drop on the camped ladder).
   const _p = getLevelParams();
-  const _campedLadder = (player.onLadder && ladderTime >= _p.antiCampSec)
-                          ? ladderContaining(player.x, player.y) : null;
-  if (_campedLadder) {
-    // DK-CADENCE-A-V5 ITEM A: anti-camp REWORK. Was: spawn fresh capsule on top
-    // of camping player (executioner-from-nowhere). Now: open a gate flag so the
-    // NEXT cascade capsule that crosses this ladder gets force-dropped down it.
-    // No fresh spawn. The camp opens the gate, doesn't summon an executioner.
-    // The bias-drop check at line ~2792 reads forceNextDropAtLadder and forces
-    // _willDrop = true (then clears the flag). Returns early without firing
-    // first-pair so this throw cycle produces NO capsule (DTJ still animates).
-    forceNextDropAtLadder = _campedLadder;
-    ladderTime = 0;                              // reset so same camp session doesn't re-trigger
-    return;
-  }
-  // DK-CADENCE-A-V6-V2: first-pair branch (capsule (a) on P2, capsule (b) on
-  // P4 with forcedLadderDrop=true) REMOVED ENTIRELY. Brian field test L6:
-  // first-pair was producing extra mid-game spawn density beyond the documented
-  // TOP cadence. DK-cadence sub-items (a)/(c) bias logic + (d) projectile arc
-  // make the first-pair visual hooks redundant. Post-removal: only TOP cadence
-  // (Path C below) and anti-camp gate (above) produce capsules.
-  // firstCapsuleDropped flag left declared + reset at level transitions /
-  // game-over for revert ease (Option 1 — dead state, no reader). Future
-  // cleanup commit can remove the variable + 4 reset sites if removal stays
-  // permanent. forcedLadderDrop reads at lines 2563 + 2825 still resolve via
-  // !!c.forcedLadderDrop → always false post-removal; harmless no-op in OR
-  // clause. SPAWN-SITE-AUDIT confirmed only 3 push sites in entire codebase;
-  // after this commit, only line 2663 (normal Path C) remains.
   // Normal spawn from BARREL_X.
   capsules.push({
     x: BARREL_X,                                // spawns from the static barrel decoration
@@ -2673,16 +2639,14 @@ function spawnCapsule() {
 //     to one side and player moving toward that side ("commanding" the barrel)
 //     → drop. Otherwise 25% fallback chance via second independent RNG draw.
 //
-// PHASE 1 STATUS: parallel-shadow only. NOT wired into the actual drop
-// decision. Called from the crossing block in updateCapsules; result logged
-// via [DK-GATE-SHADOW] alongside the existing [LADDER-DROP-DIAG] for
-// side-by-side comparison. Phase 2 will replace the four current bias
-// behaviors (anti-camp force-drop, under-ladder, fleeing, forcedLadderDrop)
-// with this routine as authoritative.
+// PHASE 2 STATUS: AUTHORITATIVE. Wired into the drop decision in updateCapsules
+// crossing block. The four legacy bias behaviors (anti-camp force-drop,
+// under-ladder bias, fleeing bias, forcedLadderDrop flag) and their dead state
+// (firstCapsuleDropped, ladderTime, forceNextDropAtLadder, antiCampSec column)
+// were all DELETED in Phase 2. Result logged via [LADDER-DROP-DIAG].
 //
 // Returns an OBJECT (not a boolean) so the diagnostic can show WHY the routine
-// decided as it did — gives Brian a structured comparison vs the existing
-// bias-bucket reasons in DUMP LOGS.
+// decided as it did — gives Brian a structured payload in DUMP LOGS.
 function shouldDropDownLadder(capsule, ladder, player, levelParams) {
   // Step 1: vertical filter
   const VERT_TOLERANCE = 4;
@@ -2868,102 +2832,24 @@ function updateCapsules(dt) {
         const crossed = (prevX < ladCx && c.x >= ladCx) ||
                         (prevX > ladCx && c.x <= ladCx);
         if (crossed) {
-          // P-DIFFICULTY-1-FIX-V3: forcedLadderDrop flag (set on first-capsule (b))
-          // bypasses the random check — drops at every ladder it crosses to guarantee
-          // the left-side fast cascade Brian specified. Diagnostic logs the actual
-          // ladderDropChance value getLevelParams returns at runtime so Brian can
-          // confirm via DUMP LOGS whether L10's 0.60 is firing.
-          //
-          // DK-CADENCE-A: player-position-aware ladder drop. Original DK's "barrels
-          // hunt the player" feel comes from biasing the drop probability by player
-          // state. Three buckets (skipped entirely for forcedLadderDrop capsules):
-          //   1. player near ladder column (|player.x - ladCx| < 80) → force drop.
-          //      DK-CADENCE-A-V3: widened from 30 → 80. V2 field test at L6 showed
-          //      under-ladder bucket dead-on-arrival because staggered ladder layout
-          //      blocks player from standing within 30px of most ladCx values; 80px
-          //      catches "in column" cases where layout pins player off-center.
-          //      Catches ladder-climbers (auto-snapped to exact ladCx) AND players
-          //      standing under the ladder.
-          //   2. player fleeing capsule (left of capsule + moving left, OR right of
-          //      capsule + moving right) → boost _chance to min(1.0, base * 2.0).
-          //      L1 base=0.00 stays 0.00 (intentional — L1 friendly). L10 base=0.60
-          //      → 1.0 cap (always drops on flee). Hostility scales with level.
-          //   3. otherwise → existing base ladderDropChance roll, unchanged.
-          // Velocity floor of 50 (vs WALK_SPD=130) is defensive against future
-          // inertia changes; today vx is direct button→velocity so |vx|>50 ≡ vx!=0.
-          // Ladder-climbers have player.vx=0 (forced at line 2348/2365) so they
-          // never trigger the bucket-2 boost — bucket 1 catches them instead.
-          // DK-CADENCE-A-V5 ITEM A: anti-camp gate-forced drop. If the player
-          // camped a ladder long enough to set forceNextDropAtLadder = this lad,
-          // force the drop on this crossing and clear the flag (fires once per
-          // camp cycle). Mutually exclusive with the random + bias roll: gate
-          // wins. Pairing already gated upstream at line 2789, so the gate only
-          // fires for capsules on the ladder's base platform — consistent with V4.
-          const _gateForced = (forceNextDropAtLadder === lad);
-          if (_gateForced) forceNextDropAtLadder = null;
-          const _r       = Math.random();
-          const _baseChance = getLevelParams().ladderDropChance;
-          const _forced  = !!c.forcedLadderDrop;
-          let   _chance  = _baseChance;
-          let   _biasReason = 'base';
-          if (!_forced) {
-            const _playerNearLadder = Math.abs(player.x - ladCx) < 80;
-            const _playerLeftOfCap  = player.x < c.x;
-            const _playerRightOfCap = player.x > c.x;
-            const _movingLeft       = player.vx < -50;
-            const _movingRight      = player.vx >  50;
-            if (_playerNearLadder) {
-              _chance = 1.0;
-              _biasReason = 'under-ladder';
-            } else if ((_playerLeftOfCap && _movingLeft) || (_playerRightOfCap && _movingRight)) {
-              // DK-CADENCE-A-V2: floor 0.85 + multiplier 3.0 (was: min(1.0, base*2.0)).
-              // V1 field test: 30% miss rate at base=0.35→biased=0.70 killed hunt-feel.
-              // New formula: L1/L3 base=0.30 → 0.90, L4 base=0.35 → 1.0 (cap), L5+ → 1.0.
-              // Floor guarantees fleeing always feels hostile; multiplier saturates by L4
-              // so high-level fleeing is near-deterministic. Mutually exclusive with
-              // under-ladder (set above at line 2826 in the prior if-branch) and base
-              // (the unchanged fall-through). forced bypass at line 2816 unaffected.
-              _chance = Math.max(0.85, Math.min(1.0, _baseChance * 3.0));
-              _biasReason = 'fleeing';
-            }
-          }
-          const _willDrop = _forced || _gateForced || _r < _chance;
+          // DK-GATE-PHASE-2: arcade-faithful drop decision per Don Hodges Z80
+          // disassembly ($2178-$219E). Replaces four legacy bias behaviors
+          // (anti-camp force-drop, under-ladder bias, fleeing bias,
+          // forcedLadderDrop) with a single three-step routine implemented
+          // by shouldDropDownLadder() at line ~2686. Phase 1 ran this in
+          // parallel-shadow mode; Phase 2 wires it as authoritative.
+          const _gateResult = shouldDropDownLadder(c, lad, player, getLevelParams());
+          const _willDrop   = _gateResult.drop;
           console.log('[LADDER-DROP-DIAG]', {
-            currentLevel:     currentLevel,
-            baseChance:       _baseChance,
-            biasedChance:     _chance,
-            biasReason:       _biasReason,
-            playerX:          Math.round(player.x),
-            playerVx:         Math.round(player.vx),
-            ladCx:            ladCx,
-            capX:             Math.round(c.x),
-            rolled:           _r.toFixed(3),
-            forced:           _forced,
-            gateForced:       _gateForced,
-            willDrop:         _willDrop,
-          });
-          // DK-GATE-PHASE-1: parallel-shadow comparison. Run the new DK-faithful
-          // routine on the same crossing and log what IT would decide. Result is
-          // NOT consumed — _willDrop above remains authoritative. Side-by-side
-          // logging in DUMP LOGS lets Brian verify the new routine before Phase 2
-          // commits to it. agree:true means both routines reached the same
-          // decision; agree:false flags an interesting case for review.
-          const _shadowResult = shouldDropDownLadder(c, lad, player, getLevelParams());
-          console.log('[DK-GATE-SHADOW]', {
-            currentLevel:    currentLevel,
-            capX:            Math.round(c.x),
-            capY:            Math.round(c.y),
-            playerX:         Math.round(player.x),
-            playerY:         Math.round(player.y),
-            playerVx:        Math.round(player.vx),
-            ladCx:           ladCx,
-            actualDecision:  _willDrop,
-            actualReason:    _biasReason,
-            shadowDecision:  _shadowResult.drop,
-            shadowReason:    _shadowResult.reason,
-            shadowRoll:      _shadowResult.roll,
-            shadowThreshold: _shadowResult.threshold,
-            agree:           (_willDrop === _shadowResult.drop),
+            currentLevel: currentLevel,
+            playerX:      Math.round(player.x),
+            playerVx:     Math.round(player.vx),
+            ladCx:        ladCx,
+            capX:         Math.round(c.x),
+            willDrop:     _willDrop,
+            reason:       _gateResult.reason,
+            roll:         _gateResult.roll,
+            threshold:    _gateResult.threshold,
           });
           if (_willDrop) {
             // DK-DESCENT-V1: enter descending state (replaces V4's teleport-to-
@@ -3336,13 +3222,10 @@ function resetForLevelTransition() {
   // PRESERVED: playerScore, player.lives, highScores, introHasPlayed,
   //            gameOverFinalScore, highScoreNew (no game-over here — this is a win restart).
   // P-DIFFICULTY-1: advance to next level BEFORE entity wipe so the helper's
-  // capsule-spawn-interval calc uses the new level's params. firstCapsuleDropped
-  // re-armed so each new level gets its own first-capsule-fast-drop. ladderTime
-  // cleared so anti-camp starts fresh.
+  // capsule-spawn-interval calc uses the new level's params.
+  // DK-GATE-PHASE-2: dead-state resets (firstCapsuleDropped, ladderTime,
+  // forceNextDropAtLadder) removed.
   currentLevel++;
-  firstCapsuleDropped = false;
-  ladderTime = 0;
-  forceNextDropAtLadder = null;                // DK-CADENCE-A-V5: gate cleared on level transition
   _resetEntitiesAndPerLevel();
   // AUDIO-3e Fix A — advance bgmRotationIdx by 1 (with wrap) so each new level opens with
   // the song AFTER whatever was current at the prior win. Within a level the once('end')
@@ -3411,12 +3294,10 @@ function resetForGameOver() {
   highScoreNew       = false;
   gameOverFinalScore = 0;
   // P-DIFFICULTY-1: full reset to L1. Set BEFORE _resetEntitiesAndPerLevel so the
-  // helper's spawn-interval calc uses L1 params. firstCapsuleDropped re-armed so the
-  // first capsule of the fresh game gets the fast-drop treatment.
+  // helper's spawn-interval calc uses L1 params.
+  // DK-GATE-PHASE-2: dead-state resets (firstCapsuleDropped, ladderTime,
+  // forceNextDropAtLadder) removed.
   currentLevel = 1;
-  firstCapsuleDropped = false;
-  ladderTime = 0;
-  forceNextDropAtLadder = null;                // DK-CADENCE-A-V5: gate cleared on game-over reset
   _resetEntitiesAndPerLevel();
   // AUDIO-1 — state-driven: state→INTRO_BLACK maps to ESCALATOR (audible after first user
   // gesture unlocks Howler's audio context). No flag reset needed (bgmDeathMuted gone).
@@ -3735,19 +3616,10 @@ const TARGET_TIME           = 120;        // seconds; tune later
 
 // P-DIFFICULTY-1 — level state + 10-level difficulty parameter table.
 // currentLevel: 1 fresh game; resetForLevelTransition increments, resetForGameOver = 1.
-// firstCapsuleDropped: per-level flag for first-capsule-fast-drop; reset on every
-//   level transition / game over.
-// ladderTime: anti-camp timer (in seconds); ticks in updatePlayer when onLadder=true,
-//   resets to 0 the moment they leave. Read in spawnCapsule for camped-ladder override.
+// DK-GATE-PHASE-2 cleanup: firstCapsuleDropped, ladderTime, forceNextDropAtLadder
+// all REMOVED — all four legacy drop-bias behaviors and dead state deleted in
+// favor of shouldDropDownLadder() which carries no module-level state of its own.
 let currentLevel        = 1;
-let firstCapsuleDropped = false;
-let ladderTime          = 0;
-// DK-CADENCE-A-V5 ITEM A: anti-camp gate. When player camps past _p.antiCampSec
-// on a ladder, spawnCapsule sets this to the camped ladder reference. The
-// bias-drop check (~line 2792) reads it: if forceNextDropAtLadder === lad on a
-// crossing, force _willDrop = true and clear the flag. Reset to null on level
-// transition + game over + debug skip (mirrors ladderTime resets).
-let forceNextDropAtLadder = null;
 // P-DIFFICULTY-1-FIX BUG 8: 3s level-start movement lock. Set to 3.0 in
 // _resetEntitiesAndPerLevel; ticked down + early-returns updatePlayer while > 0.
 // First capsule fires immediately (capsuleSpawnT primed in same helper) so by
@@ -3757,41 +3629,33 @@ let levelStartLockT     = 0;
 // 10-level parameter table. Index = currentLevel - 1 (clamped to 9 for L11+ which
 // reuses L10 row; winBonus extends linearly via getLevelParams).
 // Columns: capsuleSpeedMult, spawnIntervalAvg, spawnVariance, fastDropOn,
-//          ladderDropChance, antiCampSec, pelosiInterval, antifaWaveSize, winBonus,
+//          ladderDropChance, pelosiInterval, antifaWaveSize, winBonus,
 //          dkDifficulty
-// P-DIFFICULTY-1-FIX BUG 11: ladderDropChance ([4] column) curve revised per Brian
-// field test. Was: 0/0.05/0.10/0.20/0.30/0.35/0.40/0.50/0.55/0.60 (too gradual, L2-3
-// felt no different from L1). Now: 0/0.25/0.30/0.35/0.40/0.45/0.50/0.55/0.58/0.60
-// — sharp jump at L2 makes the difficulty curve actually felt early.
+// P-DIFFICULTY-1-FIX BUG 11: ladderDropChance ([4] column) curve was revised per Brian
+// field test. DK-GATE-PHASE-2: ladderDropChance is now UNUSED (shouldDropDownLadder
+// uses dkDifficulty exclusively). Column kept at 0.00 as legacy placeholder; safe to
+// remove in a future cleanup commit. antiCampSec column REMOVED in Phase 2 (was
+// column [5]; subsequent columns shifted left by one index).
 //
-// DK-CADENCE-A-V5 ITEM B: TEMPORARY hunt-feel isolation test. All ladderDropChance
-// ([4] column) set to 0.00 to eliminate base-rate random drops. ONLY bias-bucket
-// drops (under-ladder, fleeing), forcedLadderDrop (capsule b first-pair),
-// anti-camp gate drops, and natural off-edge falls remain. Lets Brian field-test
-// whether bias hunting actually fires in isolation. REVERT to the V6 row before
-// next non-diagnostic commit. Original values preserved in inline comment per
-// row: |orig=0.XX|.
-//
-// DK-GATE-PHASE-1: dkDifficulty ([9] column) added per Don Hodges' Z80 disassembly
-// of original DK arcade ROM (addresses $2178-$219E). Used by shouldDropDownLadder()
-// in parallel-shadow mode (NOT wired into drop decision in Phase 1; logs only).
-// Step-2 pass rates per ROM formula `threshold = floor(diff/2) + 1`, drop if
-// roll<threshold over roll∈{0,1,2}:
+// DK-GATE-PHASE-1+2: dkDifficulty (now column [8] post-antiCampSec removal) drives
+// the arcade-faithful drop routine per Don Hodges' Z80 disassembly of original DK
+// arcade ROM (addresses $2178-$219E). Step-2 pass rates per ROM formula
+// `threshold = floor(diff/2) + 1`, drop if roll<threshold over roll∈{0,1,2}:
 //   diff=1 → 33% pass, diff=2-3 → 67% pass, diff=4-5 → 100% pass.
 // Adjacent-value adjustments (2→3, 4→5) are NO-OPS by design — three plateaus
 // matches the ROM's coarse curve. Phase 3 tuning should use the three plateaus,
-// not adjacent-value tweaks. Phase 2 will replace bias buckets with this routine.
+// not adjacent-value tweaks.
 const DIFFICULTY_TABLE = [
-  [1.00, 2.5, 0.30, true, 0.00, 10, 25, 1, 2000, 1],   // L1   |orig=0.00|  dkDiff=1 (33%)
-  [1.07, 2.3, 0.28, true, 0.00, 9,  23, 1, 2400, 2],   // L2   |orig=0.25|  dkDiff=2 (67%)
-  [1.14, 2.1, 0.25, true, 0.00, 8,  21, 1, 2800, 2],   // L3   |orig=0.30|  dkDiff=2 (67%)
-  [1.20, 1.9, 0.23, true, 0.00, 7,  19, 2, 3200, 2],   // L4   |orig=0.35|  dkDiff=2 (67%)
-  [1.27, 1.7, 0.21, true, 0.00, 6,  18, 2, 3600, 3],   // L5   |orig=0.40|  dkDiff=3 (67% — same as 2)
-  [1.33, 1.6, 0.20, true, 0.00, 6,  16, 2, 4000, 3],   // L6   |orig=0.45|  dkDiff=3 (67% — same as 2)
-  [1.40, 1.4, 0.18, true, 0.00, 5,  15, 3, 4400, 4],   // L7   |orig=0.50|  dkDiff=4 (100%)
-  [1.47, 1.3, 0.17, true, 0.00, 5,  14, 3, 4800, 4],   // L8   |orig=0.55|  dkDiff=4 (100%)
-  [1.53, 1.2, 0.16, true, 0.00, 4,  13, 3, 5200, 5],   // L9   |orig=0.58|  dkDiff=5 (100% — same as 4)
-  [1.60, 1.0, 0.15, true, 0.00, 4,  12, 3, 6000, 5],   // L10  |orig=0.60|  dkDiff=5 (100% — same as 4)
+  [1.00, 2.5, 0.30, true, 0.00, 25, 1, 2000, 1],   // L1   dkDiff=1 (33%)
+  [1.07, 2.3, 0.28, true, 0.00, 23, 1, 2400, 2],   // L2   dkDiff=2 (67%)
+  [1.14, 2.1, 0.25, true, 0.00, 21, 1, 2800, 2],   // L3   dkDiff=2 (67%)
+  [1.20, 1.9, 0.23, true, 0.00, 19, 2, 3200, 2],   // L4   dkDiff=2 (67%)
+  [1.27, 1.7, 0.21, true, 0.00, 18, 2, 3600, 3],   // L5   dkDiff=3 (67% — same as 2)
+  [1.33, 1.6, 0.20, true, 0.00, 16, 2, 4000, 3],   // L6   dkDiff=3 (67% — same as 2)
+  [1.40, 1.4, 0.18, true, 0.00, 15, 3, 4400, 4],   // L7   dkDiff=4 (100%)
+  [1.47, 1.3, 0.17, true, 0.00, 14, 3, 4800, 4],   // L8   dkDiff=4 (100%)
+  [1.53, 1.2, 0.16, true, 0.00, 13, 3, 5200, 5],   // L9   dkDiff=5 (100% — same as 4)
+  [1.60, 1.0, 0.15, true, 0.00, 12, 3, 6000, 5],   // L10  dkDiff=5 (100% — same as 4)
 ];
 
 function getLevelParams() {
@@ -3803,11 +3667,10 @@ function getLevelParams() {
     spawnVariance:     row[2],
     fastDropOn:        row[3],
     ladderDropChance:  row[4],
-    antiCampSec:       row[5],
-    pelosiInterval:    row[6],
-    antifaWaveSize:    row[7],
-    winBonus:          currentLevel <= 10 ? row[8] : 6000 + (currentLevel - 10) * 400,
-    dkDifficulty:      row[9],
+    pelosiInterval:    row[5],
+    antifaWaveSize:    row[6],
+    winBonus:          currentLevel <= 10 ? row[7] : 6000 + (currentLevel - 10) * 400,
+    dkDifficulty:      row[8],
   };
 }
 const BRIEFCASE_RESPAWN_MIN = 8.0;
