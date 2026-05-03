@@ -52,7 +52,9 @@ console.log = function() {
   // output added to pointerdown / touchstart / togglePause for iPhone pause-button trace.
   // CAPSULE-DIAG — also capture [CAPSULE-DIAG] for the SFX-PACK round-3 capsule
   // destruction trace (Brian field test: synth still sounds, despite both prior strips).
-  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0)) {
+  // CAPSULE-SPAWN-DIAG / LADDER-DROP-DIAG — added in P-DIFFICULTY-1-FIX-V3 to trace
+  // speedMult application at L8+ (Bug 10) and L10 ladder-drop chance (Bug 7 NEW).
+  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0)) {
     window.bgmLogBuffer.push({
       prefix: arguments[0],
       data:   arguments.length > 1 ? arguments[1] : null,
@@ -1932,6 +1934,17 @@ function cutsceneAdvance() {
     // P-DIFFICULTY-1-FIX-V2 ITEM 3: removed `if (cutsceneT >= CUTSCENE_SKIP_THRESHOLD)`
     // gate (was 10s minimum hold). Per Brian: ONE TAP = SKIP ENTIRE CURRENT SCENE.
     // Drops captions, resets eagle combo, jumps straight to SCORE.
+    // P-DIFFICULTY-1-FIX-V3 BUG 6/7: stop the looping cutscene audio so it doesn't
+    // bleed into CUTSCENE_SCORE (and from there into GAMEPLAY). PHASE1 has the
+    // crowd_cheer loop (line ~6991 play, line ~7022 natural-exit stop); PHASE3
+    // has the crowd_usa_chant loop. Tap-skip bypasses both natural-exit stops,
+    // so we fire them here instead.
+    if (state === 'CUTSCENE_PHASE1' && typeof GAME_SFX !== 'undefined' && GAME_SFX.crowd_cheer) {
+      GAME_SFX.crowd_cheer.stop();
+    }
+    if (state === 'CUTSCENE_PHASE3' && typeof GAME_SFX !== 'undefined' && GAME_SFX.crowd_usa_chant) {
+      GAME_SFX.crowd_usa_chant.stop();
+    }
     clearCaptions();
     dtjStageMode = 'NONE';
     comboActive  = false;
@@ -2555,26 +2568,63 @@ function spawnCapsule() {
     return;
   }
   if (!firstCapsuleDropped) {
-    // P-DIFFICULTY-1-FIX-V2 BUG E: ghost-fall capsule. Spawns at top-of-canvas on
-    // LEFT side (x=80, aligned with ladders[0]). Falls straight DOWN through every
-    // platform via the ghostFall flag (skips platform-landing collision in the
-    // updateCapsules falling block). Lands on FLOOR, converts to normal rolling
-    // capsule (rolls right per FLOOR rule). Visual: visible fast vertical drop on
-    // the left side of the screen, then natural FLOOR roll toward Pelosi.
-    // Was: BARREL_X spawn with speedMult×2.5 — natural cascade went RIGHT-side via
-    // ladders[5] which violated Brian's left-side spec.
+    // P-DIFFICULTY-1-FIX-V3: TWO first capsules at GAMEPLAY entry (replaces
+    // ghost-fall, which was reverted because the locked player got hit by the
+    // ghost capsule landing on FLOOR = unavoidable death).
+    //
+    // Capsule (a) THROWN-TO-P2: direct spawn ON P2 at left side. P2 tilt=+2.5
+    // rolls capsule RIGHT, falls off P2's right edge, lands on P1, P1 tilt=-2.5
+    // rolls LEFT, eventually drops at ladders[0] to FLOOR. Natural cascade path
+    // gives the player visual anticipation of where the capsule will arrive.
+    // DTJ's throw animation runs normally above; only the spawn position is
+    // overridden for this special first-capsule slot.
+    //
+    // Capsule (b) LEFT-LADDER FAST PATH: spawns ON P4 just LEFT of ladders[4]
+    // (x=80, P4 surface), forcedLadderDrop=true so it drops at every ladder
+    // crossing. Path: P4 right-roll → ladders[4] forced-drop → P3 left-roll →
+    // falls off P3 left edge → P2 right-roll → ladders[2] forced-drop → P1
+    // left-roll → ladders[0] forced-drop → FLOOR right-roll toward Pelosi.
+    // ~3-4s descent on the LEFT side of the screen.
+    const P2 = platforms[2];                                 // index 2 = P2 (y=530)
+    const P4 = platforms[4];                                 // index 4 = P4 (y=270)
+    const lad4 = ladders[4];                                 // P3↔P4 LEFT (x=90)
+
+    // Capsule (a): direct spawn ON P2 at left side. Rolling block re-applies vx
+    // per P2 tilt next frame, so initial vx value doesn't actually matter.
+    const aX = P2.x + 20;                                    // x=30 (left side of P2)
     capsules.push({
-      x: 80,
-      y: -CAPSULE_R,                  // start above canvas, falls in
-      vx: 0,
-      vy: 0,                          // gravity accelerates from rest
-      rolling: false,
-      onPlat: null,
+      x: aX,
+      y: getPlatY(P2, aX) - CAPSULE_R,
+      vx: _p.capsuleSpeedMult * CAPSULE_ROLL_SPD,
+      vy: 0,
+      rolling: true,
+      onPlat: P2,
       rot: 0,
       speedMult: _p.capsuleSpeedMult,
-      ghostFall: true,                // skip platform collision until FLOOR landing
     });
+
+    // Capsule (b): on P4 just LEFT of ladders[4], forcedLadderDrop=true. P4
+    // tilt=+2.5 rolls right, capsule crosses ladders[4] within a frame or two,
+    // forced-drops to P3, then natural cascade per the path above.
+    const bX = lad4.x - 8;                                   // 8px LEFT of ladder x → guarantees crossing detection on first roll
+    capsules.push({
+      x: bX,
+      y: getPlatY(P4, bX) - CAPSULE_R,
+      vx: _p.capsuleSpeedMult * CAPSULE_ROLL_SPD,
+      vy: 0,
+      rolling: true,
+      onPlat: P4,
+      rot: 0,
+      speedMult: _p.capsuleSpeedMult,
+      forcedLadderDrop: true,                                // bypass random ladderDropChance, always drop
+    });
+
     firstCapsuleDropped = true;
+    console.log('[CAPSULE-SPAWN-DIAG]', {
+      site:        'first-pair',
+      currentLevel: currentLevel,
+      speedMult:   _p.capsuleSpeedMult,
+    });
     return;
   }
   // Normal spawn from BARREL_X.
@@ -2587,6 +2637,14 @@ function spawnCapsule() {
     onPlat: TOP,
     rot: 0,
     speedMult: _p.capsuleSpeedMult,             // P-DIFFICULTY-1: cached for per-frame velocity re-application
+  });
+  // P-DIFFICULTY-1-FIX-V3 BUG 10 diagnostic: log spawn-time speedMult so Brian
+  // can confirm via DUMP LOGS what value is actually applied at L8+ (Bug 10
+  // field test report: "capsules at L8+ NOT visibly faster").
+  console.log('[CAPSULE-SPAWN-DIAG]', {
+    site:        'normal',
+    currentLevel: currentLevel,
+    speedMult:   _p.capsuleSpeedMult,
   });
 }
 
@@ -2648,12 +2706,13 @@ function updateCapsules(dt) {
     // gets despawned at SLAM (capsule spliced from array).
     if (c.carried) continue;
 
-    // P-DIFFICULTY-1-FIX-V2 BUG G: invisible left/right boundary clamp on ALL
-    // capsules. Catches high-speedMult flyaway + any future runaway-velocity bug.
-    // Once vx is zeroed at the boundary, gravity continues; the capsule drops to
-    // the next platform via natural fall. Skipped for ghost-fall capsules (which
-    // spawn at x=80 already inside the boundary).
-    if (!c.ghostFall) {
+    // P-DIFFICULTY-1-FIX-V3 BUG 4c: boundary clamp scope tightened — only clamp
+    // mid-cascade (non-FLOOR) capsules. FLOOR capsules MUST be allowed to roll
+    // off the right edge so the off-screen despawn at line ~2747 fires; otherwise
+    // capsules accumulate against the wall, MAX_CAPSULES (8) hits, Trump's spawn
+    // silently bails (Bug 10b root cause). ghostFall flag removed in V3 revert,
+    // so the gate is just `c.onPlat !== FLOOR`.
+    if (c.onPlat !== FLOOR) {
       if      (c.x < CAPSULE_R)        { c.x = CAPSULE_R;        c.vx = 0; }
       else if (c.x > W - CAPSULE_R)    { c.x = W - CAPSULE_R;    c.vx = 0; }
     }
@@ -2680,14 +2739,32 @@ function updateCapsules(dt) {
         if (Math.abs(platYatLad - (lad.y + lad.h)) > 20) continue;
         const crossed = (prevX < ladCx && c.x >= ladCx) ||
                         (prevX > ladCx && c.x <= ladCx);
-        if (crossed && Math.random() < getLevelParams().ladderDropChance) {  // P-DIFFICULTY-1: per-level chance (was: CAPSULE_LADDER_DROP_CHANCE 0.65)
-          c.rolling = false;
-          c.onPlat = null;
-          c.x = ladCx;
-          c.vx = 0;
-          c.vy = 30;
-          dropped = true;
-          break;
+        if (crossed) {
+          // P-DIFFICULTY-1-FIX-V3: forcedLadderDrop flag (set on first-capsule (b))
+          // bypasses the random check — drops at every ladder it crosses to guarantee
+          // the left-side fast cascade Brian specified. Diagnostic logs the actual
+          // ladderDropChance value getLevelParams returns at runtime so Brian can
+          // confirm via DUMP LOGS whether L10's 0.60 is firing.
+          const _r       = Math.random();
+          const _chance  = getLevelParams().ladderDropChance;
+          const _forced  = !!c.forcedLadderDrop;
+          const _willDrop = _forced || _r < _chance;
+          console.log('[LADDER-DROP-DIAG]', {
+            currentLevel:     currentLevel,
+            ladderDropChance: _chance,
+            rolled:           _r.toFixed(3),
+            forced:           _forced,
+            willDrop:         _willDrop,
+          });
+          if (_willDrop) {
+            c.rolling = false;
+            c.onPlat = null;
+            c.x = ladCx;
+            c.vx = 0;
+            c.vy = 30;
+            dropped = true;
+            break;
+          }
         }
       }
 
@@ -2705,21 +2782,11 @@ function updateCapsules(dt) {
       c.y += c.vy * dt;
       c.rot += 0.18;
 
-      // P-DIFFICULTY-1-FIX-V2 BUG E: ghost-fall capsule lands on FLOOR directly,
-      // ignoring all intermediate platforms. Sets up FLOOR rolling state inline
-      // and clears the ghostFall flag so subsequent frames hit the normal rolling
-      // branch. The platforms loop below is skipped while ghostFall is true.
-      if (c.ghostFall) {
-        if (c.y >= FLOOR.y - CAPSULE_R) {
-          c.y       = FLOOR.y - CAPSULE_R;
-          c.vy      = 0;
-          c.rolling = true;
-          c.onPlat  = FLOOR;
-          c.ghostFall = false;
-          c.vx      = (c.speedMult || 1) * CAPSULE_ROLL_SPD;   // FLOOR rule: roll RIGHT toward Pelosi
-        }
-        // Player-collision + off-screen-exit + jumped-over checks below still apply.
-      } else for (const plat of platforms) {
+      // P-DIFFICULTY-1-FIX-V3: ghost-fall removed (Brian field test: locked player
+      // got hit by ghost-fall capsule = unavoidable death). Replaced by the two
+      // first-capsules spec — see spawnCapsule below. Normal platform-landing flow
+      // resumes here.
+      for (const plat of platforms) {
         if (c.x < plat.x - 4 || c.x > plat.x + plat.w + 4) continue;
         const surfaceTarget = getPlatY(plat, c.x) - CAPSULE_R;
         if (prevY > surfaceTarget + 1) continue;   // was already below this plat
@@ -2872,6 +2939,12 @@ function hit(source, capsule) {
 // real penalty). Capsules CLEARED for clean restart. Helpers / Pelosi / Secret Service /
 // briefcase pickups all LEFT IN PLACE — seeing them mid-action when DNC respawns is funny.
 function resetForRespawn() {
+  // P-DIFFICULTY-1-FIX-V3 BUG 4b: re-arm first-capsule pattern on respawn so the
+  // two-first-capsule spawn fires fresh after every death (was: pattern only fired
+  // on level entry, dying mid-level meant respawn skipped both first capsules).
+  // Brian's call: do NOT reset levelStartLockT (respawn = immediate control, no
+  // 3s lock penalty after every death).
+  firstCapsuleDropped = false;
   player.x = FLOOR.x + 60;
   player.y = FLOOR.y - 1;
   player.vx = 0;
