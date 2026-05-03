@@ -2634,9 +2634,12 @@ function spawnCapsule() {
   // 1 from a level-reset 0). Subsequent throws: every Nth throw is diagonal
   // where N = getDiagonalEveryN(currentLevel) — L1-3:6, L4-6:5, L7-9:4, L10+:3.
   throwCounter++;
-  const _isFirstOfLevel = (throwCounter === 1);
+  // throwCounter resets to 0 on level transition AND on respawn, so
+  // throwCounter === 1 is "first throw since player gained control" —
+  // covers both fresh-level and post-death cases per Brian's spec.
+  const _isFirstThrow   = (throwCounter === 1);
   const _diagonalEveryN = getDiagonalEveryN(currentLevel);
-  const _isDiagonal     = _isFirstOfLevel || (throwCounter % _diagonalEveryN === 0);
+  const _isDiagonal     = _isFirstThrow || (throwCounter % _diagonalEveryN === 0);
   if (_isDiagonal) {
     // Diagonal throw: pass-through trajectory from DTJ position. Capsule
     // visually passes through P4/P3/P2 (no platform collision during flight),
@@ -2660,7 +2663,7 @@ function spawnCapsule() {
     });
     console.log('[DIAGONAL-THROW]', 'spawn', {
       throwCount:     throwCounter,
-      isFirstOfLevel: _isFirstOfLevel,
+      isFirstThrow:   _isFirstThrow,
       level:          currentLevel,
       everyN:         _diagonalEveryN,
       spawnX:         BARREL_X,
@@ -3111,6 +3114,19 @@ function updateCapsules(dt) {
       continue;
     }
 
+    // DK-DIAGONAL-THROW: thrown capsules (mid-flight diagonal) are NON-LETHAL.
+    // Skip ALL collision checks (AABB lethal hit, DK-CADENCE-E jump-clearance,
+    // H2 dodge-bonus). Player can walk through the diagonal trajectory without
+    // dying. Update c.lastX so the next-frame H2 crossing test starts from the
+    // current in-flight position rather than a stale spawn x — avoids edge case
+    // where post-landing H2 detects a phantom crossing across the flight arc.
+    // After landing (c.thrown becomes false in the thrown-state branch above),
+    // normal AABB lethality applies on the next frame.
+    if (c.thrown) {
+      c.lastX = c.x;
+      continue;
+    }
+
     // AABB collision with DNC (player.y is the foot).
     // G3 — capsule travel rule: hitting the player decrements lives/grants i-frames but does NOT
     // despawn the capsule. Capsule keeps cascading; only helper-kill, Pelosi-grab, and off-screen
@@ -3269,6 +3285,10 @@ function resetForRespawn() {
   // at level transitions (line ~3208) and game-over reset (line ~3282).
   // Brian's call: do NOT reset levelStartLockT (respawn = immediate control, no
   // 3s lock penalty after every death).
+  // DK-DIAGONAL-THROW: reset throwCounter so the first throw after respawn is
+  // diagonal (matches arcade DK convention — first capsule after gaining
+  // control is the diagonal one, whether on a fresh level or post-death).
+  throwCounter = 0;
   player.x = FLOOR.x + 60;
   player.y = FLOOR.y - 1;
   player.vx = 0;
