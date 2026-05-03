@@ -2077,7 +2077,7 @@ function skipToGame() {
   // out PELOSI_INTERVAL_MIN/MAX constants → ReferenceError on tap during non-GAMEPLAY
   // state (intro/cutscene). Replaced with the same per-level pelosi-timer formula
   // used elsewhere. Also using getLevelParams for capsuleSpawnInterval.
-  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance; capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; } dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; resetStats(); pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; { const _pp = getLevelParams().pelosiInterval; pelosi.timer = _pp * 0.8 + Math.random() * _pp * 0.4; } pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; climberCampT = 0; throwCounter = 0; levelTime = 0; dkDifficultyEffective = Math.min(currentLevel, 5); hats.length = 0; capsulesReachedFloor = 0; spawnInitialHats(); spawnBadges(); }
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance; capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; } dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; resetStats(); pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; { const _pp = getLevelParams().pelosiInterval; pelosi.timer = _pp * 0.8 + Math.random() * _pp * 0.4; } pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; climberCampT = 0; throwCounter = 0; levelTime = 0; dkDifficultyEffective = Math.min(currentLevel, 5); hats.length = 0; capsulesReachedFloor = 0; queueInitialHatSpawns(); spawnBadges(); }
 }
 
 // ─────────────────────────────────────────────
@@ -2624,6 +2624,15 @@ const HAT_PULSE_PERIOD            = 1.0;    // scale-pulse cycle (sec) — kept 
 const HAT_PULSE_MIN               = 1.0;
 const HAT_PULSE_MAX               = 1.1;
 const HAT_MAX_ONSCREEN            = 5;      // hard ceiling per arcade DK (was 8)
+// P-ENEMY-1-FIX-3 (May 3 2026): time-stagger initial hat spawns at level entry.
+// Per arcade DK research (Donkey Blog "The Fire IS Random" + Mariowiki +
+// StrategyWiki): arcade DK fireballs disperse via time-staggered spawning, NOT
+// mutual repulsion. "First fireball spawns when DK's first barrel hits oil drum.
+// Every 8th barrel after creates a new fireball." This naturally staggers spawns
+// across many seconds. Brian L2 field-test post-FIX-2: 2 hats spawned together
+// at P1 x=420 walked nearly identical paths. 2.0s stagger gives each hat
+// independent walking time before next appears.
+const HAT_INITIAL_STAGGER         = 2.0;    // seconds between initial spawns at level entry
 // P-WEAPON-1-FIX (May 3 2026): additional 25% reduction per Brian field-test.
 // 34→26 sprite, 22→17 AABB W, 17→13 AABB H. FBI badge constants UNCHANGED (Brian:
 // "FBI badge is perfect size"). Ratio: 26 * 0.75 = 19.5 if Brian wants another pass.
@@ -2729,12 +2738,20 @@ const hats = [];
 // every CAPSULE_PER_HAT (=8) capsules. Reset to 0 in same paths that reset
 // hats[] (level transition, game over, skipToGame). Per-level not per-life.
 let capsulesReachedFloor = 0;
+// P-ENEMY-1-FIX-3: queue of future levelTime timestamps when staggered initial
+// spawns should fire. Populated by queueInitialHatSpawns() at level entry +
+// skipToGame + (conditionally) respawn. Drained at top of updateHats() each
+// frame: any timestamp <= levelTime fires spawnHat('level-entry-staggered').
+// Cleared on every queue-setup so a respawn mid-stagger doesn't double-fire
+// leftover timestamps after levelTime resets to 0.
+let pendingHatSpawns = [];
 
 // Spawn a single hat on a random upper platform (P3/P4/TOP), excluding the
 // player's current grounded platform. Initial state WALKING with random dir
 // (±1). Snapped to platform surface (y = getPlatY(plat) - HAT_SPRITE_SIZE/2).
 // Caps at HAT_MAX_ONSCREEN. Logs [HAT-SPAWN] with reason
-// ('level-entry' or 'capsule-reached-floor').
+// ('level-entry' first hat, 'level-entry-staggered' subsequent staggered hats,
+// 'capsule-floor-trigger' every-8th-capsule respawn).
 function spawnHat(reason) {
   if (hats.length >= HAT_MAX_ONSCREEN) return;
   // P-ENEMY-1-FIX-2 (May 3 2026): single fixed spawn point on P1 right (x=420).
@@ -2771,11 +2788,21 @@ function spawnHat(reason) {
   });
 }
 
-// Initial spawn at level entry — fires getHatInitialCount(currentLevel) hats.
-function spawnInitialHats() {
+// P-ENEMY-1-FIX-3: queue staggered initial hat spawns at level entry. First hat
+// fires immediately (matches arcade DK first-fireball-at-first-barrel-hit).
+// Remaining (count-1) hats queued at HAT_INITIAL_STAGGER (2.0s) intervals from
+// levelTime=0. Per-frame drain at top of updateHats(). Renamed from old
+// spawnInitialHats — call sites updated at _resetEntitiesAndPerLevel + skipToGame
+// + (conditionally) resetForRespawn.
+function queueInitialHatSpawns() {
   capsulesReachedFloor = 0;
+  pendingHatSpawns.length = 0;                                     // clear leftover timestamps from prior queue
   const count = getHatInitialCount(currentLevel);
-  for (let i = 0; i < count; i++) spawnHat('level-entry');
+  if (count <= 0) return;
+  spawnHat('level-entry');                                         // first hat fires immediately
+  for (let i = 1; i < count; i++) {
+    pendingHatSpawns.push(i * HAT_INITIAL_STAGGER);                // future levelTime timestamps; levelTime=0 at entry
+  }
 }
 
 // Helpers for ladder-aware hat AI. Find the platform whose surface y at
@@ -2853,6 +2880,17 @@ function findLadderForHat(hat) {
 // despawn when killing player). State-agnostic (no pause/cutscene gate —
 // caller invokes only during GAMEPLAY).
 function updateHats(dt) {
+  // P-ENEMY-1-FIX-3: drain pendingHatSpawns first — fire any whose timestamp
+  // has been reached. Sorted-ascending invariant: queueInitialHatSpawns pushes
+  // in increasing-i order, so the head is always the earliest. Backward iter
+  // below captures hats.length at loop entry — newly-appended hats won't get
+  // a movement tick on their spawn frame. HAT_MAX_ONSCREEN guard inside
+  // spawnHat() prevents overshoot if anything goes sideways.
+  while (pendingHatSpawns.length > 0 && pendingHatSpawns[0] <= levelTime) {
+    pendingHatSpawns.shift();
+    spawnHat('level-entry-staggered');
+  }
+
   const _walkSpd  = getHatWalkSpd(currentLevel);
   const _climbSpd = getHatClimbSpd(currentLevel);
 
@@ -3591,7 +3629,7 @@ function updateCapsules(dt) {
           if (c.onPlat === FLOOR) {
             capsulesReachedFloor++;
             if (capsulesReachedFloor % CAPSULE_PER_HAT === 0 && hats.length < HAT_MAX_ONSCREEN) {
-              spawnHat('capsule-reached-floor');
+              spawnHat('capsule-floor-trigger');
             }
           }
           // Seed vx from destination tilt (mirrors falling-block landing logic
@@ -3744,7 +3782,7 @@ function updateCapsules(dt) {
         if (plat === FLOOR) {
           capsulesReachedFloor++;
           if (capsulesReachedFloor % CAPSULE_PER_HAT === 0 && hats.length < HAT_MAX_ONSCREEN) {
-            spawnHat('capsule-reached-floor');
+            spawnHat('capsule-floor-trigger');
           }
         }
         // D2 — FLOOR landing always sets vx rightward toward Pelosi. Tilted plats snap to downhill.
@@ -3982,6 +4020,13 @@ function resetForRespawn() {
   // behavior — hats persist; badges reset because they're the player's
   // arcade-DK-style consumable resource per life).
   spawnBadges();
+  // P-ENEMY-1-FIX-3: clear leftover staggered spawns from prior life. levelTime
+  // resets to 0 above (line ~4005) so any timestamps still in the queue would
+  // re-fire at the new t=0 reference frame (over-spawn). If the player FBI-badged
+  // ALL hats this life, re-queue from scratch — otherwise leave the persisting
+  // hats alone (per spec: "only re-queue if hats array is empty").
+  pendingHatSpawns.length = 0;
+  if (hats.length === 0) queueInitialHatSpawns();
   player.x = FLOOR.x + 60;
   player.y = FLOOR.y - 1;
   player.vx = 0;
@@ -4057,12 +4102,13 @@ function _resetEntitiesAndPerLevel() {
   levelStartLockT      = 3.0;
   helpers.length       = 0;
   // P-ENEMY-1: clear hats on level transition / game over, then spawn initial
-  // count for the new level. spawnInitialHats reads currentLevel which is set
-  // by the CALLER (resetForLevelTransition or resetForGameOver) before this
-  // helper runs.
+  // count for the new level. queueInitialHatSpawns reads currentLevel which is
+  // set by the CALLER (resetForLevelTransition or resetForGameOver) before this
+  // helper runs. P-ENEMY-1-FIX-3: queue-based — first hat fires immediately,
+  // remaining hats queued at HAT_INITIAL_STAGGER (2.0s) intervals.
   hats.length          = 0;
   capsulesReachedFloor = 0;
-  spawnInitialHats();
+  queueInitialHatSpawns();
   // P-WEAPON-1: badges restore at level entry (level transition + game over).
   spawnBadges();
   particles            = [];
