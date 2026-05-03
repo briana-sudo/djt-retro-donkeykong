@@ -2009,7 +2009,7 @@ function skipToGame() {
   // out PELOSI_INTERVAL_MIN/MAX constants → ReferenceError on tap during non-GAMEPLAY
   // state (intro/cutscene). Replaced with the same per-level pelosi-timer formula
   // used elsewhere. Also using getLevelParams for capsuleSpawnInterval.
-  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance; capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; } dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; resetStats(); pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; { const _pp = getLevelParams().pelosiInterval; pelosi.timer = _pp * 0.8 + Math.random() * _pp * 0.4; } pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; }
+  if (state !== 'GAMEPLAY') { state = 'GAMEPLAY'; stateT = 0; particles = []; bricks = []; zoomScale = 1; capsules.length = 0; capsuleSpawnT = 0; { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance; capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; } dtjAnimState = 'IDLE'; dtjAnimT = 0; dtjAnimX = DTJ_GAMEPLAY_X; helpers.length = 0; player.lives = 3; player.invulnT = 0; player.platformsReached = new Set([0]); playerScore = 0; multiplier = MULT_BASE; multiplierT = 0; levelStartTime = totalT; scoreFloats.length = 0; resetStats(); pickupSpawnTimer = 0; pickupRespawnDelay = 0; pickup.active = false; spawnFirstPickup(); pelosi.active = false; pelosi.phase = 'IDLE'; pelosi.phaseT = 0; { const _pp = getLevelParams().pelosiInterval; pelosi.timer = _pp * 0.8 + Math.random() * _pp * 0.4; } pelosi.facing = -1; pelosi.targetCapsule = null; pelosiFlash.active = false; tornPieces.length = 0; climberCampT = 0; }
 }
 
 // ─────────────────────────────────────────────
@@ -2227,6 +2227,11 @@ function updatePlayer(dt) {
   // DK-GATE-PHASE-2: ladderTime tick removed — anti-camp behavior eliminated.
   // Player camping is now punished naturally via shouldDropDownLadder() Step 3
   // alignment (camped player at lad.x triggers drops on every Step 1+2 pass).
+  // DK-CLIMBER-TIMER: ticks continuous-ladder-time; resets to 0 the moment
+  // player leaves the ladder. Read by shouldDropDownLadder() Step 0 to lapse
+  // the 16px climber-protection after CLIMBER_CAMP_SEC seconds.
+  if (player.onLadder) climberCampT += dt;
+  else climberCampT = 0;
 
   // ══════════════════════════════════════════
   //  CLIMB STATE
@@ -2665,8 +2670,15 @@ function shouldDropDownLadder(capsule, ladder, player, levelParams) {
   // around the ladder TOP. Climbers are auto-snapped exact to ladCx so
   // LADDER_W (24px) tolerance on x uniquely identifies the climbed ladder
   // (V4 layout's closest ladder pair is 130px apart).
+  // DK-CLIMBER-TIMER: protection lapses after CLIMBER_CAMP_SEC seconds of
+  // continuous ladder time. climberCampT is module-level, ticked in
+  // updatePlayer (line ~2228) and reset to 0 the moment player leaves the
+  // ladder. Once the timer expires, player must dismount + remount to
+  // re-engage protection. Forces forward motion.
   const CLIMBER_PROTECT_PX = 16;
+  const CLIMBER_CAMP_SEC   = 20;
   if (player.onLadder
+      && climberCampT < CLIMBER_CAMP_SEC
       && Math.abs(player.x - (ladder.x + LADDER_W / 2)) <= LADDER_W
       && Math.abs(capsule.y - (ladder.y - CAPSULE_R)) <= CLIMBER_PROTECT_PX) {
     return { drop: false, reason: 'step0-climber-protect' };
@@ -3254,6 +3266,7 @@ function resetForLevelTransition() {
   // DK-GATE-PHASE-2: dead-state resets (firstCapsuleDropped, ladderTime,
   // forceNextDropAtLadder) removed.
   currentLevel++;
+  climberCampT = 0;                              // DK-CLIMBER-TIMER: reset on level transition
   _resetEntitiesAndPerLevel();
   // AUDIO-3e Fix A — advance bgmRotationIdx by 1 (with wrap) so each new level opens with
   // the song AFTER whatever was current at the prior win. Within a level the once('end')
@@ -3326,6 +3339,7 @@ function resetForGameOver() {
   // DK-GATE-PHASE-2: dead-state resets (firstCapsuleDropped, ladderTime,
   // forceNextDropAtLadder) removed.
   currentLevel = 1;
+  climberCampT = 0;                              // DK-CLIMBER-TIMER: reset on game-over
   _resetEntitiesAndPerLevel();
   // AUDIO-1 — state-driven: state→INTRO_BLACK maps to ESCALATOR (audible after first user
   // gesture unlocks Howler's audio context). No flag reset needed (bgmDeathMuted gone).
@@ -3653,6 +3667,13 @@ let currentLevel        = 1;
 // First capsule fires immediately (capsuleSpawnT primed in same helper) so by
 // the time the lock releases, the capsule has cascaded down toward the player.
 let levelStartLockT     = 0;
+// DK-CLIMBER-TIMER: continuous-ladder-time accumulator. Ticks per dt while
+// player.onLadder; resets to 0 the moment they leave. Read in
+// shouldDropDownLadder()'s Step 0 (DK-CLIMBER-PROTECT): when climberCampT
+// reaches CLIMBER_CAMP_SEC (20s), the 16px climber-protection lapses for
+// THIS player and all ladders go hostile until the player gets off and
+// back on. Forces forward motion. Per-player not per-ladder by design.
+let climberCampT        = 0;
 
 // 10-level parameter table. Index = currentLevel - 1 (clamped to 9 for L11+ which
 // reuses L10 row; winBonus extends linearly via getLevelParams).
