@@ -2859,6 +2859,13 @@ function updateCapsules(dt) {
             c.rolling = false;
             c.onPlat = null;
             c.x = ladCx;
+            // DK-CADENCE-A-V4: snap capsule to ladder TOP (mirrors anti-camp's
+            // spawn at line 2593 `y: _campedLadder.y - CAPSULE_R`). Without this,
+            // c.y stays at the source platform's surfaceTarget; the next-frame
+            // falling-block then re-lands the capsule on the same platform via
+            // the prevY > surfaceTarget+1 guard's failure to skip. Anti-camp
+            // works because its push starts at this exact y. Fix mirrors it.
+            c.y = lad.y - CAPSULE_R;
             c.vx = 0;
             c.vy = 30;
             dropped = true;
