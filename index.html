@@ -2090,7 +2090,15 @@ const activeTouches = {};
 // ─────────────────────────────────────────────
 const GRAVITY   = 1400;
 const JUMP_VY   = -560;
-const WALK_SPD  = 130;
+// DK-GATE-PHASE-3: WALK_SPD lowered from 130 to 115 to match arcade DK feel.
+// At L5+ capsule plateau (effective speed = CAPSULE_ROLL_SPD 75 × speedMult
+// 1.60 = 120 px/s), player at 115 cannot outrun rolling capsules. Player must
+// engage (jump-clear, climb away, dodge) instead of outrunning. Per Donkey
+// Blog research on DK pace. Walk-faster-than-climb convention preserved
+// (115 > CLIMB_SPD=110). Velocity threshold of 50 in shouldDropDownLadder()
+// Step 3 fleeing check stays valid (115 > 50). L1 ratio capsule-vs-player
+// stays generous (75 vs 115 = player 1.53× faster).
+const WALK_SPD  = 115;
 const CLIMB_SPD = 110;
 
 const player = {
