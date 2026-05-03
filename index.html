@@ -2795,13 +2795,51 @@ function updateCapsules(dt) {
           // the left-side fast cascade Brian specified. Diagnostic logs the actual
           // ladderDropChance value getLevelParams returns at runtime so Brian can
           // confirm via DUMP LOGS whether L10's 0.60 is firing.
+          //
+          // DK-CADENCE-A: player-position-aware ladder drop. Original DK's "barrels
+          // hunt the player" feel comes from biasing the drop probability by player
+          // state. Three buckets (skipped entirely for forcedLadderDrop capsules):
+          //   1. player near ladder column (|player.x - ladCx| < 30) → force drop.
+          //      Catches ladder-climbers (auto-snapped to exact ladCx) AND players
+          //      standing under the ladder.
+          //   2. player fleeing capsule (left of capsule + moving left, OR right of
+          //      capsule + moving right) → boost _chance to min(1.0, base * 2.0).
+          //      L1 base=0.00 stays 0.00 (intentional — L1 friendly). L10 base=0.60
+          //      → 1.0 cap (always drops on flee). Hostility scales with level.
+          //   3. otherwise → existing base ladderDropChance roll, unchanged.
+          // Velocity floor of 50 (vs WALK_SPD=130) is defensive against future
+          // inertia changes; today vx is direct button→velocity so |vx|>50 ≡ vx!=0.
+          // Ladder-climbers have player.vx=0 (forced at line 2348/2365) so they
+          // never trigger the bucket-2 boost — bucket 1 catches them instead.
           const _r       = Math.random();
-          const _chance  = getLevelParams().ladderDropChance;
+          const _baseChance = getLevelParams().ladderDropChance;
           const _forced  = !!c.forcedLadderDrop;
+          let   _chance  = _baseChance;
+          let   _biasReason = 'base';
+          if (!_forced) {
+            const _playerNearLadder = Math.abs(player.x - ladCx) < 30;
+            const _playerLeftOfCap  = player.x < c.x;
+            const _playerRightOfCap = player.x > c.x;
+            const _movingLeft       = player.vx < -50;
+            const _movingRight      = player.vx >  50;
+            if (_playerNearLadder) {
+              _chance = 1.0;
+              _biasReason = 'under-ladder';
+            } else if ((_playerLeftOfCap && _movingLeft) || (_playerRightOfCap && _movingRight)) {
+              _chance = Math.min(1.0, _baseChance * 2.0);
+              _biasReason = 'fleeing';
+            }
+          }
           const _willDrop = _forced || _r < _chance;
           console.log('[LADDER-DROP-DIAG]', {
             currentLevel:     currentLevel,
-            ladderDropChance: _chance,
+            baseChance:       _baseChance,
+            biasedChance:     _chance,
+            biasReason:       _biasReason,
+            playerX:          Math.round(player.x),
+            playerVx:         Math.round(player.vx),
+            ladCx:            ladCx,
+            capX:             Math.round(c.x),
             rolled:           _r.toFixed(3),
             forced:           _forced,
             willDrop:         _willDrop,
