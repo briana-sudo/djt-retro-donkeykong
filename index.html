@@ -58,7 +58,7 @@ console.log = function() {
   // (Trump-throws-but-no-capsule symptom). Logs full capsule census at the bail moment
   // so Brian can DUMP LOGS and report which slot-class is dominant (FLOOR pile-up,
   // Pelosi-carry hold, or mid-cascade stall).
-  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0)) {
+  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0 || arguments[0].indexOf('[FLOOR-TTL]') === 0)) {
     window.bgmLogBuffer.push({
       prefix: arguments[0],
       data:   arguments.length > 1 ? arguments[1] : null,
@@ -2483,6 +2483,14 @@ const CAPSULE_DESCEND_SPD = 130;
 // backstop and the 40%-on-expiry Burning Briefcase spawn are both deleted here. Burning Briefcase
 // was removed from design April 30 2026.
 const MAX_CAPSULES = 8;
+// DK-FLOOR-TTL: seconds a capsule can survive on FLOOR before TTL despawn
+// fires. Restores FLOOR drainage that DK-LADDER-DODGE-FIX correctly removed
+// (the H2 walk-past clear path was the dominant FLOOR drain; airborne-only
+// gate left only off-screen-right exit + Pelosi grab as drains, leading to
+// MAX_CAPSULES bail at L1). Single tuning dial — adjust if FLOOR feels too
+// crowded (lower) or too sparse (raise). Off-screen-right exit at x > 516
+// usually wins first; TTL is the safety net for capsules that stall.
+const FLOOR_TTL = 8.0;
 // G4 — initial throw direction. -1 = leftward (current Level 1), +1 = rightward.
 // Used to derive (a) capsule spawn vx sign and (b) the dtj_throw render flip — keeping them
 // in lockstep so changing one constant flips both. After spawn, capsule vx still snaps to platform
@@ -2618,6 +2626,10 @@ function spawnCapsule() {
     descendLadder:     null,
     descendDestY:      null,
     descendDestPlat:   null,
+    // DK-FLOOR-TTL: per-capsule cumulative FLOOR-time accumulator. Spawned at
+    // 0 (capsule starts on TOP). Ticks per dt while onPlat === FLOOR. When
+    // floorTime >= FLOOR_TTL, capsule despawns. See update loop ~line 2790.
+    floorTime:         0,
   });
   // P-DIFFICULTY-1-FIX-V3 BUG 10 diagnostic: log spawn-time speedMult so Brian
   // can confirm via DUMP LOGS what value is actually applied at L8+ (Bug 10
@@ -2791,6 +2803,26 @@ function updateCapsules(dt) {
     // The carried capsule rejoins normal flow only if Pelosi shrugs (carried flag cleared) or
     // gets despawned at SLAM (capsule spliced from array).
     if (c.carried) continue;
+
+    // DK-FLOOR-TTL: per-capsule cumulative FLOOR-time accumulator + despawn.
+    // Restores FLOOR drainage that DK-LADDER-DODGE-FIX correctly removed (the
+    // H2 walk-past clear path). Off-screen-right exit at x>516 usually fires
+    // first; this is the safety net for capsules that stall near the right
+    // edge or pile up behind a slow Pelosi grab cycle. !c.carried already
+    // guarded above. Diagnostic [FLOOR-TTL] log lets Brian verify TTL fires
+    // and tune FLOOR_TTL per level if needed.
+    if (c.onPlat === FLOOR) {
+      c.floorTime = (c.floorTime || 0) + dt;
+      if (c.floorTime >= FLOOR_TTL) {
+        console.log('[FLOOR-TTL]', {
+          capX:      Math.round(c.x),
+          capY:      Math.round(c.y),
+          floorTime: c.floorTime.toFixed(2),
+        });
+        capsules.splice(i, 1);
+        continue;
+      }
+    }
 
     // P-DIFFICULTY-1-FIX-V3 BUG 4c: boundary clamp scope tightened — only clamp
     // mid-cascade (non-FLOOR) capsules. FLOOR capsules MUST be allowed to roll
