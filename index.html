@@ -2599,66 +2599,19 @@ function spawnCapsule() {
     ladderTime = 0;                              // reset so same camp session doesn't re-trigger
     return;
   }
-  if (!firstCapsuleDropped) {
-    // P-DIFFICULTY-1-FIX-V3: TWO first capsules at GAMEPLAY entry (replaces
-    // ghost-fall, which was reverted because the locked player got hit by the
-    // ghost capsule landing on FLOOR = unavoidable death).
-    //
-    // Capsule (a) THROWN-TO-P2: direct spawn ON P2 at left side. P2 tilt=+2.5
-    // rolls capsule RIGHT, falls off P2's right edge, lands on P1, P1 tilt=-2.5
-    // rolls LEFT, eventually drops at ladders[0] to FLOOR. Natural cascade path
-    // gives the player visual anticipation of where the capsule will arrive.
-    // DTJ's throw animation runs normally above; only the spawn position is
-    // overridden for this special first-capsule slot.
-    //
-    // Capsule (b) LEFT-LADDER FAST PATH: spawns ON P4 just LEFT of ladders[4]
-    // (x=80, P4 surface), forcedLadderDrop=true so it drops at every ladder
-    // crossing. Path: P4 right-roll → ladders[4] forced-drop → P3 left-roll →
-    // falls off P3 left edge → P2 right-roll → ladders[2] forced-drop → P1
-    // left-roll → ladders[0] forced-drop → FLOOR right-roll toward Pelosi.
-    // ~3-4s descent on the LEFT side of the screen.
-    const P2 = platforms[2];                                 // index 2 = P2 (y=530)
-    const P4 = platforms[4];                                 // index 4 = P4 (y=270)
-    const lad4 = ladders[4];                                 // P3↔P4 LEFT (x=90)
-
-    // Capsule (a): direct spawn ON P2 at left side. Rolling block re-applies vx
-    // per P2 tilt next frame, so initial vx value doesn't actually matter.
-    const aX = P2.x + 20;                                    // x=30 (left side of P2)
-    capsules.push({
-      x: aX,
-      y: getPlatY(P2, aX) - CAPSULE_R,
-      vx: _p.capsuleSpeedMult * CAPSULE_ROLL_SPD,
-      vy: 0,
-      rolling: true,
-      onPlat: P2,
-      rot: 0,
-      speedMult: _p.capsuleSpeedMult,
-    });
-
-    // Capsule (b): on P4 just LEFT of ladders[4], forcedLadderDrop=true. P4
-    // tilt=+2.5 rolls right, capsule crosses ladders[4] within a frame or two,
-    // forced-drops to P3, then natural cascade per the path above.
-    const bX = lad4.x - 8;                                   // 8px LEFT of ladder x → guarantees crossing detection on first roll
-    capsules.push({
-      x: bX,
-      y: getPlatY(P4, bX) - CAPSULE_R,
-      vx: _p.capsuleSpeedMult * CAPSULE_ROLL_SPD,
-      vy: 0,
-      rolling: true,
-      onPlat: P4,
-      rot: 0,
-      speedMult: _p.capsuleSpeedMult,
-      forcedLadderDrop: true,                                // bypass random ladderDropChance, always drop
-    });
-
-    firstCapsuleDropped = true;
-    console.log('[CAPSULE-SPAWN-DIAG]', {
-      site:        'first-pair',
-      currentLevel: currentLevel,
-      speedMult:   _p.capsuleSpeedMult,
-    });
-    return;
-  }
+  // DK-CADENCE-A-V6-V2: first-pair branch (capsule (a) on P2, capsule (b) on
+  // P4 with forcedLadderDrop=true) REMOVED ENTIRELY. Brian field test L6:
+  // first-pair was producing extra mid-game spawn density beyond the documented
+  // TOP cadence. DK-cadence sub-items (a)/(c) bias logic + (d) projectile arc
+  // make the first-pair visual hooks redundant. Post-removal: only TOP cadence
+  // (Path C below) and anti-camp gate (above) produce capsules.
+  // firstCapsuleDropped flag left declared + reset at level transitions /
+  // game-over for revert ease (Option 1 — dead state, no reader). Future
+  // cleanup commit can remove the variable + 4 reset sites if removal stays
+  // permanent. forcedLadderDrop reads at lines 2563 + 2825 still resolve via
+  // !!c.forcedLadderDrop → always false post-removal; harmless no-op in OR
+  // clause. SPAWN-SITE-AUDIT confirmed only 3 push sites in entire codebase;
+  // after this commit, only line 2663 (normal Path C) remains.
   // Normal spawn from BARREL_X.
   capsules.push({
     x: BARREL_X,                                // spawns from the static barrel decoration
