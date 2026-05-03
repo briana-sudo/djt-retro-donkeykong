@@ -2018,6 +2018,7 @@ window.addEventListener('keydown', e => {
     currentLevel++;
     firstCapsuleDropped = false;
     ladderTime = 0;
+    forceNextDropAtLadder = null;             // DK-CADENCE-A-V5: gate cleared on debug skip
     return;
   }
   // N — global audio toggle (M-key). Works in any state.
@@ -2587,19 +2588,15 @@ function spawnCapsule() {
   const _campedLadder = (player.onLadder && ladderTime >= _p.antiCampSec)
                           ? ladderContaining(player.x, player.y) : null;
   if (_campedLadder) {
-    // Anti-camp override: spawn at top of camped ladder, drop straight down.
-    capsules.push({
-      x: _campedLadder.x + LADDER_W / 2,
-      y: _campedLadder.y - CAPSULE_R,
-      vx: 0,
-      vy: 30,                                   // matches normal ladder-drop initial vy (line ~2571)
-      rolling: false,
-      onPlat: null,
-      rot: 0,
-      speedMult: _p.capsuleSpeedMult,
-    });
+    // DK-CADENCE-A-V5 ITEM A: anti-camp REWORK. Was: spawn fresh capsule on top
+    // of camping player (executioner-from-nowhere). Now: open a gate flag so the
+    // NEXT cascade capsule that crosses this ladder gets force-dropped down it.
+    // No fresh spawn. The camp opens the gate, doesn't summon an executioner.
+    // The bias-drop check at line ~2792 reads forceNextDropAtLadder and forces
+    // _willDrop = true (then clears the flag). Returns early without firing
+    // first-pair so this throw cycle produces NO capsule (DTJ still animates).
+    forceNextDropAtLadder = _campedLadder;
     ladderTime = 0;                              // reset so same camp session doesn't re-trigger
-    firstCapsuleDropped = true;                  // anti-camp also satisfies first-drop slot
     return;
   }
   if (!firstCapsuleDropped) {
@@ -2815,6 +2812,14 @@ function updateCapsules(dt) {
           // inertia changes; today vx is direct button→velocity so |vx|>50 ≡ vx!=0.
           // Ladder-climbers have player.vx=0 (forced at line 2348/2365) so they
           // never trigger the bucket-2 boost — bucket 1 catches them instead.
+          // DK-CADENCE-A-V5 ITEM A: anti-camp gate-forced drop. If the player
+          // camped a ladder long enough to set forceNextDropAtLadder = this lad,
+          // force the drop on this crossing and clear the flag (fires once per
+          // camp cycle). Mutually exclusive with the random + bias roll: gate
+          // wins. Pairing already gated upstream at line 2789, so the gate only
+          // fires for capsules on the ladder's base platform — consistent with V4.
+          const _gateForced = (forceNextDropAtLadder === lad);
+          if (_gateForced) forceNextDropAtLadder = null;
           const _r       = Math.random();
           const _baseChance = getLevelParams().ladderDropChance;
           const _forced  = !!c.forcedLadderDrop;
@@ -2841,7 +2846,7 @@ function updateCapsules(dt) {
               _biasReason = 'fleeing';
             }
           }
-          const _willDrop = _forced || _r < _chance;
+          const _willDrop = _forced || _gateForced || _r < _chance;
           console.log('[LADDER-DROP-DIAG]', {
             currentLevel:     currentLevel,
             baseChance:       _baseChance,
@@ -2853,6 +2858,7 @@ function updateCapsules(dt) {
             capX:             Math.round(c.x),
             rolled:           _r.toFixed(3),
             forced:           _forced,
+            gateForced:       _gateForced,
             willDrop:         _willDrop,
           });
           if (_willDrop) {
@@ -3201,6 +3207,7 @@ function resetForLevelTransition() {
   currentLevel++;
   firstCapsuleDropped = false;
   ladderTime = 0;
+  forceNextDropAtLadder = null;                // DK-CADENCE-A-V5: gate cleared on level transition
   _resetEntitiesAndPerLevel();
   // AUDIO-3e Fix A — advance bgmRotationIdx by 1 (with wrap) so each new level opens with
   // the song AFTER whatever was current at the prior win. Within a level the once('end')
@@ -3274,6 +3281,7 @@ function resetForGameOver() {
   currentLevel = 1;
   firstCapsuleDropped = false;
   ladderTime = 0;
+  forceNextDropAtLadder = null;                // DK-CADENCE-A-V5: gate cleared on game-over reset
   _resetEntitiesAndPerLevel();
   // AUDIO-1 — state-driven: state→INTRO_BLACK maps to ESCALATOR (audible after first user
   // gesture unlocks Howler's audio context). No flag reset needed (bgmDeathMuted gone).
@@ -3599,6 +3607,12 @@ const TARGET_TIME           = 120;        // seconds; tune later
 let currentLevel        = 1;
 let firstCapsuleDropped = false;
 let ladderTime          = 0;
+// DK-CADENCE-A-V5 ITEM A: anti-camp gate. When player camps past _p.antiCampSec
+// on a ladder, spawnCapsule sets this to the camped ladder reference. The
+// bias-drop check (~line 2792) reads it: if forceNextDropAtLadder === lad on a
+// crossing, force _willDrop = true and clear the flag. Reset to null on level
+// transition + game over + debug skip (mirrors ladderTime resets).
+let forceNextDropAtLadder = null;
 // P-DIFFICULTY-1-FIX BUG 8: 3s level-start movement lock. Set to 3.0 in
 // _resetEntitiesAndPerLevel; ticked down + early-returns updatePlayer while > 0.
 // First capsule fires immediately (capsuleSpawnT primed in same helper) so by
@@ -3613,17 +3627,25 @@ let levelStartLockT     = 0;
 // field test. Was: 0/0.05/0.10/0.20/0.30/0.35/0.40/0.50/0.55/0.60 (too gradual, L2-3
 // felt no different from L1). Now: 0/0.25/0.30/0.35/0.40/0.45/0.50/0.55/0.58/0.60
 // — sharp jump at L2 makes the difficulty curve actually felt early.
+//
+// DK-CADENCE-A-V5 ITEM B: TEMPORARY hunt-feel isolation test. All ladderDropChance
+// ([4] column) set to 0.00 to eliminate base-rate random drops. ONLY bias-bucket
+// drops (under-ladder, fleeing), forcedLadderDrop (capsule b first-pair),
+// anti-camp gate drops, and natural off-edge falls remain. Lets Brian field-test
+// whether bias hunting actually fires in isolation. REVERT to the V6 row before
+// next non-diagnostic commit. Original values preserved in inline comment per
+// row: |orig=0.XX|.
 const DIFFICULTY_TABLE = [
-  [1.00, 2.5, 0.30, true, 0.00, 10, 25, 1, 2000],   // L1
-  [1.07, 2.3, 0.28, true, 0.25, 9,  23, 1, 2400],   // L2
-  [1.14, 2.1, 0.25, true, 0.30, 8,  21, 1, 2800],   // L3
-  [1.20, 1.9, 0.23, true, 0.35, 7,  19, 2, 3200],   // L4
-  [1.27, 1.7, 0.21, true, 0.40, 6,  18, 2, 3600],   // L5
-  [1.33, 1.6, 0.20, true, 0.45, 6,  16, 2, 4000],   // L6
-  [1.40, 1.4, 0.18, true, 0.50, 5,  15, 3, 4400],   // L7
-  [1.47, 1.3, 0.17, true, 0.55, 5,  14, 3, 4800],   // L8
-  [1.53, 1.2, 0.16, true, 0.58, 4,  13, 3, 5200],   // L9
-  [1.60, 1.0, 0.15, true, 0.60, 4,  12, 3, 6000],   // L10
+  [1.00, 2.5, 0.30, true, 0.00, 10, 25, 1, 2000],   // L1   |orig=0.00|
+  [1.07, 2.3, 0.28, true, 0.00, 9,  23, 1, 2400],   // L2   |orig=0.25|
+  [1.14, 2.1, 0.25, true, 0.00, 8,  21, 1, 2800],   // L3   |orig=0.30|
+  [1.20, 1.9, 0.23, true, 0.00, 7,  19, 2, 3200],   // L4   |orig=0.35|
+  [1.27, 1.7, 0.21, true, 0.00, 6,  18, 2, 3600],   // L5   |orig=0.40|
+  [1.33, 1.6, 0.20, true, 0.00, 6,  16, 2, 4000],   // L6   |orig=0.45|
+  [1.40, 1.4, 0.18, true, 0.00, 5,  15, 3, 4400],   // L7   |orig=0.50|
+  [1.47, 1.3, 0.17, true, 0.00, 5,  14, 3, 4800],   // L8   |orig=0.55|
+  [1.53, 1.2, 0.16, true, 0.00, 4,  13, 3, 5200],   // L9   |orig=0.58|
+  [1.60, 1.0, 0.15, true, 0.00, 4,  12, 3, 6000],   // L10  |orig=0.60|
 ];
 
 function getLevelParams() {
