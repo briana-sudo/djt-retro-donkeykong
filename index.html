@@ -2824,13 +2824,20 @@ function updateCapsules(dt) {
       }
     }
 
-    // P-DIFFICULTY-1-FIX-V3 BUG 4c: boundary clamp scope tightened — only clamp
-    // mid-cascade (non-FLOOR) capsules. FLOOR capsules MUST be allowed to roll
-    // off the right edge so the off-screen despawn at line ~2747 fires; otherwise
-    // capsules accumulate against the wall, MAX_CAPSULES (8) hits, Trump's spawn
-    // silently bails (Bug 10b root cause). ghostFall flag removed in V3 revert,
-    // so the gate is just `c.onPlat !== FLOOR`.
-    if (c.onPlat !== FLOOR) {
+    // Boundary clamp: keep mid-cascade rolling capsules on tilted platforms
+    // from rolling off the screen edge. Skipped for FLOOR (V3 BUG 4c
+    // exception — FLOOR capsules exit off-screen naturally) AND for capsules
+    // in post-off-edge transition state (onPlat=null) per DK-FLOOR-EDGE-FIX —
+    // those need to reach off-screen despawn (x>516 or x<-36) without being
+    // yanked back. Pre-fix: a FLOOR capsule that rolled past x=484 had
+    // c.onPlat set to null by the off-edge transition (line 2967) but still
+    // had c.vx=+75; on the next frame `c.onPlat !== FLOOR` was true (null
+    // !== FLOOR), the clamp fired, c.x was yanked back to 462 and vx zeroed,
+    // and the falling-block re-landed it on FLOOR. Capsule oscillated 462 →
+    // 485 → 462 forever until DK-FLOOR-TTL (8s) drained it. The added
+    // `c.onPlat &&` short-circuit lets falling capsules proceed to natural
+    // off-screen despawn (~0.4s at L1, ~0.25s at L10) instead of stalling.
+    if (c.onPlat && c.onPlat !== FLOOR) {
       if      (c.x < CAPSULE_R)        { c.x = CAPSULE_R;        c.vx = 0; }
       else if (c.x > W - CAPSULE_R)    { c.x = W - CAPSULE_R;    c.vx = 0; }
     }
