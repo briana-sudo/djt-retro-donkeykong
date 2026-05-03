@@ -54,7 +54,11 @@ console.log = function() {
   // destruction trace (Brian field test: synth still sounds, despite both prior strips).
   // CAPSULE-SPAWN-DIAG / LADDER-DROP-DIAG — added in P-DIFFICULTY-1-FIX-V3 to trace
   // speedMult application at L8+ (Bug 10) and L10 ladder-drop chance (Bug 7 NEW).
-  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0)) {
+  // CAPSULE-CENSUS — added in P-DIFFICULTY-1-FIX-V4-DIAG to trace MAX_CAPSULES bail
+  // (Trump-throws-but-no-capsule symptom). Logs full capsule census at the bail moment
+  // so Brian can DUMP LOGS and report which slot-class is dominant (FLOOR pile-up,
+  // Pelosi-carry hold, or mid-cascade stall).
+  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0)) {
     window.bgmLogBuffer.push({
       prefix: arguments[0],
       data:   arguments.length > 1 ? arguments[1] : null,
@@ -2539,7 +2543,38 @@ let dtjAnimX     = DTJ_GAMEPLAY_X;          // current x during the animation
 
 function spawnCapsule() {
   // C2 v2 — capsule entity has no lifeTimer. Cap visible count via MAX_CAPSULES.
-  if (capsules.length >= MAX_CAPSULES) return;
+  // P-DIFFICULTY-1-FIX-V4-DIAG: census logging on silent bail. Trump's throw animation
+  // completes regardless of whether spawnCapsule pushed (line ~2684 unconditionally
+  // transitions to WALK_BACK), so a hit on this guard manifests as "Trump throws but no
+  // capsule appears" in the world. The census tells us which slot-class is dominant
+  // (FLOOR pile-up, Pelosi-carry hold, mid-cascade stall) so V4 fix can target it.
+  // INSTRUMENTATION ONLY — no behavioral change. Strip after V4 fix sized + landed.
+  if (capsules.length >= MAX_CAPSULES) {
+    const census = capsules.map(function (c, i) {
+      return {
+        i:       i,
+        x:       Math.round(c.x),
+        y:       Math.round(c.y),
+        onPlat:  c.onPlat ? (c.onPlat === FLOOR ? 'FLOOR' : ('y' + c.onPlat.y)) : 'falling',
+        vx:      Math.round(c.vx),
+        vy:      Math.round(c.vy),
+        carried: !!c.carried,
+        forced:  !!c.forcedLadderDrop,
+        cleared: !!c.cleared,
+      };
+    });
+    console.log('[CAPSULE-CENSUS] MAX_CAPSULES bail', {
+      currentLevel:   currentLevel,
+      count:          capsules.length,
+      MAX_CAPSULES:   MAX_CAPSULES,
+      pelosiState:    (typeof pelosi !== 'undefined') ? pelosi.state : 'no-pelosi',
+      pelosiCarrying: (typeof pelosi !== 'undefined' && pelosi.targetCapsule)
+                        ? capsules.indexOf(pelosi.targetCapsule) : -1,
+      helpersAlive:   (typeof helpers !== 'undefined') ? helpers.length : 'no-helpers',
+      census:         census,
+    });
+    return;
+  }
   // P-DIFFICULTY-1 PART E — first-capsule-fast-drop. First capsule of each level
   // spawns at top of leftmost ladder (ladders[0] x=80, top y=672 = P1 surface)
   // with vy=200 initial + gravity. Loose ~3-4s target (per Brian's Q3) — actual
