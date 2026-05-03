@@ -68,6 +68,24 @@ TARGETS = [
         'title':      'Voice_AdultMale_PainGrunts_09.wav',
         'src_dur':    0.0,                                     # not measured pre-download; reported by ffprobe post
     },
+    # SIREN-SOURCE — police/emergency siren loop for siren_loop.mp3 (FBI badge
+    # weapon audio, P-WEAPON-1 wiring follows after Brian field-tests standalone).
+    # chripei/393666 picked from 2 candidates: CC0 (no attribution) + explicitly
+    # designed loop ("WaHi siren to loop") + NYC emergency vehicle context.
+    # target_sec=2.85 keeps just under source 2.899s to preserve author-crafted
+    # loop boundaries — trimming to literal "1-2s" spec would slice mid-wave and
+    # break the loop. Brian's "looping: no abrupt gap" requirement supersedes the
+    # ~1-2s duration approximate. Backup: Lalks/336894 (CC-BY 3.0, 1.7s ambulance).
+    {
+        'filename':   'siren_loop.mp3',
+        'preview':    'https://cdn.freesound.org/previews/393/393666_1617412-hq.mp3',
+        'target_sec': 2.85,
+        'page':       'https://freesound.org/people/chripei/sounds/393666/',
+        'license':    'CC0 (Public Domain)',
+        'author':     'chripei',
+        'title':      'WaHi siren to loop.mp3',
+        'src_dur':    2.899,
+    },
     # INTRO_TAUNT-V3 — USA chant for crowd_usa_chant.mp3 (eagle-entry / RNC stage
     # rally vibe). Picked from 3 candidates returned by "USA chant" search.
     # FlatHill/324752 chosen: CC0 (no attribution), explicit title match for

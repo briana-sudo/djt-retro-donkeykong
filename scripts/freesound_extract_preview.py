@@ -35,6 +35,12 @@ TARGETS = [
     ('FlatHill',         324752, 'cand_usa_chant_rwc'),
     ('listentostatic',   417950, 'cand_usa_chant_seatac'),
     ('mloveless89',      392343, 'cand_usa_chant_trumpprotest'),
+    # SIREN-SOURCE — short loopable police/emergency siren for siren_loop.mp3
+    # (FBI badge weapon audio, P-WEAPON-1 wiring follows after Brian field-tests).
+    # chripei picked: CC0, explicitly designed as loop, NYC emergency vehicle (police
+    # or ambulance) context. Lalks/336894 is CC-BY 3.0 European ambulance backup.
+    ('chripei',          393666, 'cand_siren_loop_nyc'),
+    ('Lalks',            336894, 'cand_siren_loop_eu_ambu'),
 ]
 
 
