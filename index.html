@@ -1233,6 +1233,12 @@ const GAME_SFX = {
   capsule_destruction:  new Howl({ src: ['audio/sfx/sfx_capsule_destruction.mp3'],  volume: 0.85, preload: true }),  // SFX-PACK-FIX: 0.7→0.85 per Brian field test (was getting masked by helperKill synth)
   crowd_cheer:          new Howl({ src: ['audio/sfx/sfx_crowd_cheer.mp3'],          volume: 0.65, loop: true, preload: true }),  // SFX-PACK-FIX-V2: loop:true to sustain through 3.0s CUTSCENE_PHASE1 (1.5s source); stop()'d at PHASE1 exit
   player_death_scream:  new Howl({ src: ['audio/sfx/sfx_player_death_scream.mp3'],  volume: 0.75, preload: true }),
+  // P-WEAPON-1-FIX-3 (May 3 2026): siren loops while player wields FBI badge.
+  // Source: chripei/393666 (CC0) WaHi siren to loop, 2.85s. Volume 0.55 — modest,
+  // doesn't overpower BGM. Loop:true so Howler handles repeat natively.
+  // Lifecycle managed by tickSiren() in loop() — stops the moment state leaves
+  // GAMEPLAY OR wieldingBadge clears, without per-transition-site plumbing.
+  siren_loop:           new Howl({ src: ['audio/sfx/siren_loop.mp3'],               volume: 0.55, loop: true, preload: true }),
   ragdoll_thud:         new Howl({ src: ['audio/sfx/sfx_ragdoll_thud.mp3'],         volume: 0.7,  preload: true }),
   media_chaos:          new Howl({ src: ['audio/sfx/media_chaos.mp3'],              volume: 0.6,  preload: true }),
   // INTRO_TAUNT-V3 — 2 new entries for the cutscene audio layer.
@@ -2184,6 +2190,10 @@ const player = {
   // resets since levelTime resets too).
   wieldingBadge: false,
   badgeWieldEndTime: 0,
+  // P-WEAPON-1-FIX-3: oscillation timer for in-hand pulse render. Ticked in
+  // updateBadges while wieldingBadge true; reset to 0 in spawnBadges and on
+  // expiration so each new wield starts at the bottom of the sin cycle.
+  badgePulseT: 0,
 };
 const PLAYER_SHAKE_AMPLITUDE = 4;        // K addendum — px horizontal jitter while shakeT > 0
 
@@ -2660,6 +2670,17 @@ const BADGE_HOVER_OFFSET    = BADGE_SPRITE_SIZE * 2;       // = 56 (was 32, was 
 const BADGE_FLASH_DURATION  = 0.15;     // sec, white-yellow kill flash
 const BADGE_FADE_DURATION   = 0.3;      // sec, expiration fade
 const BADGE_KILL_SCORE      = 50;       // base score per kill (× multiplier via addScore)
+// P-WEAPON-1-FIX-3: oscillation on the in-hand wielded badge. Faster + bigger
+// than HAT_PULSE (1.0/1.10 over 1.0s) for "active/charged" feel vs hat's ambient.
+// Pickup badges on platforms stay STATIC at BADGE_SPRITE_SIZE — pulse only fires
+// in drawBadgeWieldOverlay(), not drawBadges().
+const BADGE_PULSE_PERIOD    = 0.5;      // sec, full sin cycle (1.0 → 1.15 → 1.0)
+const BADGE_PULSE_MIN       = 1.0;      // base scale
+const BADGE_PULSE_MAX       = 1.15;     // peak scale
+// P-WEAPON-1-FIX-3: tracks whether GAME_SFX.siren_loop is currently playing.
+// Read + written by tickSiren() in loop(). Avoids restart-each-frame
+// (Howler's play() on a looping non-stopped sound restarts from 0, audible click).
+let sirenPlaying = false;
 const BADGE_DURATION_TABLE  = [10, 9.5, 9, 8.5, 8, 7.5, 7, 6.5, 6, 6];
 function getBadgeDuration(level) {
   return BADGE_DURATION_TABLE[Math.min(Math.max(level, 1), 10) - 1];
@@ -2684,6 +2705,7 @@ function spawnBadges() {
   killFlashes.length = 0;
   player.wieldingBadge   = false;
   player.badgeWieldEndTime = 0;
+  player.badgePulseT       = 0;     // P-WEAPON-1-FIX-3: reset oscillation so next wield starts at scale=1.0
   for (let i = 0; i < BADGE_SPAWN_POSITIONS.length; i++) {
     const pos = BADGE_SPAWN_POSITIONS[i];
     const plat = platforms[pos.platIdx];
@@ -2997,10 +3019,19 @@ function updateBadges(dt) {
     }
   }
 
+  // P-WEAPON-1-FIX-3: tick badge pulse timer for in-hand oscillation render.
+  // Ticked here (only fires in GAMEPLAY) so pulse pauses naturally during cutscenes.
+  if (player.wieldingBadge) {
+    player.badgePulseT += dt;
+  } else {
+    player.badgePulseT = 0;
+  }
+
   // Wielding state — kill any overlapping capsule or hat.
   if (player.wieldingBadge) {
     if (levelTime >= player.badgeWieldEndTime) {
       player.wieldingBadge = false;
+      player.badgePulseT   = 0;        // P-WEAPON-1-FIX-3: reset on expire
       console.log('[BADGE-EXPIRE]', {
         level:   currentLevel,
         playerX: Math.round(player.x),
@@ -4482,8 +4513,8 @@ function drawBadgeWieldOverlay() {
   const cached = spriteCache['fbi_badge'];
   if (!cached) return;
   const aspect  = cached.width / cached.height;
-  const targetH = BADGE_SPRITE_SIZE;
-  const targetW = targetH * aspect;
+  const baseH = BADGE_SPRITE_SIZE;
+  const baseW = baseH * aspect;
   // Position: in front of player at chest height, offset by facing direction.
   // player.y is foot; player.facing < 0 = facing left (drawDonkey flip true).
   const facingRight = player.facing >= 0;
@@ -4493,9 +4524,17 @@ function drawBadgeWieldOverlay() {
   const remaining = player.badgeWieldEndTime - levelTime;
   const alpha = (remaining < BADGE_FADE_DURATION) ? Math.max(0, remaining / BADGE_FADE_DURATION) : 1.0;
   if (alpha <= 0) return;
+  // P-WEAPON-1-FIX-3: pulse scale 1.0 → 1.15 → 1.0 over BADGE_PULSE_PERIOD (0.5s).
+  // Sin oscillation (mapped 0..1 then to MIN..MAX). Faster + bigger than HAT_PULSE
+  // for "active/charged" feel. Aspect-correct render preserved (P-ENEMY-1-FIX V2
+  // lesson: forcing square sizes squashes non-square cached sprites).
+  const _phase     = player.badgePulseT * 2 * Math.PI / BADGE_PULSE_PERIOD;
+  const pulseScale = BADGE_PULSE_MIN + (BADGE_PULSE_MAX - BADGE_PULSE_MIN) * (Math.sin(_phase) * 0.5 + 0.5);
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.drawImage(cached, badgeX - targetW / 2, badgeY - targetH / 2, targetW, targetH);
+  ctx.translate(badgeX, badgeY);
+  ctx.scale(pulseScale, pulseScale);
+  ctx.drawImage(cached, -baseW / 2, -baseH / 2, baseW, baseH);
   ctx.restore();
 }
 
@@ -7501,6 +7540,27 @@ function drawGameplay(shake) {
 // ─────────────────────────────────────────────
 let lastT = 0;
 
+// P-WEAPON-1-FIX-3: central siren controller. Called every frame from loop()
+// so siren state is recomputed regardless of what state machine is doing —
+// siren plays iff (state === 'GAMEPLAY' && player.wieldingBadge). Composite
+// gate naturally stops siren the moment state leaves GAMEPLAY (DEATH_REACTION,
+// WIN_FREEZE, cutscenes, GAME_OVER) without per-transition-site stop() plumbing.
+// Idempotent — sirenPlaying tracker prevents play()/stop() spam every frame.
+function tickSiren() {
+  const shouldPlay = (state === 'GAMEPLAY' && player && player.wieldingBadge);
+  if (shouldPlay && !sirenPlaying) {
+    if (typeof GAME_SFX !== 'undefined' && GAME_SFX.siren_loop) {
+      GAME_SFX.siren_loop.play();
+      sirenPlaying = true;
+    }
+  } else if (!shouldPlay && sirenPlaying) {
+    if (typeof GAME_SFX !== 'undefined' && GAME_SFX.siren_loop) {
+      GAME_SFX.siren_loop.stop();
+    }
+    sirenPlaying = false;
+  }
+}
+
 function loop(ts) {
   requestAnimationFrame(loop);
   const dt = Math.min((ts-lastT)/1000, 0.05);
@@ -7536,6 +7596,11 @@ function loop(ts) {
   // N — BGM scheduler. Internally gates on bgmActive + state==='PAUSED' check; no-op when
   // BGM is stopped (intros, GAME_OVER, etc.). Schedules notes ahead by BGM_LOOKAHEAD seconds.
   tickBGM();
+
+  // P-WEAPON-1-FIX-3 — siren_loop lifecycle. Plays iff (GAMEPLAY && wieldingBadge).
+  // Runs every frame so any state transition out of GAMEPLAY (DEATH_REACTION,
+  // WIN_FREEZE, cutscene, GAME_OVER) silences the siren immediately.
+  tickSiren();
 
   // K — initials-entry "INITIALS SAVED" confirmation timer ticks here so the 1.0s display
   // shows even if the GAME_OVER case re-renders from scratch each frame.
