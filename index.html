@@ -2608,7 +2608,8 @@ const LEFT_WALL_X = CAPSULE_R;
 // Spawn rules (B5b — arcade DK):
 //   - Initial count at level entry = min(level, 5).
 //   - Hard cap HAT_MAX_ONSCREEN = 5 (matches arcade).
-//   - One additional hat per CAPSULE_PER_HAT (8) capsules reaching FLOOR.
+//   - One additional hat per getCapsulePerHat(level) capsules reaching FLOOR
+//     (P-ENEMY-HAT-CADENCE: L1=2, L2=3, L3=5, L4=6, L5+=8).
 // Speed scales per level (B5c — Donkey Blog plateau):
 //   L1=55, L2=60, L3=65, L4=70, L5+=75 walk; climb is walk-10.
 // Persists through respawn; resets on level transition / game over / skipToGame.
@@ -2640,7 +2641,16 @@ const HAT_AABB_W                  = 17;     // collision width (32→22→17)
 const HAT_AABB_H                  = 13;     // collision height (24→17→13)
 const HAT_SPRITE_SIZE             = 26;     // render box size (48→34→26)
 const HAT_DODGE_SCORE             = 100;    // pts for jumping over hat
-const CAPSULE_PER_HAT             = 8;      // capsules reaching FLOOR per bonus hat spawn
+// P-ENEMY-HAT-CADENCE (May 3 2026): level-scaled hat spawn threshold. Field test
+// confirmed L1 cadence ~5.5 sec/capsule reaching FLOOR. Fixed threshold of 8
+// produced 1 new hat every ~44 sec on L1 (way too slow per Brian observation).
+// Aggressive early-level table targets ~11 sec/hat on L1 (2 × 5.5), scaling up
+// toward arcade DK plateau at L5+. Time to 5-hat ceiling: L1 ≈ 4 × 11 = 44 sec
+// (matches typical L1 run length); L5+ ≈ 50 sec via faster capsule cadence.
+const CAPSULE_PER_HAT_TABLE       = [2, 3, 5, 6, 8, 8, 8, 8, 8, 8];
+function getCapsulePerHat(level) {
+  return CAPSULE_PER_HAT_TABLE[Math.min(Math.max(level, 1), 10) - 1];
+}
 
 // Per-level speed tables (Donkey Blog plateau-at-L5 convention, mirrors
 // capsuleSpeedMult curve from DK-GATE-PHASE-3).
@@ -2735,7 +2745,7 @@ function spawnBadges() {
 // resets on AABB-clear so each pass-over awards points once.
 const hats = [];
 // Counter of capsules that have reached FLOOR this level. Bumps a hat spawn
-// every CAPSULE_PER_HAT (=8) capsules. Reset to 0 in same paths that reset
+// every getCapsulePerHat(level) capsules. Reset to 0 in same paths that reset
 // hats[] (level transition, game over, skipToGame). Per-level not per-life.
 let capsulesReachedFloor = 0;
 // P-ENEMY-1-FIX-3: queue of future levelTime timestamps when staggered initial
@@ -3624,11 +3634,13 @@ function updateCapsules(dt) {
           c.onPlat          = c.descendDestPlat;
           c.y               = c.descendDestY;
           // P-ENEMY-1-FIX (B5b): bump hat-spawn trigger when a capsule first
-          // reaches FLOOR via descent-end. Every CAPSULE_PER_HAT (=8) FLOOR
-          // arrivals attempts a hat spawn (capped at HAT_MAX_ONSCREEN).
+          // reaches FLOOR via descent-end. Every getCapsulePerHat(currentLevel)
+          // FLOOR arrivals attempts a hat spawn (capped at HAT_MAX_ONSCREEN).
+          // P-ENEMY-HAT-CADENCE: threshold is now level-scaled (L1=2 ... L5+=8)
+          // so early-level hat cadence isn't bottlenecked by slow capsule flow.
           if (c.onPlat === FLOOR) {
             capsulesReachedFloor++;
-            if (capsulesReachedFloor % CAPSULE_PER_HAT === 0 && hats.length < HAT_MAX_ONSCREEN) {
+            if (capsulesReachedFloor % getCapsulePerHat(currentLevel) === 0 && hats.length < HAT_MAX_ONSCREEN) {
               spawnHat('capsule-floor-trigger');
             }
           }
@@ -3779,9 +3791,10 @@ function updateCapsules(dt) {
         c.onPlat = plat;
         // P-ENEMY-1-FIX (B5b): bump hat-spawn trigger on capsule reaching
         // FLOOR via off-edge fall (sibling site to descent-end at line ~3303).
+        // P-ENEMY-HAT-CADENCE: threshold is now level-scaled via getCapsulePerHat.
         if (plat === FLOOR) {
           capsulesReachedFloor++;
-          if (capsulesReachedFloor % CAPSULE_PER_HAT === 0 && hats.length < HAT_MAX_ONSCREEN) {
+          if (capsulesReachedFloor % getCapsulePerHat(currentLevel) === 0 && hats.length < HAT_MAX_ONSCREEN) {
             spawnHat('capsule-floor-trigger');
           }
         }
