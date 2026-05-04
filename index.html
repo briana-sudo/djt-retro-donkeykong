@@ -58,7 +58,7 @@ console.log = function() {
   // (Trump-throws-but-no-capsule symptom). Logs full capsule census at the bail moment
   // so Brian can DUMP LOGS and report which slot-class is dominant (FLOOR pile-up,
   // Pelosi-carry hold, or mid-cascade stall).
-  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0 || arguments[0].indexOf('[FLOOR-TTL]') === 0 || arguments[0].indexOf('[DIAGONAL-THROW]') === 0 || arguments[0].indexOf('[DK-DIFFICULTY-RAMP]') === 0 || arguments[0].indexOf('[LEFT-WALL]') === 0 || arguments[0].indexOf('[HAT-') === 0 || arguments[0].indexOf('[BADGE-') === 0)) {
+  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0 || arguments[0].indexOf('[FLOOR-TTL]') === 0 || arguments[0].indexOf('[DIAGONAL-THROW]') === 0 || arguments[0].indexOf('[DK-DIFFICULTY-RAMP]') === 0 || arguments[0].indexOf('[LEFT-WALL]') === 0 || arguments[0].indexOf('[HAT-') === 0 || arguments[0].indexOf('[BADGE-') === 0 || arguments[0].indexOf('[ATTRACT-') === 0)) {
     window.bgmLogBuffer.push({
       prefix: arguments[0],
       data:   arguments.length > 1 ? arguments[1] : null,
@@ -2089,6 +2089,11 @@ window.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (GAME_KEYS.has(e.code)) e.preventDefault();
   ensureAudioContext();                                          // L — first-input audio gate (PC keyboard path)
+  // P-ATTRACT-1: ATTRACT cancels on ANY input → back to GAME_OVER. Input is
+  // consumed (do NOT also start a game in same event — next input does that).
+  // GAME_OVER input resets idle timer so each input restarts the 30s window.
+  if (state === 'ATTRACT') { exitAttract('input-keyboard'); e.preventDefault(); return; }
+  if (state === 'GAME_OVER' && !initialsEntryActive) attractIdleTime = 0;
   // P-DIFFICULTY-1-FIX BUG 8 — Ctrl+Shift+L debug level skip. GAMEPLAY-only;
   // increments currentLevel only. DOES NOT advance bgmRotationIdx (per Brian:
   // lets per-level audio testing stay isolated). e.repeat filter prevents
@@ -4321,6 +4326,35 @@ function restartFromGameOver() {
   resetForGameOver();
 }
 
+// P-ATTRACT-1: enter ATTRACT mode from GAME_OVER after ATTRACT_IDLE_THRESHOLD seconds idle.
+// Resets phase counters, kicks off the loop. Music starts at Phase 2 entry, not here (Phase 1 is silent).
+function enterAttract() {
+  console.log('[ATTRACT-ENTER]', { idleTime: +attractIdleTime.toFixed(2) });
+  state               = 'ATTRACT';
+  stateT              = 0;
+  attractTime         = 0;
+  attractPhase        = 1;
+  attractMusicPlaying = false;
+  attractIdleTime     = 0;
+}
+
+// P-ATTRACT-1: exit ATTRACT back to GAME_OVER. Restores free_world Howl defaults (loop:false,
+// volume:0.6) so the next intro doesn't inherit attract settings. Stops music if playing.
+// Called from input handlers (any input cancels) AND internally if state is forced elsewhere.
+function exitAttract(reason) {
+  console.log('[ATTRACT-EXIT]', { reason: reason || 'unknown', phase: attractPhase, time: +attractTime.toFixed(2) });
+  if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.free_world) {
+    SOUND_LIBRARY.free_world.stop();
+    SOUND_LIBRARY.free_world.loop(false);
+    SOUND_LIBRARY.free_world.volume(0.6);
+  }
+  attractMusicPlaying = false;
+  state               = 'GAME_OVER';
+  stateT              = 0;
+  attractIdleTime     = 0;        // restart the 30s idle clock from this exit
+  attractTime         = 0;
+}
+
 // K — initials entry input helpers. Used by both keyboard handler (in window.keydown) and the
 // touch-zone handler in pointerdown.
 // K-FIX-4 — cycle now A-Z + ' ' (space). 27 positions. Up at 'Z' goes to ' ', up at ' ' wraps
@@ -4695,6 +4729,28 @@ let throwCounter        = 0;
 const DK_DIFFICULTY_RAMP_INTERVAL = 33.0;   // seconds per ramp bump
 let levelTime               = 0;
 let dkDifficultyEffective   = 1;             // recomputed at every reset; init defensive
+
+// ──────────────────────────────────────────────────────────────────────────
+//  P-ATTRACT-1 — attract loop (May 3 2026)
+// ──────────────────────────────────────────────────────────────────────────
+// Classic arcade attract loop. After ATTRACT_IDLE_THRESHOLD seconds of zero
+// input on GAME_OVER (the "STARTING" screen per Brian's spec — see line 8366
+// pre-existing code comment "P-DIFFICULTY-2 will replace this destination
+// with the ATTRACT screen"), enter ATTRACT mode. 80-second 4-phase loop:
+//   Phase 1 (0-20s):  DEMO COMING SOON placeholder (silent; demo deferred to P-ATTRACT-2)
+//   Phase 2 (20-40s): character roster bottom-to-top scroll (14 entries)
+//   Phase 3 (40-60s): scene highlight captions (3 placeholders)
+//   Phase 4 (60-80s): leaderboard + credits
+// At t=80s loops back to Phase 1. ANY input cancels back to GAME_OVER.
+// Replaces the prior 15s GAME_OVER auto-restart (line 8366 ish).
+const ATTRACT_IDLE_THRESHOLD = 30.0;        // sec on GAME_OVER before attract enters
+const ATTRACT_PHASE_LEN      = 20.0;        // sec per phase (4 phases × 20s = 80s loop)
+const ATTRACT_LOOP_LEN       = 80.0;        // total loop length (4 × ATTRACT_PHASE_LEN)
+const ATTRACT_FREE_WORLD_VOL = 0.4;         // music volume during phases 2-4
+let attractIdleTime          = 0;           // counts up while !initialsEntryActive on GAME_OVER
+let attractTime              = 0;           // 0..80 within ATTRACT loop
+let attractPhase             = 1;           // 1..4
+let attractMusicPlaying      = false;       // tracks free_world play/stop transitions to avoid restart-each-frame
 
 // 10-level parameter table. Index = currentLevel - 1 (clamped to 9 for L11+ which
 // reuses L10 row; winBonus extends linearly via getLevelParams).
@@ -6631,6 +6687,9 @@ canvas.addEventListener('pointerdown', e => {
   if (IS_MOBILE) return;                                         // PAUSE-MOBILE-TOUCHSTART-ONLY — touchstart owns mobile input
   e.preventDefault();
   ensureAudioContext();                                          // L — first-input audio gate (mobile primary path)
+  // P-ATTRACT-1: ATTRACT cancels on ANY input → GAME_OVER. GAME_OVER click resets idle timer.
+  if (state === 'ATTRACT') { exitAttract('input-pointer'); return; }
+  if (state === 'GAME_OVER' && !initialsEntryActive) attractIdleTime = 0;
   // N — speaker + pause icon hit-test (canvas-pixel coords). Icons render top-right; tap-zones
   // checked BEFORE state routing so the toggles work in any state where the icons are visible
   // (audio: any state; pause: only in pausable states, but the icon is rendered then).
@@ -6725,6 +6784,9 @@ canvas.addEventListener('touchstart', e=>{
                         // synthesized pointerdown — that's now handled by an unconditional
                         // IS_MOBILE early-return at the top of the pointerdown handler.
   ensureAudioContext(); // L — first-input audio gate (iOS Safari fallback path)
+  // P-ATTRACT-1: ATTRACT cancels on ANY input → GAME_OVER. GAME_OVER tap resets idle timer.
+  if (state === 'ATTRACT') { exitAttract('input-touch'); return; }
+  if (state === 'GAME_OVER' && !initialsEntryActive) attractIdleTime = 0;
   // N — speaker + pause icon hit-test before state routing.
   {
     const r0 = canvas.getBoundingClientRect();
@@ -7138,6 +7200,172 @@ function drawScoreBreakdown(opts) {
     ctx.textAlign = 'center';
     ctx.fillText('Created by Brian Albert', W/2, 820);
   }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+//  P-ATTRACT-1 — per-phase render functions for ATTRACT mode
+// ──────────────────────────────────────────────────────────────────────────
+// Phase 1 (0-20s):  silent placeholder (demo gameplay deferred to P-ATTRACT-2)
+// Phase 2 (20-40s): character roster bottom-to-top scroll (14 entries)
+// Phase 3 (40-60s): scene highlight captions (3 placeholders, 6.67s each)
+// Phase 4 (60-80s): leaderboard + credits
+
+// P-ATTRACT-1 Phase 1 — DEMO COMING SOON placeholder. Black bg, dark gold text.
+// Will be replaced in P-ATTRACT-2 with CPU-played L1 via DEMO_INPUTS JSON replay.
+function renderAttractPhase1() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#9a7a00';
+  ctx.font = 'bold 24px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('DEMO COMING SOON', W / 2, H / 2);
+  // Press-to-start hint at bottom (consistent across all 4 phases).
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '14px monospace';
+  ctx.fillText('PRESS ANY KEY TO PLAY', W / 2, H - 30);
+}
+
+// P-ATTRACT-1 Phase 2 — character roster ribbon. 14 entries scroll bottom-to-top
+// continuously over 20 sec. Each entry: sprite (~64px) on left, name + subtitle
+// on right. Subtitle dark gold (#9a7a00), name white. Entries with no subtitle
+// just show the name. DNC slot uses drawDonkey (procedural, no PNG exists).
+const ATTRACT_ROSTER = [
+  { sprite: 'dtj_idle',         name: 'DTJ',                   subtitle: 'MR. PRESIDENT' },
+  { sprite: 'DNC_PLAYER',       name: 'DNC',                   subtitle: 'FIRST YEAR CONGRESSMAN' },   // procedural — drawDonkey
+  { sprite: 'pelosi_idle',      name: 'PELOSI',                subtitle: 'TEARS UP THE CONSTITUTION' },
+  { sprite: 'barrel_endview',   name: 'CONSTITUTION CAPSULES', subtitle: '' },
+  { sprite: 'eagle_fly',        name: 'EAGLE',                 subtitle: 'AMERICAN VOTERS' },
+  { sprite: 'maga_hat',         name: 'MAGA HAT',              subtitle: '' },
+  { sprite: 'fbi_badge',        name: 'FBI BADGE',             subtitle: 'CORRUPT COMEY FBI' },
+  { sprite: 'antifa',           name: 'ANTIFA',                subtitle: 'DNC HIRED HELP' },
+  { sprite: 'secret_service',   name: 'SECRET SERVICE',        subtitle: 'PROTECTS THE PRESIDENT' },
+  { sprite: 'zombie_dad',       name: 'ZOMBIE DAD',            subtitle: '' },
+  { sprite: 'zombie_pinkhair',  name: 'ZOMBIE PINKHAIR',       subtitle: 'RAINBOW COALITION' },
+  { sprite: 'zombie_glasses',   name: 'ZOMBIE GLASSES',        subtitle: 'SOYBOY' },
+  { sprite: 'zombie_winemom',   name: 'ZOMBIE WINEMOM',        subtitle: '' },
+  { sprite: 'briefcase',        name: 'BRIEFCASE',             subtitle: 'DNC DONOR MONEY' },
+];
+const ATTRACT_ROSTER_ENTRY_H = 95;       // px vertical spacing per entry
+const ATTRACT_ROSTER_SPRITE_SIZE = 64;   // px sprite render size
+
+function renderAttractPhase2() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  const phaseT = attractTime - ATTRACT_PHASE_LEN;       // 0..20 within Phase 2
+  const ribbonH = ATTRACT_ROSTER.length * ATTRACT_ROSTER_ENTRY_H;
+  const scrollDistance = H + ribbonH;                    // entries enter from bottom, exit at top
+  // First entry (i=0, DTJ) starts at y=H (off-screen below) at phaseT=0,
+  // ends at y=H - scrollDistance = -ribbonH (off-screen above) at phaseT=20.
+  const scrollY = H - (phaseT / ATTRACT_PHASE_LEN) * scrollDistance;
+
+  for (let i = 0; i < ATTRACT_ROSTER.length; i++) {
+    const entry = ATTRACT_ROSTER[i];
+    const entryY = scrollY + i * ATTRACT_ROSTER_ENTRY_H;
+    // Cull off-screen entries (entry centerline outside visible band).
+    if (entryY < -ATTRACT_ROSTER_ENTRY_H || entryY > H + ATTRACT_ROSTER_ENTRY_H) continue;
+
+    // Sprite on left (~25% across canvas)
+    const spriteX = W * 0.25;
+    if (entry.sprite === 'DNC_PLAYER') {
+      // Procedural DNC render via drawDonkey. drawDonkey is foot-anchored; sc=0.5
+      // yields ~38px tall. Anchor foot at entryY + ATTRACT_ROSTER_SPRITE_SIZE/2 so
+      // the sprite is roughly vertically centered in the row.
+      drawDonkey(spriteX, entryY + ATTRACT_ROSTER_SPRITE_SIZE / 2, 0.5, false, false, 0);
+    } else {
+      const cached = spriteCache[entry.sprite];
+      if (cached) {
+        const aspect = cached.width / cached.height;
+        const targetH = ATTRACT_ROSTER_SPRITE_SIZE;
+        const targetW = targetH * aspect;
+        ctx.drawImage(cached, spriteX - targetW / 2, entryY - targetH / 2, targetW, targetH);
+      }
+    }
+
+    // Name + subtitle on right (~50% across canvas)
+    const textX = W * 0.45;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 18px monospace';
+    ctx.fillText(entry.name, textX, entryY - 4);
+    if (entry.subtitle) {
+      ctx.fillStyle = '#9a7a00';
+      ctx.font = 'italic 13px monospace';
+      ctx.fillText(entry.subtitle, textX, entryY + 16);
+    }
+  }
+
+  // Press-to-start hint at bottom.
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '14px monospace';
+  ctx.fillText('PRESS ANY KEY TO PLAY', W / 2, H - 30);
+}
+
+// P-ATTRACT-1 Phase 3 — scene highlight captions placeholder. Three 6.67s slices
+// rotate captions across the 20s window. Actual scripted scene playback deferred
+// to P-ATTRACT-2 (depends on entity scripting). For now: caption-only over black.
+function renderAttractPhase3() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  const phaseT = attractTime - 2 * ATTRACT_PHASE_LEN;   // 0..20 within Phase 3
+  let caption;
+  if      (phaseT <  6.67) caption = 'PELOSI: HEROIC';
+  else if (phaseT < 13.33) caption = 'VICTORY!';
+  else                     caption = 'DJT: GREATEST WIN EVER!';
+
+  ctx.fillStyle = '#9a7a00';
+  ctx.font = 'bold 28px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(caption, W / 2, H / 2);
+
+  // Press-to-start hint at bottom.
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '14px monospace';
+  ctx.fillText('PRESS ANY KEY TO PLAY', W / 2, H - 30);
+}
+
+// P-ATTRACT-1 Phase 4 — leaderboard + credits. "DJT vs DNC" title, top-5 from
+// highScores array, two-line credits (LOCKED wording per Brian May 3 2026 — note
+// the lowercase 'b' in "built by AI OS that I designed").
+function renderAttractPhase4() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  // Title
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = 'bold 32px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('DJT vs DNC', W / 2, 80);
+
+  // Top 5 leaderboard
+  ctx.font = 'bold 18px monospace';
+  const scores = (highScores || []).slice(0, 5);
+  if (scores.length === 0) {
+    ctx.fillStyle = '#888888';
+    ctx.font = '16px monospace';
+    ctx.fillText('NO HIGH SCORES YET', W / 2, 200);
+  } else {
+    for (let i = 0; i < scores.length; i++) {
+      const y = 160 + i * 38;
+      const e = scores[i];
+      const initials = (e.initials || '').replace(/\s+$/, '') || '---';
+      ctx.fillStyle = (i === 0) ? '#ffd700' : '#FFFFFF';
+      ctx.fillText((i + 1) + '.  ' + initials + '  ' + Math.floor(e.score), W / 2, y);
+    }
+  }
+
+  // Credits (LOCKED wording per Brian May 3 2026 — exact lowercase 'b' on second line)
+  ctx.fillStyle = '#9a7a00';
+  ctx.font = '14px monospace';
+  ctx.fillText('Created by Brian Albert', W / 2, H - 100);
+  ctx.fillText('built by AI OS that I designed', W / 2, H - 78);
+
+  // Press-to-start hint
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = '14px monospace';
+  ctx.fillText('PRESS ANY KEY TO PLAY', W / 2, H - 30);
 }
 
 function drawHUD() {
@@ -8359,14 +8587,20 @@ function loop(ts) {
     // sets initialsEntryActive=false and starts the 1.0s "INITIALS SAVED" confirmation, after
     // which the prompt re-appears.
     case 'GAME_OVER': {
-      // P-DIFFICULTY-1-FIX — 15s auto-restart. Tick stateT-driven timer; at 15s
-      // automatically call restartFromGameOver() (same path as TAP TO RESTART).
-      // GATED on !initialsEntryActive — if player is entering initials, hold the
-      // countdown until they finish. P-DIFFICULTY-2 will replace this destination
-      // with the ATTRACT screen; for now it goes back to L1 fresh game.
-      if (!initialsEntryActive && stateT >= 15.0) {
-        restartFromGameOver();
-        break;
+      // P-ATTRACT-1 (May 3 2026): replaced 15s auto-restart with 30s idle timer
+      // that enters ATTRACT mode (per pre-existing line 8366 comment "P-DIFFICULTY-2
+      // will replace this destination with the ATTRACT screen"). Idle timer is
+      // attractIdleTime (separate from stateT so input handlers can reset it
+      // without disrupting other stateT-dependent renders). Held at 0 while
+      // initialsEntryActive — player typing initials shouldn't trigger attract.
+      if (!initialsEntryActive) {
+        attractIdleTime += dt;
+        if (attractIdleTime >= ATTRACT_IDLE_THRESHOLD) {
+          enterAttract();
+          break;
+        }
+      } else {
+        attractIdleTime = 0;
       }
       const showRestartPrompt = !initialsEntryActive && initialsConfirmedT <= 0;
       drawScoreBreakdown({
@@ -8394,6 +8628,43 @@ function loop(ts) {
         ctx.fillText('INITIALS SAVED', W/2, 730);
         ctx.restore();
       }
+      break;
+    }
+
+    // P-ATTRACT-1 (May 3 2026): attract loop. Tick attractTime + dispatch to per-phase
+    // renderer. Music control + phase-transition logic lives here so the dispatcher stays
+    // a pure switch. Loop wraps at ATTRACT_LOOP_LEN (80s) back to Phase 1.
+    case 'ATTRACT': {
+      attractTime += dt;
+      // Phase determination + loop wrap.
+      if (attractTime >= ATTRACT_LOOP_LEN) {
+        attractTime = 0;
+      }
+      const _newPhase = Math.min(4, Math.floor(attractTime / ATTRACT_PHASE_LEN) + 1);
+      if (_newPhase !== attractPhase) {
+        console.log('[ATTRACT-PHASE]', { phase: _newPhase, time: +attractTime.toFixed(2) });
+        attractPhase = _newPhase;
+      }
+      // Music: silent in Phase 1, free_world (loop:true, vol 0.4) for Phases 2-4.
+      const _musicShouldPlay = (attractPhase >= 2);
+      if (_musicShouldPlay && !attractMusicPlaying) {
+        if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.free_world) {
+          SOUND_LIBRARY.free_world.loop(true);
+          SOUND_LIBRARY.free_world.volume(ATTRACT_FREE_WORLD_VOL);
+          SOUND_LIBRARY.free_world.play();
+        }
+        attractMusicPlaying = true;
+      } else if (!_musicShouldPlay && attractMusicPlaying) {
+        if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.free_world) {
+          SOUND_LIBRARY.free_world.stop();
+        }
+        attractMusicPlaying = false;
+      }
+      // Dispatch to per-phase render.
+      if      (attractPhase === 1) renderAttractPhase1();
+      else if (attractPhase === 2) renderAttractPhase2();
+      else if (attractPhase === 3) renderAttractPhase3();
+      else                         renderAttractPhase4();
       break;
     }
 
