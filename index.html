@@ -7165,10 +7165,14 @@ const ATTRACT_ROSTER = [
   { sprite: 'fbi_badge',        name: 'FBI BADGE',             subtitle: 'CORRUPT COMEY FBI' },
   { sprite: 'antifa',           name: 'ANTIFA',                subtitle: 'DNC HIRED HELP' },
   { sprite: 'secret_service',   name: 'SECRET SERVICE',        subtitle: 'PROTECTS THE PRESIDENT' },
-  { sprite: 'zombie_dad',       name: 'ZOMBIE DAD',            subtitle: '' },
-  { sprite: 'zombie_pinkhair',  name: 'ZOMBIE PINKHAIR',       subtitle: 'RAINBOW COALITION' },
-  { sprite: 'zombie_glasses',   name: 'ZOMBIE GLASSES',        subtitle: 'SOYBOY' },
-  { sprite: 'zombie_winemom',   name: 'ZOMBIE WINEMOM',        subtitle: '' },
+  // P-ATTRACT-ROSTER-ZOMBIES (May 3 2026): all 4 zombies tagged DEMOCRAT ZOMBIE VOTER.
+  // PINKHAIR + GLASSES already had a subtitle (RAINBOW COALITION / SOYBOY) — they get
+  // DEMOCRAT ZOMBIE VOTER as a second subtitle line via the new subtitle2 field.
+  // DAD + WINEMOM had no prior subtitle — DEMOCRAT ZOMBIE VOTER is their only subtitle.
+  { sprite: 'zombie_dad',       name: 'ZOMBIE DAD',            subtitle: 'DEMOCRAT ZOMBIE VOTER' },
+  { sprite: 'zombie_pinkhair',  name: 'ZOMBIE PINKHAIR',       subtitle: 'RAINBOW COALITION', subtitle2: 'DEMOCRAT ZOMBIE VOTER' },
+  { sprite: 'zombie_glasses',   name: 'ZOMBIE GLASSES',        subtitle: 'SOYBOY',            subtitle2: 'DEMOCRAT ZOMBIE VOTER' },
+  { sprite: 'zombie_winemom',   name: 'ZOMBIE WINEMOM',        subtitle: 'DEMOCRAT ZOMBIE VOTER' },
   { sprite: 'briefcase',        name: 'BRIEFCASE',             subtitle: 'DNC DONOR MONEY' },
 ];
 const ATTRACT_ROSTER_ENTRY_H = 95;       // px vertical spacing per entry
@@ -7218,6 +7222,15 @@ function renderAttractPhase2() {
       ctx.fillStyle = '#9a7a00';
       ctx.font = 'italic 13px monospace';
       ctx.fillText(entry.subtitle, textX, entryY + 16);
+    }
+    // P-ATTRACT-ROSTER-ZOMBIES (May 3 2026): optional second subtitle line at +32 px
+    // from entryY (16 px below the first subtitle). Same dark-gold italic 13px style
+    // for visual consistency. Used by ZOMBIE PINKHAIR + ZOMBIE GLASSES to add
+    // 'DEMOCRAT ZOMBIE VOTER' beneath their existing subtitle.
+    if (entry.subtitle2) {
+      ctx.fillStyle = '#9a7a00';
+      ctx.font = 'italic 13px monospace';
+      ctx.fillText(entry.subtitle2, textX, entryY + 32);
     }
   }
 
