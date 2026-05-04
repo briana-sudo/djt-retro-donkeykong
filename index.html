@@ -7382,11 +7382,13 @@ function renderAttractPhase4() {
     }
   }
 
-  // Credits (LOCKED wording per Brian May 3 2026 — exact lowercase 'b' on second line)
+  // Credits (REWORDED per Brian May 3 2026 — arcade-style all-caps consistent with
+  // GAME OVER end-card typography; properly attributes the patent). Width: line 2 is
+  // 47 chars at 14px monospace ≈ 395px wide, fits within W=480 with ~21px margins.
   ctx.fillStyle = '#9a7a00';
   ctx.font = '14px monospace';
-  ctx.fillText('Created by Brian Albert', W / 2, H - 100);
-  ctx.fillText('built by AI OS that I designed', W / 2, H - 78);
+  ctx.fillText('DESIGNED BY BRIAN ALBERT', W / 2, H - 100);
+  ctx.fillText('BUILT BY AI OS — PATENT PENDING BY BRIAN ALBERT', W / 2, H - 78);
 
   // Press-to-start hint
   ctx.fillStyle = '#FFFFFF';
