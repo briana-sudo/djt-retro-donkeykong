@@ -4328,7 +4328,8 @@ function restartFromGameOver() {
   resetForGameOver();
 }
 
-// P-ATTRACT-1: enter ATTRACT mode after ATTRACT_IDLE_THRESHOLD seconds idle.
+// P-ATTRACT-1: enter ATTRACT mode after the source-state idle threshold elapses
+// (ATTRACT_IDLE_PREGAMEPLAY for cold boot, ATTRACT_IDLE_GAMEOVER for post-death).
 // Resets phase counters, kicks off the loop. Music starts at Phase 2 entry, not here (Phase 1 is silent).
 // P-ATTRACT-1.5: saves attractSourceState so exit can restore the originating state
 // (cold-boot returns to INTRO_BLACK, post-game-over to GAME_OVER).
@@ -4753,17 +4754,24 @@ let dkDifficultyEffective   = 1;             // recomputed at every reset; init 
 // ──────────────────────────────────────────────────────────────────────────
 //  P-ATTRACT-1 — attract loop (May 3 2026)
 // ──────────────────────────────────────────────────────────────────────────
-// Classic arcade attract loop. After ATTRACT_IDLE_THRESHOLD seconds of zero
-// input on GAME_OVER (the "STARTING" screen per Brian's spec — see line 8366
-// pre-existing code comment "P-DIFFICULTY-2 will replace this destination
-// with the ATTRACT screen"), enter ATTRACT mode. 80-second 4-phase loop:
+// Classic arcade attract loop. P-ATTRACT-THRESHOLDS: idle threshold split per
+// source state — ATTRACT_IDLE_PREGAMEPLAY (5s) on cold-boot INTRO_BLACK and
+// ATTRACT_IDLE_GAMEOVER (12s) on post-death GAME_OVER. The "STARTING" screen in
+// Brian's spec maps to GAME_OVER (line 8366 pre-existing code comment
+// "P-DIFFICULTY-2 will replace this destination with the ATTRACT screen").
+// 80-second 4-phase loop:
 //   Phase 1 (0-20s):  DEMO COMING SOON placeholder (silent; demo deferred to P-ATTRACT-2)
 //   Phase 2 (20-40s): character roster bottom-to-top scroll (14 entries)
 //   Phase 3 (40-60s): scene highlight captions (3 placeholders)
 //   Phase 4 (60-80s): leaderboard + credits
 // At t=80s loops back to Phase 1. ANY input cancels back to GAME_OVER.
 // Replaces the prior 15s GAME_OVER auto-restart (line 8366 ish).
-const ATTRACT_IDLE_THRESHOLD = 30.0;        // sec on GAME_OVER before attract enters
+// P-ATTRACT-THRESHOLDS (May 3 2026): split single 30s threshold into two values
+// per source state. Cold boot fires fast (5s) so first-load users see attract
+// quickly. Post-GAME_OVER waits longer (12s) so player can read final score
+// before attract pulls them away. Was: ATTRACT_IDLE_THRESHOLD = 30.0 used by both.
+const ATTRACT_IDLE_PREGAMEPLAY = 5.0;       // cold boot — get attract running fast on initial load
+const ATTRACT_IDLE_GAMEOVER    = 12.0;      // post-death — give player time to read final score
 const ATTRACT_PHASE_LEN      = 20.0;        // sec per phase (4 phases × 20s = 80s loop)
 const ATTRACT_LOOP_LEN       = 80.0;        // total loop length (4 × ATTRACT_PHASE_LEN)
 const ATTRACT_FREE_WORLD_VOL = 0.4;         // music volume during phases 2-4
@@ -8001,12 +8009,13 @@ function loop(ts) {
       if(stateT>1.4 && audioContext){state='INTRO_TITLE';stateT=0; /* N-FIX-7 — escalator music now state-driven via tickBGM/computeDesiredMusic */ }
       // P-ATTRACT-1.5 (May 3 2026): COLD-BOOT ATTRACT ENTRY. On first cold boot
       // (introHasPlayed=false), if user never gestures, suppress the 5s silent fallback
-      // and tick preGameplayIdleTime instead. At ATTRACT_IDLE_THRESHOLD (30s), enter
-      // ATTRACT mode. Post-game-over restarts (introHasPlayed=true) keep the original
-      // 5s silent fallback so silent-test rigs / users without audio can still proceed.
+      // and tick preGameplayIdleTime instead. At ATTRACT_IDLE_PREGAMEPLAY (5s, per
+      // P-ATTRACT-THRESHOLDS), enter ATTRACT mode. Post-game-over restarts
+      // (introHasPlayed=true) keep the original 5s silent fallback so silent-test
+      // rigs / users without audio can still proceed.
       else if (!introHasPlayed && !audioContext) {
         preGameplayIdleTime += dt;
-        if (preGameplayIdleTime >= ATTRACT_IDLE_THRESHOLD) {
+        if (preGameplayIdleTime >= ATTRACT_IDLE_PREGAMEPLAY) {
           enterAttract();
         }
       }
@@ -8635,7 +8644,7 @@ function loop(ts) {
       // initialsEntryActive — player typing initials shouldn't trigger attract.
       if (!initialsEntryActive) {
         attractIdleTime += dt;
-        if (attractIdleTime >= ATTRACT_IDLE_THRESHOLD) {
+        if (attractIdleTime >= ATTRACT_IDLE_GAMEOVER) {
           enterAttract();
           break;
         }
