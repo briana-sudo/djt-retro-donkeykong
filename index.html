@@ -37,107 +37,17 @@
 <body>
 <canvas id="c"></canvas>
 <script>
-// AUDIO-3-LOG-DUMP — global ring buffer for [BGM:*] logs. console.log wrapper intercepts
-// every call whose first arg is a string starting with '[BGM:' and pushes a structured
-// entry (prefix, data, timestamp) to window.bgmLogBuffer. Ring caps at 500 entries; oldest
-// drops first. Original console.log behavior is unchanged — every entry still prints to
-// DevTools as before. Other (non-BGM) console.log calls pass through untouched. This wrapper
-// is installed BEFORE the Howl.prototype monkey-patches below so those patches' [BGM:howl-*]
-// logs flow into the buffer too.
+// P-LOG-STRIP (May 3 2026): removed the console.log wrapper, [BGM:*] tag-prefix
+// capture, and Howl.prototype.{stop,play,once,off} monkey-patch. All diagnostic
+// console.log calls were stripped from production code in the same commit — the
+// wrapper had no diagnostic output to capture, the Howl monkey-patch had no
+// remaining log calls. Kept window.bgmLogBuffer + window.bgmLogBufferMax as
+// empty-array stubs so the DUMP LOGS button (which reads them) still functions
+// without code changes — button dumps an empty buffer until future diagnostic
+// instrumentation is added.
 window.bgmLogBuffer    = [];
 window.bgmLogBufferMax = 500;
-const _origConsoleLog  = console.log;
-console.log = function() {
-  // PAUSE-DIAG — also capture [PAUSE-DIAG] prefix so DUMP LOGS picks up the diagnostic
-  // output added to pointerdown / touchstart / togglePause for iPhone pause-button trace.
-  // CAPSULE-DIAG — also capture [CAPSULE-DIAG] for the SFX-PACK round-3 capsule
-  // destruction trace (Brian field test: synth still sounds, despite both prior strips).
-  // CAPSULE-SPAWN-DIAG / LADDER-DROP-DIAG — added in P-DIFFICULTY-1-FIX-V3 to trace
-  // speedMult application at L8+ (Bug 10) and L10 ladder-drop chance (Bug 7 NEW).
-  // CAPSULE-CENSUS — added in P-DIFFICULTY-1-FIX-V4-DIAG to trace MAX_CAPSULES bail
-  // (Trump-throws-but-no-capsule symptom). Logs full capsule census at the bail moment
-  // so Brian can DUMP LOGS and report which slot-class is dominant (FLOOR pile-up,
-  // Pelosi-carry hold, or mid-cascade stall).
-  if (arguments.length > 0 && typeof arguments[0] === 'string' && (arguments[0].indexOf('[BGM:') === 0 || arguments[0].indexOf('[PAUSE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-SPAWN-DIAG]') === 0 || arguments[0].indexOf('[LADDER-DROP-DIAG]') === 0 || arguments[0].indexOf('[CAPSULE-CENSUS]') === 0 || arguments[0].indexOf('[LAYOUT-V4-DIAG]') === 0 || arguments[0].indexOf('[DESCENT-DIAG]') === 0 || arguments[0].indexOf('[FLOOR-TTL]') === 0 || arguments[0].indexOf('[DIAGONAL-THROW]') === 0 || arguments[0].indexOf('[DK-DIFFICULTY-RAMP]') === 0 || arguments[0].indexOf('[LEFT-WALL]') === 0 || arguments[0].indexOf('[HAT-') === 0 || arguments[0].indexOf('[BADGE-') === 0 || arguments[0].indexOf('[ATTRACT-') === 0)) {
-    window.bgmLogBuffer.push({
-      prefix: arguments[0],
-      data:   arguments.length > 1 ? arguments[1] : null,
-      t:      performance.now().toFixed(0),
-    });
-    if (window.bgmLogBuffer.length > window.bgmLogBufferMax) {
-      window.bgmLogBuffer.shift();
-    }
-  }
-  return _origConsoleLog.apply(console, arguments);
-};
 
-// AUDIO-3-SIMPLIFY-BUGHUNT-2 — monkey-patch Howl.prototype.{stop,play,once,off} BEFORE
-// SOUND_LIBRARY is constructed. Pure logging, every method delegates to the original after
-// printing the call site context. Captures Howl lifecycle events that are otherwise opaque:
-// every stop/play call (with seek + Howler ctx state), every once registration (with the
-// callback wrapped to log when it fires), every off detach. Catches "leftover handler
-// firing after a reset" (candidate 2) and "unexpected play/stop calls undoing a reset"
-// patterns. Helper resolves the Howl-instance back to its SOUND_LIBRARY key for readability.
-if (typeof Howl !== 'undefined') {
-  const _resolveHowlName = function(howlInst) {
-    if (typeof SOUND_LIBRARY === 'undefined') return 'pre-lib';
-    for (const k of Object.keys(SOUND_LIBRARY)) {
-      if (SOUND_LIBRARY[k] === howlInst) return k;
-    }
-    return 'unknown';
-  };
-  const _origStop = Howl.prototype.stop;
-  const _origPlay = Howl.prototype.play;
-  const _origOnce = Howl.prototype.once;
-  const _origOff  = Howl.prototype.off;
-  Howl.prototype.stop = function() {
-    const name = _resolveHowlName(this);
-    let wasPlaying = false, seekBefore = -1;
-    try { wasPlaying = this.playing(); } catch (e) {}
-    try { seekBefore = this.seek(); } catch (e) {}
-    console.log('[BGM:howl-stop]', {
-      howl: name, wasPlaying: wasPlaying, seekBefore: seekBefore,
-      t: performance.now().toFixed(0),
-    });
-    return _origStop.apply(this, arguments);
-  };
-  Howl.prototype.play = function() {
-    const name = _resolveHowlName(this);
-    let seekBefore = -1;
-    try { seekBefore = this.seek(); } catch (e) {}
-    console.log('[BGM:howl-play]', {
-      howl: name, seekBefore: seekBefore,
-      howlerCtxState: (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx.state : 'no-ctx',
-      t: performance.now().toFixed(0),
-    });
-    return _origPlay.apply(this, arguments);
-  };
-  Howl.prototype.once = function(event, fn) {
-    const name = _resolveHowlName(this);
-    console.log('[BGM:howl-once-register]', {
-      howl: name, event: event, t: performance.now().toFixed(0),
-    });
-    const wrappedFn = function() {
-      console.log('[BGM:howl-once-fire]', {
-        howl: name, event: event,
-        state: (typeof state !== 'undefined') ? state : 'no-state',
-        currentMusic: (typeof currentMusic !== 'undefined') ? currentMusic : 'no-cm',
-        t: performance.now().toFixed(0),
-      });
-      return fn.apply(this, arguments);
-    };
-    const args = Array.prototype.slice.call(arguments);
-    args[1] = wrappedFn;
-    return _origOnce.apply(this, args);
-  };
-  Howl.prototype.off = function(event) {
-    const name = _resolveHowlName(this);
-    console.log('[BGM:howl-off]', {
-      howl: name, event: event || 'all', t: performance.now().toFixed(0),
-    });
-    return _origOff.apply(this, arguments);
-  };
-}
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
@@ -277,9 +187,6 @@ function processSprite(name, img) {
         }
       }
     }
-    console.log('White-keyed sprite:', name, 'keyed pixels:', keyedCount,
-                'of', (w * h), '(', (100 * keyedCount / (w * h)).toFixed(1), '%)',
-                'new bbox:', (maxX - minX + 1) + 'x' + (maxY - minY + 1));
   }
 
   const tw = maxX - minX + 1;
@@ -293,10 +200,6 @@ function processSprite(name, img) {
     tctx.drawImage(off, minX, minY, tw, th, 0, 0, tw, th);
     spriteCache[name] = trimmed;
   }
-  console.log('Sprite loaded:', name,
-              'native=' + w + 'x' + h,
-              'trimmed=' + spriteCache[name].width + 'x' + spriteCache[name].height,
-              'alphaPixels=' + alphaPixels);
 }
 
 for (const [name, src] of Object.entries(spriteData)) {
@@ -308,8 +211,6 @@ for (const [name, src] of Object.entries(spriteData)) {
     // immediately visible in devtools whether anything is missing.
     if (spritesLoaded === spritesTotal) {
       const keys = Object.keys(spriteCache).sort();
-      console.log('G1 — sprite cache ready: ' + keys.length + ' / ' + spritesTotal + ' sprites');
-      console.log('G1 — cache keys: ' + keys.join(', '));
       const missing = Object.keys(spriteData).filter(k => !spriteCache[k]);
       if (missing.length) console.error('G1 — sprites MISSING from cache:', missing);
     }
@@ -389,13 +290,6 @@ if (window.visualViewport) window.visualViewport.addEventListener('resize', resi
 // + canvasH=1281 → canvas is sized too tall; etc).
 {
   const r = canvas.getBoundingClientRect();
-  console.log('VIEWPORT_DIAG',
-    'innerH=' + window.innerHeight,
-    'clientH=' + document.documentElement.clientHeight,
-    'visualH=' + (window.visualViewport ? window.visualViewport.height : 'N/A'),
-    'canvasTop=' + r.top,
-    'canvasH=' + r.height,
-    'scale=' + scale);
 }
 
 // ─────────────────────────────────────────────
@@ -429,8 +323,6 @@ const ladders = [
   { x: 270, y: 289, h: 118 },  // [4] P3 -> P4                (UNCHANGED V4 — V3: x=270)
   { x: 350, y: 159, h: 118 }   // [5] P4 -> TOP               (UNCHANGED — win trigger)
 ];
-console.log('[LAYOUT-V4-DIAG]', 'new ladder layout',
-  ladders.map(function (l, i) { return { i: i, x: l.x, y: l.y, h: l.h }; }));
 const LADDER_W = 24;
 const TOP = platforms[5];
 const FLOOR = platforms[0];
@@ -1377,23 +1269,6 @@ function transitionToMusic(newMusic) {
   // early-return check. Captures the from/to MUSIC_STATES, current state, rotation idx,
   // which Howls are actually playing right now (vs what currentMusic claims), Howler ctx
   // state, and a timestamp. Diagnostic only — no behavior change.
-  console.log('[BGM:transition]', {
-    from: currentMusic,
-    to: newMusic,
-    state: state,
-    rotationIdx: bgmRotationIdx,
-    actuallyPlaying: (() => {
-      const playing = [];
-      for (const [name, howl] of Object.entries(SOUND_LIBRARY)) {
-        if (howl && typeof howl.playing === 'function' && howl.playing()) {
-          playing.push(name);
-        }
-      }
-      return playing;
-    })(),
-    howlerCtxState: (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx.state : 'no-ctx',
-    t: performance.now().toFixed(0),
-  });
   if (newMusic === currentMusic) return;
   const FADE_MS = 200;
   // AUDIO-3e Fix D — rotation songs (greenwood/queen/brown) get .pause() instead of .stop().
@@ -1417,22 +1292,7 @@ function transitionToMusic(newMusic) {
     // (candidate 3): if a [BGM:settimeout-fire] appears AFTER a [BGM:reset-howler-snapshot],
     // the fire's stop/pause is silently undoing the reset's clean slate by either re-stopping
     // (no harm) or re-pausing (preserves stale seek for resumption later).
-    console.log('[BGM:settimeout-schedule]', {
-      purpose: isRotation ? 'fade-then-pause' : 'fade-then-stop',
-      delay: FADE_MS + 50,
-      stopRef: stopRef,
-      state: state,
-      currentMusic: currentMusic,
-      t: performance.now().toFixed(0),
-    });
     setTimeout(() => {
-      console.log('[BGM:settimeout-fire]', {
-        purpose: isRotation ? 'fade-then-pause' : 'fade-then-stop',
-        stopRef: stopRef,
-        state: state,
-        currentMusic: currentMusic,
-        t: performance.now().toFixed(0),
-      });
       if (isRotation) sound.pause();                  // preserve seek for resumption
       else            sound.stop();                   // one-shots: reset to start
     }, FADE_MS + 50);
@@ -1507,10 +1367,6 @@ function startBgmRotation() {
     // background-advance corrupts currentMusic vs Howl sync. Log so we can see if it ever
     // fires post-CHANGE-1 (would indicate an unanticipated path).
     if (state === 'PAUSED') {
-      console.log('[BGM:end-blocked-paused]', {
-        endedSong: BGM_ROTATION_SONGS[bgmRotationIdx],
-        t: performance.now().toFixed(0),
-      });
       return;
     }
     // AUDIO-BUGHUNT-1 LOG POINT 2a — fires when a rotation song reaches its natural end.
@@ -1519,14 +1375,6 @@ function startBgmRotation() {
     // suppressed it, or .off('end') detached it before the song reached duration).
     const _endedIdx  = bgmRotationIdx;
     const _nextIdx   = (bgmRotationIdx + 1) % BGM_ROTATION_SONGS.length;
-    console.log('[BGM:end-fired]', {
-      endedSong: BGM_ROTATION_SONGS[_endedIdx],
-      state: state,
-      currentMusic: currentMusic,
-      nextIdx: _nextIdx,
-      nextSong: BGM_ROTATION_SONGS[_nextIdx],
-      t: performance.now().toFixed(0),
-    });
     bgmRotationIdx = (bgmRotationIdx + 1) % BGM_ROTATION_SONGS.length;
     if (currentMusic === MUSIC_STATES.BGM_ROTATION) startBgmRotation();
     // AUDIO-BUGHUNT-1 LOG POINT 2b — fires after the advancement+restart attempt. If
@@ -1535,12 +1383,6 @@ function startBgmRotation() {
     // recursion, OR because the .play() call failed/queued).
     const _newSongName = BGM_ROTATION_SONGS[bgmRotationIdx];
     const _newHowl     = SOUND_LIBRARY[_newSongName];
-    console.log('[BGM:end-handled]', {
-      newIdx: bgmRotationIdx,
-      newSong: _newSongName,
-      newSongPlaying: (_newHowl && typeof _newHowl.playing === 'function') ? _newHowl.playing() : 'unknown',
-      t: performance.now().toFixed(0),
-    });
   });
 }
 
@@ -1557,14 +1399,6 @@ function tickBGM() {
     window._lastLoggedState = null;
   }
   if (state !== window._lastLoggedState) {
-    console.log('[BGM:state-change]', {
-      from: window._lastLoggedState,
-      to: state,
-      currentMusic: currentMusic,
-      lives: (typeof player !== 'undefined') ? player.lives : 'no-player',
-      rotationIdx: bgmRotationIdx,
-      t: performance.now().toFixed(0),
-    });
     window._lastLoggedState = state;
   }
   if (state === 'PAUSED') return;
@@ -1627,16 +1461,6 @@ function selfHealBgm() {
   // the desired Howl is actually playing, and whether self-heal will trigger a forced
   // transition. If willTrigger is true repeatedly for the same desired song, the heal is
   // racing against something that re-silences the Howl (R3/R4 likely candidates).
-  console.log('[BGM:selfHeal-eval]', {
-    audioOn:        _selfHealEntry.audioOn,
-    state:          _selfHealEntry.state,
-    howlerCtxState: _selfHealEntry.howlerCtxState,
-    currentMusic:   _selfHealEntry.currentMusic,
-    t:              _selfHealEntry.t,
-    desired:        desired,
-    isPlaying:      isPlaying,
-    willTrigger:   !isPlaying,
-  });
   if (!isPlaying) {
     currentMusic = null;             // sentinel so transitionToMusic doesn't early-return
     transitionToMusic(desired);
@@ -1670,7 +1494,6 @@ function isPausableState() {
 function togglePause() {
   // PAUSE-DIAG — entry log. If togglePause is reached but state isn't 'GAMEPLAY' or 'PAUSED',
   // both branches no-op silently — that's the suspected mobile failure mode.
-  console.log('[PAUSE-DIAG] togglePause-entry', { stateBefore: state, isPausableState: isPausableState() });
   if (state === 'PAUSED') {
     // AUDIO-3-SIMPLIFY — leaving PAUSED. Resume the active rotation Howl (matching
     // bgmRotationIdx if currentMusic === BGM_ROTATION) and YMCA (if currentMusic === YMCA).
@@ -1714,7 +1537,6 @@ function togglePause() {
   }
   // PAUSE-DIAG — exit log. Compare stateAfter with stateBefore from the entry log to
   // confirm whether either branch actually mutated state, or both no-op'd silently.
-  console.log('[PAUSE-DIAG] togglePause-exit', { stateAfter: state });
 }
 
 function drawPauseOverlay() {
@@ -2796,17 +2618,6 @@ function spawnHat(reason) {
     dodged:     false,
     pulseT:     Math.random() * HAT_PULSE_PERIOD,
   });
-  console.log('[HAT-SPAWN]', {
-    reason:    reason,
-    level:     currentLevel,
-    totalHats: hats.length,
-    initial:   getHatInitialCount(currentLevel),
-    cap:       HAT_MAX_ONSCREEN,
-    spawnX:    Math.round(x),
-    spawnY:    Math.round(y),
-    plat:      'P1',
-    dir:       -1,
-  });
 }
 
 // P-ENEMY-1-FIX-3: queue staggered initial hat spawns at level entry. First hat
@@ -2938,13 +2749,6 @@ function updateHats(dt) {
         hat.ladderRef = lad;
         hat.climbDir  = climbDir;
         hat.x         = ladCx;
-        console.log('[HAT-CLIMB]', {
-          level:    currentLevel,
-          hatX:     Math.round(hat.x),
-          hatY:     Math.round(hat.y),
-          ladCx:    ladCx,
-          climbDir: climbDir,
-        });
       } else {
         // Edge-detection: turn around at platform boundaries (cannot fall off).
         const margin = HAT_SPRITE_SIZE / 2;
@@ -3000,25 +2804,11 @@ function updateHats(dt) {
           if (!hat.dodged) {
             hat.dodged = true;
             addScore(HAT_DODGE_SCORE, true, hat.x, hat.y - 30, '#ffd700');
-            console.log('[HAT-DODGE]', {
-              level:   currentLevel,
-              hatX:    Math.round(hat.x),
-              hatY:    Math.round(hat.y),
-              playerX: Math.round(player.x),
-              playerY: Math.round(player.y),
-            });
           }
         } else if (!player.wieldingBadge) {
           // P-WEAPON-1-FIX: badge wield protects from contact death. updateBadges()
           // runs later this same frame and its kill loop splices the hat + awards
           // score. Symmetric to the capsule guard at line ~3745 (search 'P-WEAPON-1-FIX').
-          console.log('[HAT-DEATH]', {
-            level:    currentLevel,
-            hatX:     Math.round(hat.x),
-            hatY:     Math.round(hat.y),
-            playerX:  Math.round(player.x),
-            playerY:  Math.round(player.y),
-          });
           hit('hat', null);
         }
       } else {
@@ -3061,19 +2851,8 @@ function updateBadges(dt) {
         if (typeof GAME_SFX !== 'undefined' && GAME_SFX.briefcase_pickup) {
           GAME_SFX.briefcase_pickup.play();
         }
-        console.log('[BADGE-PICKUP]', {
-          level:    currentLevel,
-          spawnIdx: badge.spawnIdx,
-          plat:     'P' + badge.platIdx,
-          duration: getBadgeDuration(currentLevel),
-        });
         // P-WEAPON-1-FIX: explicit wield-start log per spec — confirms wieldingBadge
         // state actually transitioned to true (Brian DUMP LOGS verification).
-        console.log('[BADGE-WIELD-START]', {
-          level:       currentLevel,
-          endTime:     +player.badgeWieldEndTime.toFixed(2),
-          currentTime: +levelTime.toFixed(2),
-        });
         break;
       }
     }
@@ -3092,11 +2871,6 @@ function updateBadges(dt) {
     if (levelTime >= player.badgeWieldEndTime) {
       player.wieldingBadge = false;
       player.badgePulseT   = 0;        // P-WEAPON-1-FIX-3: reset on expire
-      console.log('[BADGE-EXPIRE]', {
-        level:   currentLevel,
-        playerX: Math.round(player.x),
-        playerY: Math.round(player.y),
-      });
       return;
     }
     if (state !== 'GAMEPLAY') return;
@@ -3104,12 +2878,6 @@ function updateBadges(dt) {
     // P-WEAPON-1-FIX: per-frame tick log per Brian's spec — confirms the wielding
     // kill loop is being reached every frame while badge is active. Brian DUMP LOGS
     // should show ~60 entries/sec during a wield. Verbose by design.
-    console.log('[BADGE-WIELD-TICK]', {
-      level:        currentLevel,
-      remaining:    +(player.badgeWieldEndTime - levelTime).toFixed(2),
-      capsuleCount: capsules.length,
-      hatCount:     hats.length,
-    });
 
     // Kill capsules — backward iter for splice safety. Capsule center ±
     // CAPSULE_R vs player x±10, y in [py-32, py-4].
@@ -3127,14 +2895,7 @@ function updateBadges(dt) {
         if (typeof GAME_SFX !== 'undefined' && GAME_SFX.capsule_destruction) {
           GAME_SFX.capsule_destruction.play();
         }
-        console.log('[BADGE-KILL]', { target: 'capsule', level: currentLevel, capX: Math.round(cap.x), capY: Math.round(cap.y) });
         // P-WEAPON-1-FIX: explicit kill-fired log per spec, with score delta proof.
-        console.log('[BADGE-KILL-FIRED]', {
-          target:      'capsule',
-          level:       currentLevel,
-          scoreBefore: _scoreBefore,
-          scoreAfter:  playerScore,
-        });
         capsules.splice(i, 1);
       }
     }
@@ -3153,14 +2914,7 @@ function updateBadges(dt) {
         if (typeof GAME_SFX !== 'undefined' && GAME_SFX.player_death_scream) {
           GAME_SFX.player_death_scream.play();
         }
-        console.log('[BADGE-KILL]', { target: 'hat', level: currentLevel, hatX: Math.round(hat.x), hatY: Math.round(hat.y) });
         // P-WEAPON-1-FIX: explicit kill-fired log per spec, with score delta proof.
-        console.log('[BADGE-KILL-FIRED]', {
-          target:      'hat',
-          level:       currentLevel,
-          scoreBefore: _scoreBefore,
-          scoreAfter:  playerScore,
-        });
         hats.splice(i, 1);
       }
     }
@@ -3294,16 +3048,6 @@ function spawnCapsule() {
         cleared: !!c.cleared,
       };
     });
-    console.log('[CAPSULE-CENSUS] MAX_CAPSULES bail', {
-      currentLevel:   currentLevel,
-      count:          capsules.length,
-      MAX_CAPSULES:   MAX_CAPSULES,
-      pelosiState:    (typeof pelosi !== 'undefined') ? pelosi.state : 'no-pelosi',
-      pelosiCarrying: (typeof pelosi !== 'undefined' && pelosi.targetCapsule)
-                        ? capsules.indexOf(pelosi.targetCapsule) : -1,
-      helpersAlive:   (typeof helpers !== 'undefined') ? helpers.length : 'no-helpers',
-      census:         census,
-    });
     return;
   }
   // DK-GATE-PHASE-2: anti-camp branch + first-pair branch + throw-cycle
@@ -3353,16 +3097,6 @@ function spawnCapsule() {
       descendDestPlat:   null,
       floorTime:         0,
     });
-    console.log('[DIAGONAL-THROW]', 'spawn', {
-      throwCount:           throwCounter,
-      isMandatoryDiagonal:  _isMandatoryDiagonal,
-      level:                currentLevel,
-      everyN:               _diagonalEveryN,
-      spawnX:               BARREL_X,
-      spawnY:               TOP.y + 16,
-      vx:                   DIAGONAL_THROW_VX,
-      vy:                   DIAGONAL_THROW_VY,
-    });
   } else {
     // Normal Path C spawn from BARREL_X.
     capsules.push({
@@ -3391,11 +3125,6 @@ function spawnCapsule() {
   // P-DIFFICULTY-1-FIX-V3 BUG 10 diagnostic: log spawn-time speedMult so Brian
   // can confirm via DUMP LOGS what value is actually applied at L8+ (Bug 10
   // field test report: "capsules at L8+ NOT visibly faster").
-  console.log('[CAPSULE-SPAWN-DIAG]', {
-    site:        'normal',
-    currentLevel: currentLevel,
-    speedMult:   _p.capsuleSpeedMult,
-  });
 }
 
 // DK-GATE-PHASE-1: DK-faithful ladder-drop decision routine. Port of original
@@ -3571,11 +3300,6 @@ function updateCapsules(dt) {
     if (c.onPlat === FLOOR) {
       c.floorTime = (c.floorTime || 0) + dt;
       if (c.floorTime >= FLOOR_TTL) {
-        console.log('[FLOOR-TTL]', {
-          capX:      Math.round(c.x),
-          capY:      Math.round(c.y),
-          floorTime: c.floorTime.toFixed(2),
-        });
         capsules.splice(i, 1);
         continue;
       }
@@ -3627,11 +3351,6 @@ function updateCapsules(dt) {
         else if (_lplat.tilt >  0.1) c.vx =  _rsT;
         else if (_lplat.tilt < -0.1) c.vx = -_rsT;
         else                         c.vx = c.vx >= 0 ? _rsT : -_rsT;
-        console.log('[DIAGONAL-THROW]', 'land', {
-          capX:  Math.round(c.x),
-          capY:  Math.round(c.y),
-          plat:  (_lplat === FLOOR) ? 'FLOOR' : ('P' + platforms.indexOf(_lplat)),
-        });
         break;
       }
     } else if (c.descending) {
@@ -3662,11 +3381,6 @@ function updateCapsules(dt) {
           else if (c.onPlat.tilt >  0.1)  c.vx =  _rs;
           else if (c.onPlat.tilt < -0.1)  c.vx = -_rs;
           else                            c.vx = c.vx >= 0 ? _rs : -_rs;
-          console.log('[DESCENT-DIAG]', 'end', {
-            capX:  Math.round(c.x),
-            capY:  Math.round(c.y),
-            platY: Math.round(c.onPlat.y),
-          });
           c.descendLadder    = null;
           c.descendDestY     = null;
           c.descendDestPlat  = null;
@@ -3717,17 +3431,6 @@ function updateCapsules(dt) {
           const _gateResult = shouldDropDownLadder(c, lad, player,
             { ...getLevelParams(), dkDifficulty: dkDifficultyEffective });
           const _willDrop   = _gateResult.drop;
-          console.log('[LADDER-DROP-DIAG]', {
-            currentLevel: currentLevel,
-            playerX:      Math.round(player.x),
-            playerVx:     Math.round(player.vx),
-            ladCx:        ladCx,
-            capX:         Math.round(c.x),
-            willDrop:     _willDrop,
-            reason:       _gateResult.reason,
-            roll:         _gateResult.roll,
-            threshold:    _gateResult.threshold,
-          });
           if (_willDrop) {
             // DK-DESCENT-V1: enter descending state (replaces V4's teleport-to-
             // ladder-top + gravity fall). Mirrors arcade DK Barrel_State_
@@ -3760,13 +3463,6 @@ function updateCapsules(dt) {
             c.descendDestPlat  = _destPlat;
             c.vx               = 0;
             c.vy               = 0;                      // no gravity during descent
-            console.log('[DESCENT-DIAG]', 'start', {
-              capX:      Math.round(c.x),
-              capY:      Math.round(c.y),
-              ladCx:     ladCx,
-              destY:     Math.round(_destY),
-              destPlatY: _destPlat ? Math.round(_destPlat.y) : 'OFF-BOTTOM',
-            });
             dropped = true;
             break;
           }
@@ -3832,19 +3528,6 @@ function updateCapsules(dt) {
       const _wasVx = c.vx;
       c.x = LEFT_WALL_X;
       if (c.vx < 0) c.vx = Math.abs(c.vx);
-      console.log('[LEFT-WALL]', {
-        level:  currentLevel,
-        capX:   Math.round(c.x),
-        prevVx: Math.round(_wasVx),
-        newVx:  Math.round(c.vx),
-        state:  (c.descending ? 'descending'
-              :  c.thrown     ? 'thrown'
-              :  c.rolling    ? 'rolling'
-              :                  'falling'),
-        onPlat: (c.onPlat === FLOOR ? 'FLOOR'
-              :  c.onPlat            ? ('P' + platforms.indexOf(c.onPlat))
-              :                         'null'),
-      });
     }
 
     // C2 v2 / D2 — off-screen exit (right) + off-bottom backstop destroy a capsule.
@@ -3961,7 +3644,6 @@ function hit(source, capsule) {
   // sequence during PENDING (resetting stateT and any non-isolated timers). gameOverPendingT
   // is now isolated, but blocking hit() entirely is the cleanest defense.
   if (state === 'DEATH_REACTION' || state === 'GAME_OVER' || state === 'GAMEOVER_PENDING') return;
-  if (typeof console !== 'undefined') console.log('HIT by', source, '— lives before decrement:', player.lives);
   state = 'DEATH_REACTION';
   stateT = 0;
   deathReactionT = 0;
@@ -4003,11 +3685,6 @@ function hit(source, capsule) {
   // field test, then the testing path is "run into capsule" and the synth Brian hears
   // is playSfx_capsuleHitsPlayer (intended — this is the death thwack, not the
   // destruction shatter).
-  console.log('[CAPSULE-DIAG] capsuleHitsPlayer (line 2684) — player-hit synth, NOT a destruction event', {
-    capsuleVx: (capsule && typeof capsule.vx === 'number') ? capsule.vx : 'no-capsule',
-    source:    source,
-    livesNow:  player.lives,
-  });
   // SFX-PACK-FIX-V3: synth stripped per Brian field test, no mp3 replacement (silent on player-hit)
   // playSfx_capsuleHitsPlayer();
   // The visual capsule-hits-player moment now goes audio-silent — death scream
@@ -4223,33 +3900,10 @@ function resetForLevelTransition() {
     });
   }
   currentMusic = null;
-  console.log('[BGM:level-reset]', {
-    rotationIdx: bgmRotationIdx,
-    nextSong: BGM_ROTATION_SONGS[bgmRotationIdx],
-    currentMusic: currentMusic,
-    actuallyPlaying: (() => {
-      const playing = [];
-      for (const [name, howl] of Object.entries(SOUND_LIBRARY)) {
-        if (howl && typeof howl.playing === 'function' && howl.playing()) {
-          playing.push(name);
-        }
-      }
-      return playing;
-    })(),
-    t: performance.now().toFixed(0),
-  });
   // AUDIO-3-SIMPLIFY-BUGHUNT-2 LOG POINT 4 — capture Howler global state at the reset
   // moment. autoUnlocked + ctx.state + global mute reveal whether Howler internals are
   // healthy after the rapid .stop() sequence above. If autoUnlocked goes from true→false,
   // or ctx.state regresses from 'running'→'suspended', that's candidate 1 confirmed.
-  console.log('[BGM:reset-howler-snapshot]', {
-    resetType: 'level-transition',
-    howlerCtxState: (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx.state : 'no-ctx',
-    howlerVolume:   (typeof Howler !== 'undefined') ? Howler.volume() : 'no-howler',
-    howlerMuted:    (typeof Howler !== 'undefined') ? Howler._muted : 'no-howler',
-    autoUnlocked:   (typeof Howler !== 'undefined') ? Howler._autoUnlocked : 'no-howler',
-    t: performance.now().toFixed(0),
-  });
   state  = 'GAMEPLAY';
   stateT = 0;
 }
@@ -4296,32 +3950,10 @@ function resetForGameOver() {
     });
   }
   currentMusic = null;
-  console.log('[BGM:gameover-reset]', {
-    rotationIdx: bgmRotationIdx,
-    currentMusic: currentMusic,
-    actuallyPlaying: (() => {
-      const playing = [];
-      for (const [name, howl] of Object.entries(SOUND_LIBRARY)) {
-        if (howl && typeof howl.playing === 'function' && howl.playing()) {
-          playing.push(name);
-        }
-      }
-      return playing;
-    })(),
-    t: performance.now().toFixed(0),
-  });
   // AUDIO-3-SIMPLIFY-BUGHUNT-2 LOG POINT 4 — Howler global state snapshot at game-over
   // reset. Pair with the level-reset snapshot to compare Howler health across the two
   // reset paths. If autoUnlocked or ctx.state differ between them, that explains why one
   // reset works and the other doesn't.
-  console.log('[BGM:reset-howler-snapshot]', {
-    resetType: 'gameover',
-    howlerCtxState: (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx.state : 'no-ctx',
-    howlerVolume:   (typeof Howler !== 'undefined') ? Howler.volume() : 'no-howler',
-    howlerMuted:    (typeof Howler !== 'undefined') ? Howler._muted : 'no-howler',
-    autoUnlocked:   (typeof Howler !== 'undefined') ? Howler._autoUnlocked : 'no-howler',
-    t: performance.now().toFixed(0),
-  });
   state  = 'INTRO_BLACK';
   stateT = 0;
 }
@@ -4347,11 +3979,9 @@ function _endAttractScene3Music(resumeFreeWorld) {
   attractScene3MusicActive = false;
   if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.ymca) {
     SOUND_LIBRARY.ymca.stop();
-    console.log('[ATTRACT-MUSIC] stop ymca (scene 3 end, resume=' + resumeFreeWorld + ')');
   }
   if (resumeFreeWorld && typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.free_world) {
     SOUND_LIBRARY.free_world.play();   // Howler resumes from paused position, no restart
-    console.log('[ATTRACT-MUSIC] resume free_world (scene 3 → phase 4)');
   }
 }
 
@@ -4362,7 +3992,6 @@ function _endAttractScene3Music(resumeFreeWorld) {
 // (cold-boot returns to INTRO_BLACK, post-game-over to GAME_OVER).
 function enterAttract() {
   attractSourceState = state;     // remember what we came from for exit restore
-  console.log('[ATTRACT-ENTER]', { idleTime: +attractIdleTime.toFixed(2), source: attractSourceState });
   state               = 'ATTRACT';
   stateT              = 0;
   attractTime         = 0;
@@ -4384,13 +4013,11 @@ function enterAttract() {
     // ymca might be playing from GAME_OVER; free_world might be playing from intro chain.
     if (SOUND_LIBRARY.ymca && SOUND_LIBRARY.ymca.playing()) {
       SOUND_LIBRARY.ymca.stop();
-      console.log('[ATTRACT-MUSIC] enterAttract pre-stop ymca');
     }
     SOUND_LIBRARY.free_world.stop();    // clean state — kills any prior fade or play state
     SOUND_LIBRARY.free_world.volume(ATTRACT_FREE_WORLD_VOL);
     SOUND_LIBRARY.free_world.loop(true);
     SOUND_LIBRARY.free_world.play();
-    console.log('[ATTRACT-MUSIC] start free_world (vol=' + ATTRACT_FREE_WORLD_VOL + ', loop=true)');
   }
   // Preempt tickBGM so it doesn't undo our manual play next frame.
   currentMusic          = MUSIC_STATES.SILENT;
@@ -4407,7 +4034,6 @@ function enterAttract() {
 // Any INTRO_* source normalizes to INTRO_BLACK because mid-intro states have internal
 // sub-state (escalator position, stair progress) that wouldn't restore cleanly.
 function exitAttract(reason) {
-  console.log('[ATTRACT-EXIT]', { reason: reason || 'unknown', phase: attractPhase, time: +attractTime.toFixed(2), restore: attractSourceState });
   // P-ATTRACT-2B: cleanup demo state if user cancelled mid-Phase-1 (input event).
   // Idempotent — no-op if not in demo. Restores real state before state-machine swap below.
   exitAttractDemo();
@@ -4418,7 +4044,6 @@ function exitAttract(reason) {
     SOUND_LIBRARY.free_world.stop();
     SOUND_LIBRARY.free_world.loop(false);
     SOUND_LIBRARY.free_world.volume(0.6);
-    console.log('[ATTRACT-MUSIC] stop free_world (exitAttract — restored loop=false vol=0.6 defaults)');
   }
   attractMusicPlaying = false;
   // Normalize INTRO_* sources to INTRO_BLACK (mid-intro restoration would replay from
@@ -4445,7 +4070,6 @@ function exitAttract(reason) {
 // wrap (Phase 4 → Phase 1) inside the ATTRACT case.
 function enterAttractDemo() {
   if (attractDemoMode) return;
-  console.log('[ATTRACT-DEMO] Demo Phase 1 entry — snapshot real state + reset to L1 fresh.');
   // Snapshot of state we'll mutate during demo. Restored on exit. Player object
   // fields snapshotted by-value (primitives) — arrays + Set restored by clear+repush.
   attractDemoSavedState = {
@@ -4536,7 +4160,6 @@ function enterAttractDemo() {
 // on attract cancel (input event during demo). Idempotent.
 function exitAttractDemo() {
   if (!attractDemoMode) return;
-  console.log('[ATTRACT-DEMO] Demo Phase 1 exit — restore real state.');
   attractDemoMode = false;
   // Clear synthetic keys[] so demo's last-held key doesn't bleed into real game.
   for (const _k in keys) keys[_k] = false;
@@ -5548,13 +5171,6 @@ function updateHelpers(dt) {
         // CAPSULE-DIAG — log Howl state + global mute at the moment .play() fires so Brian's
         // field-test DUMP LOGS reveals whether the mp3 is loaded + audible at runtime.
         if (typeof GAME_SFX !== 'undefined' && GAME_SFX.capsule_destruction) {
-          console.log('[CAPSULE-DIAG] play() at helper-kill (line 3558)', {
-            howlState:    GAME_SFX.capsule_destruction.state(),    // 'unloaded' | 'loading' | 'loaded'
-            howlVolume:   GAME_SFX.capsule_destruction.volume(),
-            globalMute:   (typeof Howler !== 'undefined') ? Howler._muted : 'no-howler',
-            globalVolume: (typeof Howler !== 'undefined') ? Howler.volume() : 'no-howler',
-            ctxState:     (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx.state : 'no-ctx',
-          });
           GAME_SFX.capsule_destruction.play();
         }
         if (h.type === 'ZOMBIE') { helperKilled = true; break; }
@@ -5573,12 +5189,6 @@ function updateHelpers(dt) {
         const _hOverlapY = (hat.y + HAT_AABB_H / 2 > h.y - h.h) &&
                           (hat.y - HAT_AABB_H / 2 < h.y);
         if (_hOverlapX && _hOverlapY) {
-          console.log('[HAT-KILL]', {
-            killer: (h.type === 'ZOMBIE') ? 'zombie_voter' : 'antifa',
-            level:  currentLevel,
-            hatX:   Math.round(hat.x),
-            hatY:   Math.round(hat.y),
-          });
           // P-WEAPON-1: helper-vs-hat kill plays the same comedic SFX as
           // player-badge-vs-hat kills (Brian's call — unified audio for
           // hat destruction regardless of source).
@@ -5632,7 +5242,6 @@ function activateSS() {
   ss.units[2].x = lad5.x + LADDER_W + 30;                // right flank
   ss.units[2].y = TOP.y;
   for (const u of ss.units) { u.state = 'IDLE'; u.stateT = 0; u.targetAntifa = null; }
-  if (typeof console !== 'undefined') console.log('SS ACTIVATED at t=' + totalT.toFixed(2));
 }
 
 function updateSS(dt) {
@@ -5909,10 +5518,6 @@ function updatePelosi(dt) {
         // CAPSULE-DIAG — Pelosi lost her carried capsule before reaching anchor.
         // If this fires during Brian's "destroy a capsule" field test, the smash
         // never happens — capsule already gone, .play() at line ~3918 unreachable.
-        console.log('[CAPSULE-DIAG] Pelosi CARRY_TO_ANCHOR -> SHRUG (carried capsule lost)', {
-          targetCapsule: !!pelosi.targetCapsule,
-          inCapsulesArray: pelosi.targetCapsule ? (capsules.indexOf(pelosi.targetCapsule) >= 0) : false,
-        });
         pelosi.targetCapsule = null;
         pelosi.phase = 'SHRUG';
         pelosi.phaseT = 0;
@@ -5923,14 +5528,6 @@ function updatePelosi(dt) {
         // CAPSULE-DIAG — Pelosi reached anchor; about to splice capsule + fire mp3.
         // This is a one-shot per Pelosi-smash sequence (state transitions to SLAM
         // at end of block, so the if-arrived doesn't re-fire next frame).
-        console.log('[CAPSULE-DIAG] Pelosi reached anchor, splicing capsule', {
-          pelosiX:        pelosi.x,
-          smashX:         PELOSI_SMASH_X,
-          targetCapsule:  !!pelosi.targetCapsule,
-          capsuleIdx:     pelosi.targetCapsule ? capsules.indexOf(pelosi.targetCapsule) : -1,
-          gameSfxDefined: (typeof GAME_SFX !== 'undefined'),
-          capsDestrExists: (typeof GAME_SFX !== 'undefined' && !!GAME_SFX.capsule_destruction),
-        });
         // Arrived. Snap to anchor, splice capsule, spawn shatter, transition to SLAM.
         pelosi.x = PELOSI_SMASH_X;
         const ci = capsules.indexOf(pelosi.targetCapsule);
@@ -5944,13 +5541,6 @@ function updatePelosi(dt) {
         // ONE of these two prefixes shows in DUMP LOGS during a capsule-destroy field test,
         // we know which trigger path the player is exercising vs which is silent.
         if (typeof GAME_SFX !== 'undefined' && GAME_SFX.capsule_destruction) {
-          console.log('[CAPSULE-DIAG] play() at Pelosi-smash (line 3882)', {
-            howlState:    GAME_SFX.capsule_destruction.state(),
-            howlVolume:   GAME_SFX.capsule_destruction.volume(),
-            globalMute:   (typeof Howler !== 'undefined') ? Howler._muted : 'no-howler',
-            globalVolume: (typeof Howler !== 'undefined') ? Howler.volume() : 'no-howler',
-            ctxState:     (typeof Howler !== 'undefined' && Howler.ctx) ? Howler.ctx.state : 'no-ctx',
-          });
           const playId = GAME_SFX.capsule_destruction.play();
           // CAPSULE-DIAG — log the sound ID + Howl polyphony state immediately AFTER
           // .play() returns. If playId is undefined, Howler refused (suspended ctx,
@@ -5958,18 +5548,10 @@ function updatePelosi(dt) {
           // sound but something downstream (concurrent voice limit, mid-fire stop) is
           // killing it before audio output. Helper-kill at line ~3580 doesn't have this
           // post-call log because Brian confirmed it works — only Pelosi-smash needs it.
-          console.log('[CAPSULE-DIAG] post-play() at Pelosi-smash', {
-            playId:           playId,
-            playingNow:       GAME_SFX.capsule_destruction.playing(),
-            durationReported: GAME_SFX.capsule_destruction.duration(),
-          });
         }
         // CAPSULE-DIAG — confirm we exited the if-guard cleanly and reached the SLAM
         // transition. If this fires but post-play() above didn't, the .play() call
         // itself threw silently (would also surface in browser console as Howler error).
-        console.log('[CAPSULE-DIAG] Pelosi -> SLAM phase transition', {
-          phaseT: pelosi.phaseT,
-        });
         pelosi.phase = 'SLAM';
         pelosi.phaseT = 0;
         break;
@@ -7018,10 +6600,6 @@ canvas.addEventListener('pointerdown', e => {
     const txN = (e.clientX - rN.left) / scale, tyN = (e.clientY - rN.top) / scale;
     // PAUSE-DIAG — log every pointerdown that reaches the icon hit-test block. Includes
     // canvas-pixel coords + IS_MOBILE + the live PAUSE_HIT_BOX dimensions for math sanity.
-    console.log('[PAUSE-DIAG] pointerdown-fired', {
-      x: txN.toFixed(1), y: tyN.toFixed(1), isMobile: IS_MOBILE, state: state,
-      pauseHitBox: { x: PAUSE_HIT_BOX.x, y: PAUSE_HIT_BOX.y, w: PAUSE_HIT_BOX.w, h: PAUSE_HIT_BOX.h },
-    });
     // AUDIO-3-LOG-DUMP — DUMP LOGS button hit-test. Only active when the button is rendered
     // (gameplay/game-over/CUTSCENE_BETWEEN). Opens DOM modal; does NOT advance game state.
     if (dumpBtnVisible() && pointInIconBox(txN, tyN, DUMP_BTN_BOX)) { showDumpLogModal(); return; }
@@ -7031,7 +6609,6 @@ canvas.addEventListener('pointerdown', e => {
     if (!IS_MOBILE && pointInIconBox(txN, tyN, SPEAKER_HIT_BOX)) { toggleAudio(); return; }
     if (pointInIconBox(txN, tyN, PAUSE_HIT_BOX)) {
       // PAUSE-DIAG — confirm the hit-test actually matched (not just "tap landed on canvas").
-      console.log('[PAUSE-DIAG] pointerdown-pause-hit', { state: state });
       togglePause();
       return;
     }
@@ -7118,10 +6695,6 @@ canvas.addEventListener('touchstart', e=>{
       const txN = (t0N.clientX - r0.left) / scale, tyN = (t0N.clientY - r0.top) / scale;
       // PAUSE-DIAG — touchstart equivalent of the pointerdown log. iOS Safari is the
       // primary path here since K-FIX-2's preventDefault suppresses synthesized pointerdown.
-      console.log('[PAUSE-DIAG] touchstart-fired', {
-        x: txN.toFixed(1), y: tyN.toFixed(1), isMobile: IS_MOBILE, state: state,
-        pauseHitBox: { x: PAUSE_HIT_BOX.x, y: PAUSE_HIT_BOX.y, w: PAUSE_HIT_BOX.w, h: PAUSE_HIT_BOX.h },
-      });
       // AUDIO-3-LOG-DUMP — DUMP LOGS button (iOS touch path).
       if (dumpBtnVisible() && pointInIconBox(txN, tyN, DUMP_BTN_BOX)) { showDumpLogModal(); return; }
       // MOBILE-HIT-TEST-FIX — 50×50 hit-rects on iOS touch path too.
@@ -7129,7 +6702,6 @@ canvas.addEventListener('touchstart', e=>{
       if (!IS_MOBILE && pointInIconBox(txN, tyN, SPEAKER_HIT_BOX)) { toggleAudio(); return; }
       if (pointInIconBox(txN, tyN, PAUSE_HIT_BOX)) {
         // PAUSE-DIAG — confirm hit-test matched on iOS Safari touch path.
-        console.log('[PAUSE-DIAG] touchstart-pause-hit', { state: state });
         togglePause();
         return;
       }
@@ -7731,13 +7303,11 @@ function renderAttractScene3_DTJYmca(t) {
     if (typeof SOUND_LIBRARY !== 'undefined') {
       if (SOUND_LIBRARY.free_world) {
         SOUND_LIBRARY.free_world.pause();   // preserves seek; resumes later via .play()
-        console.log('[ATTRACT-MUSIC] pause free_world (scene 3 entry)');
       }
       if (SOUND_LIBRARY.ymca) {
         SOUND_LIBRARY.ymca.volume(0.4);
         SOUND_LIBRARY.ymca.loop(true);
         SOUND_LIBRARY.ymca.play();
-        console.log('[ATTRACT-MUSIC] start ymca (scene 3, vol=0.4, loop=true)');
       }
     }
   }
@@ -8836,13 +8406,6 @@ function loop(ts) {
       const _baseDiff = (getLevelParams().dkDifficulty || 1);
       const _newDiff  = Math.min(_baseDiff + Math.floor(levelTime / DK_DIFFICULTY_RAMP_INTERVAL), 5);
       if (_newDiff !== dkDifficultyEffective) {
-        console.log('[DK-DIFFICULTY-RAMP]', {
-          levelTime: levelTime.toFixed(1),
-          level:     currentLevel,
-          base:      _baseDiff,
-          effective: _newDiff,
-          prev:      dkDifficultyEffective,
-        });
         dkDifficultyEffective = _newDiff;
       }
       updatePlayer(dt);
@@ -9097,7 +8660,6 @@ function loop(ts) {
       }
       const _newPhase = Math.min(4, Math.floor(attractTime / ATTRACT_PHASE_LEN) + 1);
       if (_newPhase !== attractPhase) {
-        console.log('[ATTRACT-PHASE]', { phase: _newPhase, time: +attractTime.toFixed(2) });
         const _prevPhase = attractPhase;
         attractPhase = _newPhase;
         // P-ATTRACT-2B: Phase 1 → Phase 2 transition ends the demo and restores real state.
