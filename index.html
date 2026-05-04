@@ -4368,14 +4368,76 @@ function recordInputEvent(type, data) {
 // P-ATTRACT-2A: stop recording on first life decrement, dump captured JSON to
 // console for Brian to copy/paste into P-ATTRACT-2B as the DEMO_INPUTS const.
 // Idempotent — safe to call multiple times (no-op if not recording).
+// P-ATTRACT-2A-FIX2 (May 3 2026): also save to localStorage and render an
+// on-screen textarea overlay — multi-line JSON copy from Chrome devtools console
+// is unreliable. Overlay + localStorage backup gives two reliable copy paths.
 function attractRecordingFinalize() {
   if (!attractRecording) return;
   const dur = Math.round(performance.now() - attractRecordingStartTime);
   attractRecording = false;
+  const json = JSON.stringify(attractRecordingInputs, null, 2);
+  const fullText = 'const DEMO_INPUTS = ' + json + ';';
+
+  // Existing console logs (kept for diagnostic continuity).
   console.log('[ATTRACT-REC] Recording complete.');
   console.log('[ATTRACT-REC] Inputs captured:', attractRecordingInputs.length);
   console.log('[ATTRACT-REC] Duration:', dur, 'ms');
-  console.log('[ATTRACT-REC] DEMO_INPUTS = ' + JSON.stringify(attractRecordingInputs, null, 2) + ';');
+  console.log('[ATTRACT-REC] DEMO_INPUTS = ' + json + ';');
+
+  // P-ATTRACT-2A-FIX2: localStorage backup. Survives page navigation / accidental
+  // overlay dismiss. Retrieve via console: copy(localStorage.getItem('demo_inputs_recording')).
+  try {
+    localStorage.setItem('demo_inputs_recording', fullText);
+    console.log('[ATTRACT-REC] Saved to localStorage key: demo_inputs_recording');
+    console.log('[ATTRACT-REC] Retrieve later with: copy(localStorage.getItem("demo_inputs_recording"))');
+  } catch (e) {
+    console.warn('[ATTRACT-REC] localStorage save failed:', e);
+  }
+
+  // P-ATTRACT-2A-FIX2: on-screen textarea overlay — primary copy path.
+  showRecordingOverlay(fullText);
+}
+
+// P-ATTRACT-2A-FIX2: render full-screen textarea overlay containing the captured
+// JSON. Auto-focuses + selects all text so Ctrl+C copies immediately. Click outside
+// the textarea (on the dark backdrop) to dismiss. Re-rendered fresh each finalize
+// (existing overlay removed first).
+function showRecordingOverlay(text) {
+  const existing = document.getElementById('attract-rec-overlay');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'attract-rec-overlay';
+  overlay.style.cssText =
+    'position:fixed;top:0;left:0;right:0;bottom:0;' +
+    'background:rgba(0,0,0,0.85);z-index:99999;' +
+    'display:flex;flex-direction:column;padding:20px;box-sizing:border-box;';
+
+  const label = document.createElement('div');
+  label.style.cssText =
+    'color:#FFD700;font-family:monospace;font-size:14px;margin-bottom:10px;';
+  label.textContent = 'DEMO RECORDING — click textarea, Ctrl+A, Ctrl+C to copy. Click outside to dismiss.';
+  overlay.appendChild(label);
+
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText =
+    'flex:1;background:#111;color:#0f0;font-family:monospace;font-size:11px;' +
+    'padding:10px;border:2px solid #FFD700;resize:none;';
+  ta.spellcheck = false;
+  overlay.appendChild(ta);
+
+  // Click on backdrop (not on textarea or label) dismisses.
+  overlay.addEventListener('click', function(e) {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  document.body.appendChild(overlay);
+  // Defer focus + select so the overlay is in the DOM before selection starts.
+  setTimeout(function() {
+    ta.focus();
+    ta.select();
+  }, 100);
 }
 
 // P-ATTRACT-1: enter ATTRACT mode after the source-state idle threshold elapses
