@@ -4347,9 +4347,11 @@ function _endAttractScene3Music(resumeFreeWorld) {
   attractScene3MusicActive = false;
   if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.ymca) {
     SOUND_LIBRARY.ymca.stop();
+    console.log('[ATTRACT-MUSIC] stop ymca (scene 3 end, resume=' + resumeFreeWorld + ')');
   }
   if (resumeFreeWorld && typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.free_world) {
     SOUND_LIBRARY.free_world.play();   // Howler resumes from paused position, no restart
+    console.log('[ATTRACT-MUSIC] resume free_world (scene 3 → phase 4)');
   }
 }
 
@@ -4367,16 +4369,33 @@ function enterAttract() {
   attractPhase        = 1;
   attractIdleTime     = 0;
   preGameplayIdleTime = 0;
-  // P-ATTRACT-2C (May 3 2026): start free_world music here so it plays continuously
-  // across all 4 phases (was: started at Phase 2 entry inside ATTRACT case, leaving
-  // Phase 1 silent). Music stops in exitAttract(). Loop wrap (Phase 4 → Phase 1)
-  // does NOT restart music — it just keeps playing from current position.
+  // P-ATTRACT-MUSIC-FIX (May 3 2026): root-cause fix for silent-attract bug. tickBGM
+  // runs every frame regardless of state. On entering ATTRACT, computeDesiredMusic
+  // falls through to SILENT (no ATTRACT branch), but currentMusic is whatever was
+  // playing pre-attract (ESCALATOR=free_world for cold-boot, YMCA for post-game-over).
+  // tickBGM's next transitionToMusic(SILENT) sees currentMusic != SILENT, fades + stops
+  // currentlyPlayingSound. For cold-boot that's free_world — the EXACT Howl we just
+  // started below. Result: 250ms after enterAttract, music goes silent.
+  // Fix: preempt tickBGM by setting currentMusic=SILENT + currentlyPlayingSound=null
+  // BEFORE starting free_world. Next tickBGM tick sees desired=SILENT, currentMusic=SILENT,
+  // === early-return — no interference. We control attract music manually throughout.
   if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.free_world) {
+    // First, hard-stop any currently-playing music so we start from a clean slate.
+    // ymca might be playing from GAME_OVER; free_world might be playing from intro chain.
+    if (SOUND_LIBRARY.ymca && SOUND_LIBRARY.ymca.playing()) {
+      SOUND_LIBRARY.ymca.stop();
+      console.log('[ATTRACT-MUSIC] enterAttract pre-stop ymca');
+    }
+    SOUND_LIBRARY.free_world.stop();    // clean state — kills any prior fade or play state
     SOUND_LIBRARY.free_world.volume(ATTRACT_FREE_WORLD_VOL);
     SOUND_LIBRARY.free_world.loop(true);
     SOUND_LIBRARY.free_world.play();
+    console.log('[ATTRACT-MUSIC] start free_world (vol=' + ATTRACT_FREE_WORLD_VOL + ', loop=true)');
   }
-  attractMusicPlaying = true;
+  // Preempt tickBGM so it doesn't undo our manual play next frame.
+  currentMusic          = MUSIC_STATES.SILENT;
+  currentlyPlayingSound = null;
+  attractMusicPlaying   = true;
   // P-ATTRACT-2B: kick off Phase 1 demo immediately (Phase 1 always begins at attract entry).
   enterAttractDemo();
 }
@@ -4399,6 +4418,7 @@ function exitAttract(reason) {
     SOUND_LIBRARY.free_world.stop();
     SOUND_LIBRARY.free_world.loop(false);
     SOUND_LIBRARY.free_world.volume(0.6);
+    console.log('[ATTRACT-MUSIC] stop free_world (exitAttract — restored loop=false vol=0.6 defaults)');
   }
   attractMusicPlaying = false;
   // Normalize INTRO_* sources to INTRO_BLACK (mid-intro restoration would replay from
@@ -7709,14 +7729,17 @@ function renderAttractScene3_DTJYmca(t) {
   if (!attractScene3MusicActive) {
     attractScene3MusicActive = true;
     if (typeof SOUND_LIBRARY !== 'undefined') {
-      if (SOUND_LIBRARY.free_world) SOUND_LIBRARY.free_world.pause();   // preserves seek; resumes later via .play()
+      if (SOUND_LIBRARY.free_world) {
+        SOUND_LIBRARY.free_world.pause();   // preserves seek; resumes later via .play()
+        console.log('[ATTRACT-MUSIC] pause free_world (scene 3 entry)');
+      }
       if (SOUND_LIBRARY.ymca) {
         SOUND_LIBRARY.ymca.volume(0.4);
         SOUND_LIBRARY.ymca.loop(true);
         SOUND_LIBRARY.ymca.play();
+        console.log('[ATTRACT-MUSIC] start ymca (scene 3, vol=0.4, loop=true)');
       }
     }
-    console.log('[ATTRACT-SCENE3] Music swap: free_world paused, ymca playing.');
   }
   // Pose cycle — same pattern as the real gameplay dance render (line ~8077 area):
   // tWithinCycle = local-t modulo cycle duration.
