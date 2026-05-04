@@ -4853,11 +4853,17 @@ function updatePickup(dt) {
   }
 
   if (!pickup.active) {
-    pickupSpawnTimer += dt;
-    if (pickupSpawnTimer >= pickupRespawnDelay) {
-      const idx = MIDDLE_PLATFORM_INDICES[Math.floor(Math.random() * MIDDLE_PLATFORM_INDICES.length)];
-      spawnPickupOnPlatform(platforms[idx]);
-      pickupSpawnTimer = 0;
+    // P-ENEMY-FIX-PASS (May 3 2026): briefcase respawn frozen while ANY helper
+    // is alive. Prevents player exploit of stacking multiple antifa/zombie waves
+    // by repeatedly grabbing pickups before previous helpers despawn. Timer is
+    // FROZEN (not reset) — player doesn't pay extra wait once the field clears.
+    if (helpers.length === 0) {
+      pickupSpawnTimer += dt;
+      if (pickupSpawnTimer >= pickupRespawnDelay) {
+        const idx = MIDDLE_PLATFORM_INDICES[Math.floor(Math.random() * MIDDLE_PLATFORM_INDICES.length)];
+        spawnPickupOnPlatform(platforms[idx]);
+        pickupSpawnTimer = 0;
+      }
     }
     return;
   }
@@ -4914,6 +4920,34 @@ const ANTIFA_CLIMB_SPD = 90;     // G5 — Notion spec
 const ZOMBIE_SPD     = 40;
 const HELPER_LIFE    = 25.0;     // safety auto-despawn
 const ZOMBIE_SPRITES = ['zombie_winemom', 'zombie_pinkhair', 'zombie_glasses', 'zombie_dad'];
+// P-ENEMY-FIX-PASS (May 3 2026): zombie sprite anti-back-to-back rotation. Per
+// Brian: next pick cannot be same as last AND cannot be adjacent in rotation
+// order. Example: if last was zombie_dad (0), next must be one of zombie_glasses
+// (2), zombie_winemom (3) — NOT zombie_dad (same) and NOT zombie_pinkhair
+// (adjacent). Order is LOCKED — changing breaks the constraint pattern. Antifa
+// is NOT in this rotation (separate type, handled by spawnAntifaWave path).
+// State is per-game-session — does NOT reset on level transition or death so
+// the constraint persists across the entire run for consistency.
+const ZOMBIE_ROTATION = [
+  'zombie_dad',       // index 0
+  'zombie_pinkhair',  // index 1
+  'zombie_glasses',   // index 2
+  'zombie_winemom',   // index 3
+];
+let lastZombieRotIdx = -1;     // -1 sentinel = first pick unconstrained
+
+function pickNextZombieSprite() {
+  const valid = [];
+  for (let i = 0; i < ZOMBIE_ROTATION.length; i++) {
+    // Anti-back-to-back: must skip ≥1 position. First pick (-1 sentinel) accepts all.
+    if (lastZombieRotIdx < 0 || Math.abs(i - lastZombieRotIdx) >= 2) {
+      valid.push(i);
+    }
+  }
+  const idx = valid[Math.floor(Math.random() * valid.length)];
+  lastZombieRotIdx = idx;
+  return ZOMBIE_ROTATION[idx];
+}
 
 // G5 — ladder/platform topology helpers. Reuses getPlatY (no duplicated geometry math).
 function getLadderBasePlat(lad) {
@@ -4986,7 +5020,7 @@ function spawnZombieWave() {
     const idx = MIDDLE_PLATFORM_INDICES[Math.floor(Math.random() * MIDDLE_PLATFORM_INDICES.length)];
     const plat = platforms[idx];
     const x = plat.x + 20 + Math.random() * (plat.w - 40);
-    const sprite = ZOMBIE_SPRITES[Math.floor(Math.random() * ZOMBIE_SPRITES.length)];
+    const sprite = pickNextZombieSprite();   // P-ENEMY-FIX-PASS: anti-back-to-back rotation
     helpers.push({
       type: 'ZOMBIE',
       x: x,
@@ -5315,8 +5349,12 @@ function drawSS() {
 }
 
 // Block E — populated. Random pick: Antifa wave or Zombie Voter wave on each briefcase collect.
+// P-ENEMY-FIX-PASS (May 3 2026): split changed from 0.5 (50/50) to 0.25 (25% antifa /
+// 75% zombie) per Brian's spec. Antifa is the higher-impact event (5-10 entities + taunt
+// + alarm SFX) — 25% rate keeps it as the rarer "uh oh" moment. Zombies (1-2 entities,
+// rotation-constrained sprite per pickNextZombieSprite) become the default helper wave.
 function triggerHelperSpawn(reason) {
-  if (Math.random() < 0.5) {
+  if (Math.random() < 0.25) {
     spawnAntifaWave();
     fireAntifaSpawnTaunt();                                       // M — contextual 'RADICAL LEFT MOB!' taunt
     playSfx_antifaSpawn();                                        // N — alarm sting on Antifa wave
