@@ -4338,6 +4338,21 @@ function restartFromGameOver() {
 // recording mode + commit 00fca41 for the textarea overlay if needed for future
 // re-recording (revert + extend).
 
+// P-ATTRACT-3: end Scene 3 music swap. resumeFreeWorld=true on natural Scene 3
+// → Phase 4 transition (free_world resumes from paused position). resumeFreeWorld=
+// false on attract cancel (free_world will be stopped by exitAttract anyway).
+// Idempotent — no-op if Scene 3 music wasn't active.
+function _endAttractScene3Music(resumeFreeWorld) {
+  if (!attractScene3MusicActive) return;
+  attractScene3MusicActive = false;
+  if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.ymca) {
+    SOUND_LIBRARY.ymca.stop();
+  }
+  if (resumeFreeWorld && typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.free_world) {
+    SOUND_LIBRARY.free_world.play();   // Howler resumes from paused position, no restart
+  }
+}
+
 // P-ATTRACT-1: enter ATTRACT mode after the source-state idle threshold elapses
 // (ATTRACT_IDLE_PREGAMEPLAY for cold boot, ATTRACT_IDLE_GAMEOVER for post-death).
 // Resets phase counters, kicks off the loop. Music starts at Phase 2 entry, not here (Phase 1 is silent).
@@ -4377,6 +4392,9 @@ function exitAttract(reason) {
   // P-ATTRACT-2B: cleanup demo state if user cancelled mid-Phase-1 (input event).
   // Idempotent — no-op if not in demo. Restores real state before state-machine swap below.
   exitAttractDemo();
+  // P-ATTRACT-3: stop YMCA if mid-Scene-3 cancel. Don't resume free_world (it's
+  // about to be stopped below as part of the full attract teardown).
+  _endAttractScene3Music(false);
   if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.free_world) {
     SOUND_LIBRARY.free_world.stop();
     SOUND_LIBRARY.free_world.loop(false);
@@ -4970,6 +4988,11 @@ let attractTime              = 0;           // 0..80 within ATTRACT loop
 let attractPhase             = 1;           // 1..4
 let attractMusicPlaying      = false;       // tracks free_world play/stop transitions to avoid restart-each-frame
 let attractSourceState       = 'GAME_OVER'; // P-ATTRACT-1.5: state to restore on exit (cold-boot returns to INTRO_BLACK, post-game-over to GAME_OVER)
+// P-ATTRACT-3 (May 3 2026): tracks Scene 3 (DTJ YMCA dance) music swap. On Scene 3
+// entry: pause free_world, play ymca (loop:true, vol 0.4). On Scene 3 exit:
+// stop ymca, resume free_world. exitAttract cancel path stops ymca but does NOT
+// resume free_world (attract is exiting entirely). Idempotent via the boolean.
+let attractScene3MusicActive = false;
 // P-ATTRACT-2A recording state vars (attractRecording / attractRecordingInputs /
 // attractRecordingStartTime) removed in P-ATTRACT-2C — DEMO_INPUTS now baked in.
 
@@ -7613,28 +7636,98 @@ function renderAttractPhase2() {
   ctx.fillText('PRESS ANY KEY TO PLAY', W / 2, H - 30);
 }
 
-// P-ATTRACT-1 Phase 3 — scene highlight captions placeholder. Three 6.67s slices
-// rotate captions across the 20s window. Actual scripted scene playback deferred
-// to P-ATTRACT-2 (depends on entity scripting). For now: caption-only over black.
+// P-ATTRACT-3 (May 3 2026) — Phase 3 scripted scenes. 3 sub-scenes over 20s:
+//   Scene 1 (0-7s):   Pelosi tearing constitution + 2-line caption
+//   Scene 2 (7-14s):  Eagle carrying DTJ + "VICTORY!" caption
+//   Scene 3 (14-20s): DTJ YMCA dance + caption + ymca music swap
+// All scenes render entities directly via drawSprite — no real-game state mutation
+// (pelosi.phase / dtjDanceState untouched so attract doesn't interfere with real
+// gameplay). eagle_carry sprite is pre-composed eagle+DTJ, no swap needed.
 function renderAttractPhase3() {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
 
   const phaseT = attractTime - 2 * ATTRACT_PHASE_LEN;   // 0..20 within Phase 3
-  let caption;
-  if      (phaseT <  6.67) caption = 'PELOSI: HEROIC';
-  else if (phaseT < 13.33) caption = 'VICTORY!';
-  else                     caption = 'DJT: GREATEST WIN EVER!';
 
-  ctx.fillStyle = '#9a7a00';
-  ctx.font = 'bold 28px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText(caption, W / 2, H / 2);
+  if      (phaseT <  7) renderAttractScene1_PelosiTear(phaseT);
+  else if (phaseT < 14) renderAttractScene2_EagleCarry(phaseT - 7);
+  else                  renderAttractScene3_DTJYmca(phaseT - 14);
 
-  // Press-to-start hint at bottom.
-  ctx.fillStyle = '#ffffff';
+  // Press-to-start hint at bottom (consistent across all phases).
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
   ctx.font = '14px monospace';
+  ctx.textAlign = 'center';
   ctx.fillText('PRESS ANY KEY TO PLAY', W / 2, H - 30);
+}
+
+// P-ATTRACT-3 Scene 1 — Pelosi tearing constitution. Renders pelosi_tear sprite
+// centered with subtle bob for "alive" feel. Two-line caption at top: gold bold
+// "PELOSI: CRAZY NANCY", dark-gold italic "SHE ALWAYS HATED THE CONSTITUTION".
+// Music: free_world continues (no swap).
+function renderAttractScene1_PelosiTear(t) {
+  // Subtle vertical bob (±4 px sin wave, period 1.5s) so static sprite reads as alive.
+  const bobY = Math.sin(t * Math.PI / 0.75) * 4;
+  drawSprite('pelosi_tear', W / 2, H / 2 + 60 + bobY, 220, false, 1.0);
+  // Captions
+  ctx.fillStyle = '#FFD700';
+  ctx.font      = 'bold 22px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('PELOSI: CRAZY NANCY', W / 2, 80);
+  ctx.fillStyle = '#9a7a00';
+  ctx.font      = 'italic 14px monospace';
+  ctx.fillText('SHE ALWAYS HATED THE CONSTITUTION', W / 2, 110);
+}
+
+// P-ATTRACT-3 Scene 2 — Eagle carrying DTJ. The eagle_carry sprite is PRE-COMPOSED
+// (eagle gripping DTJ as one PNG per I-EAGLE-REWRITE comment line ~7423) so no
+// runtime sprite swap needed. Animate position: enter from bottom-right, fly to
+// upper-left across the 7-second scene window. Music: free_world continues.
+function renderAttractScene2_EagleCarry(t) {
+  // Linear flight from off-screen bottom-right to off-screen upper-left.
+  // p = 0..1 over 7s. Start: (W+80, H+40). End: (-80, H*0.2).
+  const p = Math.min(1, t / 7);
+  const x = (W + 80) + ((-80) - (W + 80)) * p;
+  const y = (H + 40) + (H * 0.2 - (H + 40)) * p;
+  // Slight up-down wing-flap motion (±6 px, period 0.5s) layered on the linear path.
+  const flap = Math.sin(t * Math.PI / 0.25) * 6;
+  drawSprite('eagle_carry', x, y + flap, 200, false, 0.5);
+  // Caption — large bold gold "VICTORY!" at top
+  ctx.fillStyle = '#FFD700';
+  ctx.font      = 'bold 40px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('VICTORY!', W / 2, 100);
+}
+
+// P-ATTRACT-3 Scene 3 — DTJ YMCA dance. Cycles through DTJ_DANCE_POSES via the
+// existing getDtjDancePose helper with a LOCAL timer (does NOT touch dtjDanceState
+// or dtjDanceT — those belong to real gameplay's death-dance trigger). 6s scene =
+// 2 full 3.0s cycles. Music swap: pause free_world, play ymca (loop:true, vol 0.4)
+// on first frame of scene; resume free_world on Phase 3 → 4 transition (handled
+// in the ATTRACT case phase-change block).
+function renderAttractScene3_DTJYmca(t) {
+  // First-frame entry: kick off music swap. Idempotent via attractScene3MusicActive flag.
+  if (!attractScene3MusicActive) {
+    attractScene3MusicActive = true;
+    if (typeof SOUND_LIBRARY !== 'undefined') {
+      if (SOUND_LIBRARY.free_world) SOUND_LIBRARY.free_world.pause();   // preserves seek; resumes later via .play()
+      if (SOUND_LIBRARY.ymca) {
+        SOUND_LIBRARY.ymca.volume(0.4);
+        SOUND_LIBRARY.ymca.loop(true);
+        SOUND_LIBRARY.ymca.play();
+      }
+    }
+    console.log('[ATTRACT-SCENE3] Music swap: free_world paused, ymca playing.');
+  }
+  // Pose cycle — same pattern as the real gameplay dance render (line ~8077 area):
+  // tWithinCycle = local-t modulo cycle duration.
+  const tWithinCycle = t % DTJ_DANCE_CYCLE_DURATION;
+  const danceSprite  = getDtjDancePose(tWithinCycle);
+  drawSprite(danceSprite, W / 2, H / 2 + 80, 220, false, 1.0);
+  // Caption
+  ctx.fillStyle = '#FFD700';
+  ctx.font      = 'bold 22px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('DJT: GREATEST WIN EVER!', W / 2, 80);
 }
 
 // P-ATTRACT-1 Phase 4 — leaderboard + credits. "DJT vs DNC" title, top-5 from
@@ -8973,16 +9066,26 @@ function loop(ts) {
         // exitAttractDemo first (defensive — should be no-op since Phase 4 just ended)
         // then enterAttractDemo to snapshot+reset for the new cycle.
         exitAttractDemo();
+        // P-ATTRACT-3: defensive Scene 3 music cleanup. Should already be no-op since
+        // Phase 3→4 transition ran _endAttractScene3Music — but covers any edge case
+        // where Phase 4 was skipped or attract structure changed.
+        _endAttractScene3Music(true);
         enterAttractDemo();
       }
       const _newPhase = Math.min(4, Math.floor(attractTime / ATTRACT_PHASE_LEN) + 1);
       if (_newPhase !== attractPhase) {
         console.log('[ATTRACT-PHASE]', { phase: _newPhase, time: +attractTime.toFixed(2) });
+        const _prevPhase = attractPhase;
         attractPhase = _newPhase;
         // P-ATTRACT-2B: Phase 1 → Phase 2 transition ends the demo and restores real state.
         // Demo entities cleared; renderAttractPhase2 takes over with the roster ribbon.
         if (attractPhase === 2 && attractDemoMode) {
           exitAttractDemo();
+        }
+        // P-ATTRACT-3: Phase 3 → Phase 4 transition ends Scene 3 music swap. Resume
+        // free_world from paused position (Howler .play() resumes, no restart).
+        if (_prevPhase === 3 && attractScene3MusicActive) {
+          _endAttractScene3Music(true);
         }
       }
       // P-ATTRACT-2C: free_world music starts in enterAttract() and plays continuously
