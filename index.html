@@ -2105,23 +2105,24 @@ window.addEventListener('keydown', e => {
     currentLevel++;
     return;
   }
-  // P-ATTRACT-2A: Ctrl+Shift+D — arm demo recording on pre-gameplay state
-  // (INTRO_BLACK only, before any GAMEPLAY). Ctrl+Shift+R is the browser
-  // hard-refresh (intercepted by browser, never reaches JS) so D is the
-  // unbound choice. Phase A confirmed no other Ctrl+Shift+D handler exists.
-  // Recording start time is set lazily when state first becomes GAMEPLAY
-  // (see loop() outer block). Ctrl+Shift+D event itself is NOT captured
-  // (returns before recordInputEvent could fire — but also state !== GAMEPLAY here).
-  if (state === 'INTRO_BLACK' && !e.repeat && e.ctrlKey && e.shiftKey && e.code === 'KeyD') {
+  // P-ATTRACT-2A-FIX (May 3 2026): backtick (`) — arm demo recording on pre-gameplay
+  // state (INTRO_BLACK only). Was Ctrl+Shift+D in P-ATTRACT-2A, but Chrome intercepts
+  // Ctrl+Shift+D for "Bookmark all tabs" — keystroke never reached the handler. Backtick
+  // is single-key, no modifier, no known browser shortcut conflict. Phase A grep confirmed
+  // 'Backquote' is unbound elsewhere. Modifier-key check ensures plain backtick triggers
+  // (not Ctrl+` or Shift+~ which produces tilde from the same physical key).
+  if (state === 'INTRO_BLACK' && !e.repeat && e.code === 'Backquote' &&
+      !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
     e.preventDefault();
     attractRecording          = true;
     attractRecordingInputs    = [];
     attractRecordingStartTime = 0;
     console.log('[ATTRACT-REC] Recording armed. Press start to begin L1 run. Recording stops on first death.');
+    console.log('[ATTRACT-REC] (Toggle: backtick key)');
     return;
   }
-  // P-ATTRACT-2A: capture keydown for replay (skip Ctrl+Shift+D toggle and held-key spam).
-  if (!e.repeat && !(e.ctrlKey && e.shiftKey && e.code === 'KeyD')) {
+  // P-ATTRACT-2A-FIX: capture keydown for replay (skip backtick toggle and held-key spam).
+  if (!e.repeat && !(e.code === 'Backquote' && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey)) {
     recordInputEvent('keydown', { code: e.code });
   }
   // N — global audio toggle (M-key). Works in any state.
