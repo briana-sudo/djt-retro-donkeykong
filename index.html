@@ -39,14 +39,10 @@
 <script>
 // P-LOG-STRIP (May 3 2026): removed the console.log wrapper, [BGM:*] tag-prefix
 // capture, and Howl.prototype.{stop,play,once,off} monkey-patch. All diagnostic
-// console.log calls were stripped from production code in the same commit — the
-// wrapper had no diagnostic output to capture, the Howl monkey-patch had no
-// remaining log calls. Kept window.bgmLogBuffer + window.bgmLogBufferMax as
-// empty-array stubs so the DUMP LOGS button (which reads them) still functions
-// without code changes — button dumps an empty buffer until future diagnostic
-// instrumentation is added.
-window.bgmLogBuffer    = [];
-window.bgmLogBufferMax = 500;
+// console.log calls were stripped from production code in the same commit.
+// P-DUMP-LOGS-STRIP (May 3 2026): also removed the bgmLogBuffer globals + DUMP
+// LOGS button + modal infrastructure (button was visible in production gameplay
+// UI). console.warn / console.error preserved for real error paths.
 
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
@@ -1600,94 +1596,11 @@ if (IS_MOBILE) {
   PAUSE_BOX.w     = 60;
   PAUSE_BOX.h     = 60;
 }
-// AUDIO-3-LOG-DUMP — bottom-right DUMP LOGS button. 80×24 px, gameplay+game-over states
-// only. Positioned where it doesn't overlap touch controls (left jump+walk are on left
-// side; right ladder controls live higher up at H*0.45). Tap opens a DOM modal showing
-// the captured [BGM:*] log buffer with COPY ALL + CLOSE controls.
-const DUMP_BTN_BOX = { x: W - 90, y: H - 30, w: 80, h: 24 };
-const DUMP_BTN_VISIBLE_STATES = new Set([
-  'GAMEPLAY', 'GAMEOVER_PENDING', 'GAME_OVER', 'CUTSCENE_BETWEEN',
-]);
-function dumpBtnVisible() { return DUMP_BTN_VISIBLE_STATES.has(state); }
-function showDumpLogModal() {
-  // AUDIO-3-LOG-DUMP — DOM modal so the JSON is selectable, scrollable, and clipboard-
-  // copyable on mobile (canvas-rendered text would not be). Pure DOM manipulation, no
-  // game-state changes. Closing removes the overlay div from <body>.
-  if (document.getElementById('bgm-dump-modal')) return;   // idempotent — don't double-open
-  const dumpText = JSON.stringify(window.bgmLogBuffer, null, 2);
-  const overlay = document.createElement('div');
-  overlay.id = 'bgm-dump-modal';
-  overlay.style.cssText =
-    'position:fixed;top:0;left:0;width:100vw;height:100vh;' +
-    'background:rgba(0,0,0,0.85);z-index:99999;display:flex;' +
-    'flex-direction:column;padding:16px;box-sizing:border-box;';
-  const header = document.createElement('div');
-  header.style.cssText =
-    'display:flex;justify-content:space-between;align-items:center;' +
-    'color:white;font:14px monospace;margin-bottom:8px;';
-  header.innerHTML =
-    '<span>BGM LOG DUMP (' + window.bgmLogBuffer.length + ' entries)</span>' +
-    '<span>' +
-      '<button id="bgm-copy-btn" style="margin-right:8px;padding:4px 12px;font:13px monospace;">COPY ALL</button>' +
-      '<button id="bgm-close-btn" style="padding:4px 12px;font:13px monospace;">CLOSE</button>' +
-    '</span>';
-  overlay.appendChild(header);
-  const textarea = document.createElement('textarea');
-  textarea.value = dumpText;
-  textarea.readOnly = true;
-  textarea.style.cssText =
-    'flex:1;width:100%;font:10px monospace;padding:8px;' +
-    'background:#111;color:#0f0;border:1px solid #444;' +
-    'box-sizing:border-box;resize:none;';
-  overlay.appendChild(textarea);
-  const toast = document.createElement('div');
-  toast.id = 'bgm-toast';
-  toast.style.cssText =
-    'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);' +
-    'background:rgba(0,128,0,0.9);color:white;padding:12px 24px;' +
-    'font:16px monospace;border-radius:4px;display:none;';
-  toast.textContent = 'COPIED!';
-  overlay.appendChild(toast);
-  document.body.appendChild(overlay);
-  document.getElementById('bgm-copy-btn').onclick = function() {
-    let copied = false;
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(textarea.value);
-        copied = true;
-      }
-    } catch (e) { /* fall through to execCommand */ }
-    if (!copied) {
-      try {
-        textarea.select();
-        document.execCommand('copy');
-      } catch (e) { /* clipboard may be unavailable; user can manual-copy */ }
-    }
-    toast.style.display = 'block';
-    setTimeout(function() { toast.style.display = 'none'; }, 1000);
-  };
-  document.getElementById('bgm-close-btn').onclick = function() {
-    overlay.remove();
-  };
-}
-
-function drawDumpLogsButton() {
-  if (!dumpBtnVisible()) return;
-  const b = DUMP_BTN_BOX;
-  ctx.save();
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-  ctx.fillRect(b.x, b.y, b.w, b.h);
-  ctx.strokeStyle = '#888';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
-  ctx.fillStyle = '#ffffff';
-  ctx.font = '11px monospace';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('DUMP LOGS', b.x + b.w / 2, b.y + b.h / 2);
-  ctx.textBaseline = 'alphabetic';
-  ctx.restore();
-}
+// P-DUMP-LOGS-STRIP (May 3 2026): removed AUDIO-3-LOG-DUMP infrastructure —
+// DUMP_BTN_BOX, DUMP_BTN_VISIBLE_STATES, dumpBtnVisible, showDumpLogModal,
+// drawDumpLogsButton. The button was visible in production gameplay UI per Brian
+// field test. P-LOG-STRIP had already removed all push sites; the button just
+// dumped an empty buffer. Pre-v1.0 cleanup removes the dead UI entirely.
 
 function drawAudioIcon() {
   // MOBILE-PAUSE-ONLY — speaker hidden entirely on mobile. Phone hardware volume buttons
@@ -6598,11 +6511,7 @@ canvas.addEventListener('pointerdown', e => {
   {
     const rN = canvas.getBoundingClientRect();
     const txN = (e.clientX - rN.left) / scale, tyN = (e.clientY - rN.top) / scale;
-    // PAUSE-DIAG — log every pointerdown that reaches the icon hit-test block. Includes
-    // canvas-pixel coords + IS_MOBILE + the live PAUSE_HIT_BOX dimensions for math sanity.
-    // AUDIO-3-LOG-DUMP — DUMP LOGS button hit-test. Only active when the button is rendered
-    // (gameplay/game-over/CUTSCENE_BETWEEN). Opens DOM modal; does NOT advance game state.
-    if (dumpBtnVisible() && pointInIconBox(txN, tyN, DUMP_BTN_BOX)) { showDumpLogModal(); return; }
+    // P-DUMP-LOGS-STRIP: removed AUDIO-3-LOG-DUMP button hit-test (button stripped pre-v1.0).
     // MOBILE-HIT-TEST-FIX — use 50×50 SPEAKER_HIT_BOX/PAUSE_HIT_BOX (finger-friendly), not the
     // 22×22 visual SPEAKER_BOX/PAUSE_BOX. Visual icons render unchanged at the smaller rect.
     // MOBILE-PAUSE-ONLY — speaker hit-test gated off on mobile (button hidden; tap is inert).
@@ -6695,8 +6604,7 @@ canvas.addEventListener('touchstart', e=>{
       const txN = (t0N.clientX - r0.left) / scale, tyN = (t0N.clientY - r0.top) / scale;
       // PAUSE-DIAG — touchstart equivalent of the pointerdown log. iOS Safari is the
       // primary path here since K-FIX-2's preventDefault suppresses synthesized pointerdown.
-      // AUDIO-3-LOG-DUMP — DUMP LOGS button (iOS touch path).
-      if (dumpBtnVisible() && pointInIconBox(txN, tyN, DUMP_BTN_BOX)) { showDumpLogModal(); return; }
+      // P-DUMP-LOGS-STRIP: removed AUDIO-3-LOG-DUMP button hit-test (iOS touch path).
       // MOBILE-HIT-TEST-FIX — 50×50 hit-rects on iOS touch path too.
       // MOBILE-PAUSE-ONLY — speaker hit-test gated off on mobile (iOS path).
       if (!IS_MOBILE && pointInIconBox(txN, tyN, SPEAKER_HIT_BOX)) { toggleAudio(); return; }
@@ -8971,7 +8879,7 @@ function loop(ts) {
   // call here via state check). Drawn LAST so they sit on top of overlays.
   drawAudioIcon();
   if (isPausableState() || state === 'PAUSED') drawPauseIcon();
-  drawDumpLogsButton();   // AUDIO-3-LOG-DUMP — internally gated to gameplay/game-over states
+  // P-DUMP-LOGS-STRIP: removed drawDumpLogsButton() call (button stripped pre-v1.0).
 }
 
 requestAnimationFrame(ts=>{ lastT=ts; requestAnimationFrame(loop); });
