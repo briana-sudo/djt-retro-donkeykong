@@ -2105,26 +2105,10 @@ window.addEventListener('keydown', e => {
     currentLevel++;
     return;
   }
-  // P-ATTRACT-2A-FIX (May 3 2026): backtick (`) — arm demo recording on pre-gameplay
-  // state (INTRO_BLACK only). Was Ctrl+Shift+D in P-ATTRACT-2A, but Chrome intercepts
-  // Ctrl+Shift+D for "Bookmark all tabs" — keystroke never reached the handler. Backtick
-  // is single-key, no modifier, no known browser shortcut conflict. Phase A grep confirmed
-  // 'Backquote' is unbound elsewhere. Modifier-key check ensures plain backtick triggers
-  // (not Ctrl+` or Shift+~ which produces tilde from the same physical key).
-  if (state === 'INTRO_BLACK' && !e.repeat && e.code === 'Backquote' &&
-      !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
-    e.preventDefault();
-    attractRecording          = true;
-    attractRecordingInputs    = [];
-    attractRecordingStartTime = 0;
-    console.log('[ATTRACT-REC] Recording armed. Press start to begin L1 run. Recording stops on first death.');
-    console.log('[ATTRACT-REC] (Toggle: backtick key)');
-    return;
-  }
-  // P-ATTRACT-2A-FIX: capture keydown for replay (skip backtick toggle and held-key spam).
-  if (!e.repeat && !(e.code === 'Backquote' && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey)) {
-    recordInputEvent('keydown', { code: e.code });
-  }
+  // P-ATTRACT-2A backtick recording toggle + keydown capture removed in P-ATTRACT-2C
+  // (May 3 2026): DEMO_INPUTS is now baked into source, recording infrastructure is
+  // dead code. See commit 4c43a39 for the captured JSON; commit 2cf548f for the
+  // P-ATTRACT-2A original recording mode if needed for re-recording in the future.
   // N — global audio toggle (M-key). Works in any state.
   if (e.code === 'KeyM') { toggleAudio(); return; }
   // N — pause toggle (P-key, Escape). togglePause internally gates on isPausableState().
@@ -2174,11 +2158,7 @@ window.addEventListener('keydown', e => {
   // unpause silenced a Howl). No-op if music is healthy.
   selfHealBgm();
 });
-window.addEventListener('keyup', e => {
-  keys[e.code] = false;
-  // P-ATTRACT-2A: capture keyup for replay.
-  recordInputEvent('keyup', { code: e.code });
-});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
 
 // Touch state
 const touch = { left:false, right:false, climbUp:false, climbDown:false, jump:false };
@@ -4352,93 +4332,11 @@ function restartFromGameOver() {
   resetForGameOver();
 }
 
-// P-ATTRACT-2A: capture a single input event into attractRecordingInputs.
-// Called from each input listener when (attractRecording && state==='GAMEPLAY' &&
-// attractRecordingStartTime > 0). Format: {t: ms-since-start, type: 'keydown'|...,
-// data: handler-relevant fields}. Skips Ctrl+Shift+D itself (the toggle key).
-function recordInputEvent(type, data) {
-  if (!attractRecording || state !== 'GAMEPLAY' || attractRecordingStartTime === 0) return;
-  attractRecordingInputs.push({
-    t:    Math.round(performance.now() - attractRecordingStartTime),
-    type: type,
-    data: data,
-  });
-}
-
-// P-ATTRACT-2A: stop recording on first life decrement, dump captured JSON to
-// console for Brian to copy/paste into P-ATTRACT-2B as the DEMO_INPUTS const.
-// Idempotent — safe to call multiple times (no-op if not recording).
-// P-ATTRACT-2A-FIX2 (May 3 2026): also save to localStorage and render an
-// on-screen textarea overlay — multi-line JSON copy from Chrome devtools console
-// is unreliable. Overlay + localStorage backup gives two reliable copy paths.
-function attractRecordingFinalize() {
-  if (!attractRecording) return;
-  const dur = Math.round(performance.now() - attractRecordingStartTime);
-  attractRecording = false;
-  const json = JSON.stringify(attractRecordingInputs, null, 2);
-  const fullText = 'const DEMO_INPUTS = ' + json + ';';
-
-  // Existing console logs (kept for diagnostic continuity).
-  console.log('[ATTRACT-REC] Recording complete.');
-  console.log('[ATTRACT-REC] Inputs captured:', attractRecordingInputs.length);
-  console.log('[ATTRACT-REC] Duration:', dur, 'ms');
-  console.log('[ATTRACT-REC] DEMO_INPUTS = ' + json + ';');
-
-  // P-ATTRACT-2A-FIX2: localStorage backup. Survives page navigation / accidental
-  // overlay dismiss. Retrieve via console: copy(localStorage.getItem('demo_inputs_recording')).
-  try {
-    localStorage.setItem('demo_inputs_recording', fullText);
-    console.log('[ATTRACT-REC] Saved to localStorage key: demo_inputs_recording');
-    console.log('[ATTRACT-REC] Retrieve later with: copy(localStorage.getItem("demo_inputs_recording"))');
-  } catch (e) {
-    console.warn('[ATTRACT-REC] localStorage save failed:', e);
-  }
-
-  // P-ATTRACT-2A-FIX2: on-screen textarea overlay — primary copy path.
-  showRecordingOverlay(fullText);
-}
-
-// P-ATTRACT-2A-FIX2: render full-screen textarea overlay containing the captured
-// JSON. Auto-focuses + selects all text so Ctrl+C copies immediately. Click outside
-// the textarea (on the dark backdrop) to dismiss. Re-rendered fresh each finalize
-// (existing overlay removed first).
-function showRecordingOverlay(text) {
-  const existing = document.getElementById('attract-rec-overlay');
-  if (existing) existing.remove();
-
-  const overlay = document.createElement('div');
-  overlay.id = 'attract-rec-overlay';
-  overlay.style.cssText =
-    'position:fixed;top:0;left:0;right:0;bottom:0;' +
-    'background:rgba(0,0,0,0.85);z-index:99999;' +
-    'display:flex;flex-direction:column;padding:20px;box-sizing:border-box;';
-
-  const label = document.createElement('div');
-  label.style.cssText =
-    'color:#FFD700;font-family:monospace;font-size:14px;margin-bottom:10px;';
-  label.textContent = 'DEMO RECORDING — click textarea, Ctrl+A, Ctrl+C to copy. Click outside to dismiss.';
-  overlay.appendChild(label);
-
-  const ta = document.createElement('textarea');
-  ta.value = text;
-  ta.style.cssText =
-    'flex:1;background:#111;color:#0f0;font-family:monospace;font-size:11px;' +
-    'padding:10px;border:2px solid #FFD700;resize:none;';
-  ta.spellcheck = false;
-  overlay.appendChild(ta);
-
-  // Click on backdrop (not on textarea or label) dismisses.
-  overlay.addEventListener('click', function(e) {
-    if (e.target === overlay) overlay.remove();
-  });
-
-  document.body.appendChild(overlay);
-  // Defer focus + select so the overlay is in the DOM before selection starts.
-  setTimeout(function() {
-    ta.focus();
-    ta.select();
-  }, 100);
-}
+// P-ATTRACT-2A recordInputEvent / attractRecordingFinalize / showRecordingOverlay
+// removed in P-ATTRACT-2C (May 3 2026): DEMO_INPUTS is now baked into source so
+// recording infrastructure is dead code. See commit 2cf548f for the original
+// recording mode + commit 00fca41 for the textarea overlay if needed for future
+// re-recording (revert + extend).
 
 // P-ATTRACT-1: enter ATTRACT mode after the source-state idle threshold elapses
 // (ATTRACT_IDLE_PREGAMEPLAY for cold boot, ATTRACT_IDLE_GAMEOVER for post-death).
@@ -4452,9 +4350,18 @@ function enterAttract() {
   stateT              = 0;
   attractTime         = 0;
   attractPhase        = 1;
-  attractMusicPlaying = false;
   attractIdleTime     = 0;
   preGameplayIdleTime = 0;
+  // P-ATTRACT-2C (May 3 2026): start free_world music here so it plays continuously
+  // across all 4 phases (was: started at Phase 2 entry inside ATTRACT case, leaving
+  // Phase 1 silent). Music stops in exitAttract(). Loop wrap (Phase 4 → Phase 1)
+  // does NOT restart music — it just keeps playing from current position.
+  if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.free_world) {
+    SOUND_LIBRARY.free_world.volume(ATTRACT_FREE_WORLD_VOL);
+    SOUND_LIBRARY.free_world.loop(true);
+    SOUND_LIBRARY.free_world.play();
+  }
+  attractMusicPlaying = true;
   // P-ATTRACT-2B: kick off Phase 1 demo immediately (Phase 1 always begins at attract entry).
   enterAttractDemo();
 }
@@ -5063,14 +4970,8 @@ let attractTime              = 0;           // 0..80 within ATTRACT loop
 let attractPhase             = 1;           // 1..4
 let attractMusicPlaying      = false;       // tracks free_world play/stop transitions to avoid restart-each-frame
 let attractSourceState       = 'GAME_OVER'; // P-ATTRACT-1.5: state to restore on exit (cold-boot returns to INTRO_BLACK, post-game-over to GAME_OVER)
-// P-ATTRACT-2A (May 3 2026): hidden recording mode for capturing a Brian-played L1
-// run as DEMO_INPUTS JSON. Toggled by Ctrl+Shift+D on pre-gameplay state. Captures
-// keyboard + touch events with performance.now()-based timestamps from first
-// GAMEPLAY entry. Stops on first life decrement (single-life recording). Output
-// dumped to console as DEMO_INPUTS = [...]; for paste into P-ATTRACT-2B playback.
-let attractRecording          = false;      // toggled by Ctrl+Shift+D, cleared on first death
-let attractRecordingInputs    = [];         // captured events: {t, type, data}
-let attractRecordingStartTime = 0;          // performance.now() at first GAMEPLAY entry; 0 = not yet started
+// P-ATTRACT-2A recording state vars (attractRecording / attractRecordingInputs /
+// attractRecordingStartTime) removed in P-ATTRACT-2C — DEMO_INPUTS now baked in.
 
 // P-ATTRACT-2B (May 3 2026): Phase 1 demo playback. DEMO_INPUTS captured by
 // Brian via P-ATTRACT-2A on his cleanest L1 run (36 events, ~17s, last event
@@ -7065,15 +6966,7 @@ canvas.addEventListener('pointerdown', e => {
   if (state === 'ATTRACT') { exitAttract('input-pointer'); return; }
   if (state === 'GAME_OVER' && !initialsEntryActive) attractIdleTime = 0;
   if (state === 'INTRO_BLACK' && !introHasPlayed) preGameplayIdleTime = 0;
-  // P-ATTRACT-2A: capture pointerdown for replay (canvas-pixel coords).
-  {
-    const _r = canvas.getBoundingClientRect();
-    recordInputEvent('pointerdown', {
-      x: Math.round((e.clientX - _r.left) / scale),
-      y: Math.round((e.clientY - _r.top) / scale),
-      pointerId: e.pointerId,
-    });
-  }
+  // P-ATTRACT-2A pointerdown capture removed in P-ATTRACT-2C.
   // N — speaker + pause icon hit-test (canvas-pixel coords). Icons render top-right; tap-zones
   // checked BEFORE state routing so the toggles work in any state where the icons are visible
   // (audio: any state; pause: only in pausable states, but the icon is rendered then).
@@ -7156,11 +7049,7 @@ canvas.addEventListener('pointermove', e => {
     applyTouchState();
   }
 });
-canvas.addEventListener('pointerup',     e=>{
-  delete activeTouches[e.pointerId]; applyTouchState(); endInitialsArrowHold(); /* K-FIX-5 — release initials arrow hold */
-  // P-ATTRACT-2A: capture pointerup for replay.
-  recordInputEvent('pointerup', { pointerId: e.pointerId });
-});
+canvas.addEventListener('pointerup',     e=>{delete activeTouches[e.pointerId]; applyTouchState(); endInitialsArrowHold(); /* K-FIX-5 — release initials arrow hold */});
 canvas.addEventListener('pointercancel', e=>{delete activeTouches[e.pointerId]; applyTouchState(); endInitialsArrowHold();});
 
 // iOS Safari fallback — touch events in case pointer events don't fire
@@ -7177,20 +7066,7 @@ canvas.addEventListener('touchstart', e=>{
   if (state === 'ATTRACT') { exitAttract('input-touch'); return; }
   if (state === 'GAME_OVER' && !initialsEntryActive) attractIdleTime = 0;
   if (state === 'INTRO_BLACK' && !introHasPlayed) preGameplayIdleTime = 0;
-  // P-ATTRACT-2A: capture touchstart for replay (canvas-pixel coords).
-  {
-    const _r = canvas.getBoundingClientRect();
-    const _data = [];
-    for (let _i = 0; _i < e.changedTouches.length; _i++) {
-      const _t = e.changedTouches[_i];
-      _data.push({
-        identifier: _t.identifier,
-        x:          Math.round((_t.clientX - _r.left) / scale),
-        y:          Math.round((_t.clientY - _r.top) / scale),
-      });
-    }
-    recordInputEvent('touchstart', { touches: _data });
-  }
+  // P-ATTRACT-2A touchstart capture removed in P-ATTRACT-2C.
   // N — speaker + pause icon hit-test before state routing.
   {
     const r0 = canvas.getBoundingClientRect();
@@ -7262,12 +7138,6 @@ canvas.addEventListener('touchend', e=>{
   for (const t of e.changedTouches) delete activeTouches['t'+t.identifier];
   applyTouchState();
   endInitialsArrowHold();                    // K-FIX-5 — release initials arrow hold on lift
-  // P-ATTRACT-2A: capture touchend for replay (just identifiers — no coords needed for lift).
-  {
-    const _ids = [];
-    for (let _i = 0; _i < e.changedTouches.length; _i++) _ids.push(e.changedTouches[_i].identifier);
-    recordInputEvent('touchend', { identifiers: _ids });
-  }
 },{passive:false});
 canvas.addEventListener('touchcancel', e=>{
   // K-FIX-5 — touchcancel parity. Browser cancels touch (e.g. interrupted by system gesture);
@@ -7288,20 +7158,6 @@ canvas.addEventListener('touchmove', e=>{
       activeTouches['t'+t.identifier]={action:b?b.action:null,box:b};
     }
     applyTouchState();
-  }
-  // P-ATTRACT-2A: capture touchmove for replay (canvas-pixel coords).
-  {
-    const _r = canvas.getBoundingClientRect();
-    const _data = [];
-    for (let _i = 0; _i < e.changedTouches.length; _i++) {
-      const _t = e.changedTouches[_i];
-      _data.push({
-        identifier: _t.identifier,
-        x:          Math.round((_t.clientX - _r.left) / scale),
-        y:          Math.round((_t.clientY - _r.top) / scale),
-      });
-    }
-    recordInputEvent('touchmove', { touches: _data });
   }
 },{passive:false});
 
@@ -8313,17 +8169,7 @@ function drawGameplay(shake) {
   // are gated separately below to prevent PC clicks in the (now invisible) zones from
   // registering phantom d-pad/jump actions.
   if (IS_MOBILE) drawDpad();
-  // P-ATTRACT-2A: visible REC indicator while recording is active. Top-left corner,
-  // bright red so it's unmissable during a recording run. Renders inside drawGameplay
-  // so it only shows during GAMEPLAY (not cutscenes / GAME_OVER / etc).
-  if (attractRecording && attractRecordingStartTime > 0) {
-    ctx.save();
-    ctx.fillStyle = '#FF0000';
-    ctx.font = 'bold 14px monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText('● REC', 8, 20);
-    ctx.restore();
-  }
+  // P-ATTRACT-2A REC indicator removed in P-ATTRACT-2C.
   // N — icons + pause overlay drawn at outer-loop level (after the state switch) so they're
   // always on top regardless of which state's case body rendered.
 }
@@ -8396,13 +8242,7 @@ function loop(ts) {
   // WIN_FREEZE, cutscene, GAME_OVER) silences the siren immediately.
   tickSiren();
 
-  // P-ATTRACT-2A — lazy recording start. When recording is armed and player
-  // first enters GAMEPLAY (intro completes / Press-Start fires), set the start
-  // time so input timestamps are relative to first gameplay frame.
-  if (attractRecording && attractRecordingStartTime === 0 && state === 'GAMEPLAY') {
-    attractRecordingStartTime = performance.now();
-    console.log('[ATTRACT-REC] Recording started at GAMEPLAY entry.');
-  }
+  // P-ATTRACT-2A lazy recording start removed in P-ATTRACT-2C.
 
   // K — initials-entry "INITIALS SAVED" confirmation timer ticks here so the 1.0s display
   // shows even if the GAME_OVER case re-renders from scratch each frame.
@@ -8998,10 +8838,7 @@ function loop(ts) {
         player.lives -= 1;
         deathReactionT = 0;
         deathPhase = 'phase1';
-        // P-ATTRACT-2A: stop recording on FIRST life decrement (single-life recording,
-        // regardless of remaining lives). Dumps DEMO_INPUTS JSON to console for paste
-        // into P-ATTRACT-2B. Idempotent — no-op if not recording.
-        attractRecordingFinalize();
+        // P-ATTRACT-2A attractRecordingFinalize() call removed in P-ATTRACT-2C.
         if (player.lives <= 0) {
           // Capture final score for the GAME_OVER overlay total + initials-entry trigger.
           gameOverFinalScore = playerScore;
@@ -9148,24 +8985,8 @@ function loop(ts) {
           exitAttractDemo();
         }
       }
-      // Music: silent in Phase 1 (P-ATTRACT-1 spec; demo runs without BGM for now —
-      // wiring BGM_ROTATION mid-attract conflicts with the manual free_world control
-      // in Phases 2-4. Tradeoff per implementation note in P-ATTRACT-2B Phase A).
-      // Phases 2-4: free_world (loop:true, vol 0.4) per existing P-ATTRACT-1 logic.
-      const _musicShouldPlay = (attractPhase >= 2);
-      if (_musicShouldPlay && !attractMusicPlaying) {
-        if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.free_world) {
-          SOUND_LIBRARY.free_world.loop(true);
-          SOUND_LIBRARY.free_world.volume(ATTRACT_FREE_WORLD_VOL);
-          SOUND_LIBRARY.free_world.play();
-        }
-        attractMusicPlaying = true;
-      } else if (!_musicShouldPlay && attractMusicPlaying) {
-        if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.free_world) {
-          SOUND_LIBRARY.free_world.stop();
-        }
-        attractMusicPlaying = false;
-      }
+      // P-ATTRACT-2C: free_world music starts in enterAttract() and plays continuously
+      // across all 4 phases — no per-phase start/stop here. exitAttract() handles stop.
       // P-ATTRACT-2B: Phase 1 = demo gameplay. Run gameplay update mirror (subset of
       // GAMEPLAY case body — same update calls, no Press-To-Start overlay). Player
       // immortality refreshed each frame so a capsule contact never escapes ATTRACT.
