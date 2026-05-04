@@ -4455,6 +4455,8 @@ function enterAttract() {
   attractMusicPlaying = false;
   attractIdleTime     = 0;
   preGameplayIdleTime = 0;
+  // P-ATTRACT-2B: kick off Phase 1 demo immediately (Phase 1 always begins at attract entry).
+  enterAttractDemo();
 }
 
 // P-ATTRACT-1: exit ATTRACT. Restores free_world Howl defaults (loop:false, volume:0.6)
@@ -4465,6 +4467,9 @@ function enterAttract() {
 // sub-state (escalator position, stair progress) that wouldn't restore cleanly.
 function exitAttract(reason) {
   console.log('[ATTRACT-EXIT]', { reason: reason || 'unknown', phase: attractPhase, time: +attractTime.toFixed(2), restore: attractSourceState });
+  // P-ATTRACT-2B: cleanup demo state if user cancelled mid-Phase-1 (input event).
+  // Idempotent — no-op if not in demo. Restores real state before state-machine swap below.
+  exitAttractDemo();
   if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.free_world) {
     SOUND_LIBRARY.free_world.stop();
     SOUND_LIBRARY.free_world.loop(false);
@@ -4486,6 +4491,171 @@ function exitAttract(reason) {
   attractIdleTime     = 0;        // restart the 30s idle clock from this exit
   preGameplayIdleTime = 0;
   attractTime         = 0;
+}
+
+// P-ATTRACT-2B: enter Phase 1 demo. Snapshot real game state, reset to L1 fresh,
+// kick off DEMO_INPUTS playback. Player invulnerable (invulnT=9999) — topped up
+// each frame in the Phase 1 update loop so demo can't die out of ATTRACT state.
+// Idempotent — no-op if already in demo. Called from enterAttract() AND on loop
+// wrap (Phase 4 → Phase 1) inside the ATTRACT case.
+function enterAttractDemo() {
+  if (attractDemoMode) return;
+  console.log('[ATTRACT-DEMO] Demo Phase 1 entry — snapshot real state + reset to L1 fresh.');
+  // Snapshot of state we'll mutate during demo. Restored on exit. Player object
+  // fields snapshotted by-value (primitives) — arrays + Set restored by clear+repush.
+  attractDemoSavedState = {
+    playerScore:           playerScore,
+    multiplier:            multiplier,
+    multiplierT:           multiplierT,
+    currentLevel:          currentLevel,
+    levelTime:             levelTime,
+    levelStartLockT:       levelStartLockT,
+    dkDifficultyEffective: dkDifficultyEffective,
+    climberCampT:          climberCampT,
+    throwCounter:          throwCounter,
+    capsulesReachedFloor:  capsulesReachedFloor,
+    capsuleSpawnT:         capsuleSpawnT,
+    capsuleSpawnInterval:  capsuleSpawnInterval,
+    bgmRotationIdx:        bgmRotationIdx,
+    capsules:              capsules.slice(),
+    hats:                  hats.slice(),
+    helpers:               helpers.slice(),
+    badges:                badges.slice(),
+    pendingHatSpawns:      pendingHatSpawns.slice(),
+    killFlashes:           killFlashes.slice(),
+    player_lives:          player.lives,
+    player_invulnT:        player.invulnT,
+    player_x:              player.x,
+    player_y:              player.y,
+    player_vx:             player.vx,
+    player_vy:             player.vy,
+    player_facing:         player.facing,
+    player_onLadder:       player.onLadder,
+    player_onGround:       player.onGround,
+    player_lastGroundedPlat: player.lastGroundedPlat,
+    player_wieldingBadge:  player.wieldingBadge,
+    player_badgeWieldEndTime: player.badgeWieldEndTime,
+    player_badgePulseT:    player.badgePulseT,
+    player_platformsReached: new Set(player.platformsReached),
+    player_walkT:          player.walkT,
+    player_shakeT:         player.shakeT,
+    player_ladderCooldown: player.ladderCooldown,
+  };
+  // Reset to L1 fresh demo state.
+  currentLevel          = 1;
+  levelTime             = 0;
+  levelStartLockT       = 0;       // skip the 3s press-to-start lock so demo runs immediately
+  dkDifficultyEffective = 1;
+  climberCampT          = 0;
+  throwCounter          = 0;
+  capsulesReachedFloor  = 0;
+  capsuleSpawnT         = 0;
+  { const _sp = getLevelParams(); const _v = _sp.spawnIntervalAvg * _sp.spawnVariance; capsuleSpawnInterval = _sp.spawnIntervalAvg - _v + Math.random() * _v * 2; }
+  capsules.length         = 0;
+  hats.length             = 0;
+  helpers.length          = 0;
+  badges.length           = 0;
+  pendingHatSpawns.length = 0;
+  killFlashes.length      = 0;
+  // Spawn fresh L1 entities via existing helpers.
+  queueInitialHatSpawns();
+  spawnBadges();
+  // Player at FLOOR spawn position (matches resetForRespawn pattern).
+  player.x          = FLOOR.x + 60;
+  player.y          = FLOOR.y - 1;
+  player.vx         = 0;
+  player.vy         = 0;
+  player.facing     = 1;
+  player.onLadder   = false;
+  player.onGround   = true;
+  player.lastGroundedPlat = FLOOR;
+  player.invulnT    = 9999;        // immortal during demo (topped up each frame)
+  player.lives      = 99;          // belt-and-suspenders so death cascade can never reach 0
+  player.platformsReached = new Set([0]);
+  player.walkT      = 0;
+  player.shakeT     = 0;
+  player.ladderCooldown = 0;
+  player.wieldingBadge = false;
+  player.badgeWieldEndTime = 0;
+  player.badgePulseT = 0;
+  // Clear keys[] so any held real keys don't leak into demo.
+  for (const _k in keys) keys[_k] = false;
+  // Demo state.
+  attractDemoMode         = true;
+  attractDemoStartTime    = performance.now();
+  attractDemoNextEventIdx = 0;
+}
+
+// P-ATTRACT-2B: exit Phase 1 demo. Restore saved state, clear demo entities,
+// release any held synthetic keys. Called on Phase 1 → Phase 2 transition AND
+// on attract cancel (input event during demo). Idempotent.
+function exitAttractDemo() {
+  if (!attractDemoMode) return;
+  console.log('[ATTRACT-DEMO] Demo Phase 1 exit — restore real state.');
+  attractDemoMode = false;
+  // Clear synthetic keys[] so demo's last-held key doesn't bleed into real game.
+  for (const _k in keys) keys[_k] = false;
+  // Cleanup demo entities.
+  capsules.length         = 0;
+  hats.length             = 0;
+  helpers.length          = 0;
+  badges.length           = 0;
+  pendingHatSpawns.length = 0;
+  killFlashes.length      = 0;
+  // Restore saved state.
+  if (attractDemoSavedState) {
+    const s = attractDemoSavedState;
+    playerScore           = s.playerScore;
+    multiplier            = s.multiplier;
+    multiplierT           = s.multiplierT;
+    currentLevel          = s.currentLevel;
+    levelTime             = s.levelTime;
+    levelStartLockT       = s.levelStartLockT;
+    dkDifficultyEffective = s.dkDifficultyEffective;
+    climberCampT          = s.climberCampT;
+    throwCounter          = s.throwCounter;
+    capsulesReachedFloor  = s.capsulesReachedFloor;
+    capsuleSpawnT         = s.capsuleSpawnT;
+    capsuleSpawnInterval  = s.capsuleSpawnInterval;
+    bgmRotationIdx        = s.bgmRotationIdx;
+    for (const _c of s.capsules)         capsules.push(_c);
+    for (const _h of s.hats)             hats.push(_h);
+    for (const _h of s.helpers)          helpers.push(_h);
+    for (const _b of s.badges)           badges.push(_b);
+    for (const _p of s.pendingHatSpawns) pendingHatSpawns.push(_p);
+    for (const _f of s.killFlashes)      killFlashes.push(_f);
+    player.lives           = s.player_lives;
+    player.invulnT         = s.player_invulnT;
+    player.x               = s.player_x;
+    player.y               = s.player_y;
+    player.vx              = s.player_vx;
+    player.vy              = s.player_vy;
+    player.facing          = s.player_facing;
+    player.onLadder        = s.player_onLadder;
+    player.onGround        = s.player_onGround;
+    player.lastGroundedPlat = s.player_lastGroundedPlat;
+    player.wieldingBadge   = s.player_wieldingBadge;
+    player.badgeWieldEndTime = s.player_badgeWieldEndTime;
+    player.badgePulseT     = s.player_badgePulseT;
+    player.platformsReached = s.player_platformsReached;
+    player.walkT           = s.player_walkT;
+    player.shakeT          = s.player_shakeT;
+    player.ladderCooldown  = s.player_ladderCooldown;
+    attractDemoSavedState = null;
+  }
+}
+
+// P-ATTRACT-2B: fire any DEMO_INPUTS events whose timestamp <= elapsed ms since
+// demo start. Direct keys[] mutation — bypasses keydown handler chain (no audio
+// context init, no attract cancel feedback loop, no recording capture leakage).
+function _fireDemoInputsUpTo(elapsedMs) {
+  while (attractDemoNextEventIdx < DEMO_INPUTS.length &&
+         DEMO_INPUTS[attractDemoNextEventIdx].t <= elapsedMs) {
+    const _ev = DEMO_INPUTS[attractDemoNextEventIdx];
+    if      (_ev.type === 'keydown') keys[_ev.data.code] = true;
+    else if (_ev.type === 'keyup')   keys[_ev.data.code] = false;
+    attractDemoNextEventIdx++;
+  }
 }
 
 // K — initials entry input helpers. Used by both keyboard handler (in window.keydown) and the
@@ -4901,6 +5071,59 @@ let attractSourceState       = 'GAME_OVER'; // P-ATTRACT-1.5: state to restore o
 let attractRecording          = false;      // toggled by Ctrl+Shift+D, cleared on first death
 let attractRecordingInputs    = [];         // captured events: {t, type, data}
 let attractRecordingStartTime = 0;          // performance.now() at first GAMEPLAY entry; 0 = not yet started
+
+// P-ATTRACT-2B (May 3 2026): Phase 1 demo playback. DEMO_INPUTS captured by
+// Brian via P-ATTRACT-2A on his cleanest L1 run (36 events, ~17s, last event
+// keydown ArrowRight at t=16940 with no keyup — keys[] cleared on exit anyway).
+// Replayed each Phase 1 entry by writing keys[ev.data.code] directly. Last event
+// was the death moment in recording; demo continues with no input until force-exit
+// at attractTime=20s. Note: replay is NON-DETERMINISTIC vs Brian's original run
+// because RNG-driven systems (capsule throws, hat AI, etc.) diverge each playback.
+// Player invulnerable during demo (invulnT topped to 9999 each frame) so demo
+// can't die out of ATTRACT state. Score/lives snapshotted + restored on exit so
+// demo gameplay doesn't pollute real game state or highScores.
+const DEMO_INPUTS = [
+  { "t": 130, "type": "keyup", "data": { "code": "Space" } },
+  { "t": 1317, "type": "keydown", "data": { "code": "ArrowRight" } },
+  { "t": 3917, "type": "keydown", "data": { "code": "KeyA" } },
+  { "t": 3995, "type": "keyup", "data": { "code": "ArrowRight" } },
+  { "t": 5222, "type": "keydown", "data": { "code": "ArrowLeft" } },
+  { "t": 5300, "type": "keyup", "data": { "code": "KeyA" } },
+  { "t": 5765, "type": "keydown", "data": { "code": "KeyA" } },
+  { "t": 5809, "type": "keyup", "data": { "code": "ArrowLeft" } },
+  { "t": 6924, "type": "keydown", "data": { "code": "Space" } },
+  { "t": 7001, "type": "keyup", "data": { "code": "KeyA" } },
+  { "t": 7074, "type": "keydown", "data": { "code": "ArrowLeft" } },
+  { "t": 7145, "type": "keyup", "data": { "code": "Space" } },
+  { "t": 7294, "type": "keyup", "data": { "code": "ArrowLeft" } },
+  { "t": 7461, "type": "keydown", "data": { "code": "ArrowLeft" } },
+  { "t": 8054, "type": "keydown", "data": { "code": "KeyA" } },
+  { "t": 8271, "type": "keyup", "data": { "code": "ArrowLeft" } },
+  { "t": 9240, "type": "keydown", "data": { "code": "ArrowRight" } },
+  { "t": 9565, "type": "keyup", "data": { "code": "KeyA" } },
+  { "t": 9768, "type": "keydown", "data": { "code": "KeyA" } },
+  { "t": 10088, "type": "keyup", "data": { "code": "ArrowRight" } },
+  { "t": 11032, "type": "keydown", "data": { "code": "ArrowLeft" } },
+  { "t": 11102, "type": "keyup", "data": { "code": "KeyA" } },
+  { "t": 11305, "type": "keydown", "data": { "code": "Space" } },
+  { "t": 11628, "type": "keyup", "data": { "code": "ArrowLeft" } },
+  { "t": 11655, "type": "keyup", "data": { "code": "Space" } },
+  { "t": 12455, "type": "keydown", "data": { "code": "ArrowRight" } },
+  { "t": 13724, "type": "keyup", "data": { "code": "ArrowRight" } },
+  { "t": 13980, "type": "keydown", "data": { "code": "ArrowRight" } },
+  { "t": 14316, "type": "keyup", "data": { "code": "ArrowRight" } },
+  { "t": 14375, "type": "keydown", "data": { "code": "ArrowLeft" } },
+  { "t": 15736, "type": "keydown", "data": { "code": "ArrowRight" } },
+  { "t": 15769, "type": "keyup", "data": { "code": "ArrowLeft" } },
+  { "t": 16545, "type": "keyup", "data": { "code": "ArrowRight" } },
+  { "t": 16618, "type": "keydown", "data": { "code": "ArrowLeft" } },
+  { "t": 16935, "type": "keyup", "data": { "code": "ArrowLeft" } },
+  { "t": 16940, "type": "keydown", "data": { "code": "ArrowRight" } }
+];
+let attractDemoMode          = false;       // true during Phase 1 active demo
+let attractDemoStartTime     = 0;           // performance.now() at demo start (Phase 1 entry)
+let attractDemoNextEventIdx  = 0;           // next DEMO_INPUTS index to fire
+let attractDemoSavedState    = null;        // snapshot for restore on demo exit
 
 // 10-level parameter table. Index = currentLevel - 1 (clamped to 9 for L11+ which
 // reuses L10 row; winBonus extends linearly via getLevelParams).
@@ -7411,16 +7634,47 @@ function drawScoreBreakdown(opts) {
 // Phase 3 (40-60s): scene highlight captions (3 placeholders, 6.67s each)
 // Phase 4 (60-80s): leaderboard + credits
 
-// P-ATTRACT-1 Phase 1 — DEMO COMING SOON placeholder. Black bg, dark gold text.
-// Will be replaced in P-ATTRACT-2 with CPU-played L1 via DEMO_INPUTS JSON replay.
+// P-ATTRACT-2B Phase 1 — demo gameplay render. Replaces the P-ATTRACT-1 "DEMO
+// COMING SOON" placeholder. Calls drawGameplay() (the same renderer used by the
+// real GAMEPLAY case) so the demo looks indistinguishable from a real L1 run.
+// Top-right "DEMO" watermark + bottom hint distinguish from real play. Falls back
+// to the original placeholder if attractDemoMode is false (defensive — should
+// always be true in Phase 1, but guards against snapshot corruption / init race).
 function renderAttractPhase1() {
+  if (attractDemoMode) {
+    // Render the demo gameplay scene. drawGameplay reads globals (player,
+    // capsules, hats, etc.) — those are the demo entities since enterAttractDemo
+    // populated them. shakeAmt > 0 only during real death events; demo is
+    // invulnerable so shake is effectively never set.
+    drawGameplay(shakeAmt > 0);
+    // Trailing particles from any in-flight ragdoll (matches GAMEPLAY case body).
+    particles.forEach(p => {
+      ctx.globalAlpha = Math.max(p.life, 0);
+      ctx.fillStyle   = p.color;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+    // DEMO watermark — top-right, semi-transparent so it doesn't dominate.
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.font      = 'bold 12px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText('DEMO', W - 10, 20);
+    ctx.restore();
+    // Bottom-center hint (consistent with other ATTRACT phases).
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.font      = '12px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('PRESS ANY KEY TO PLAY', W / 2, H - 12);
+    return;
+  }
+  // Defensive fallback (should not normally render).
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = '#9a7a00';
   ctx.font = 'bold 24px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('DEMO COMING SOON', W / 2, H / 2);
-  // Press-to-start hint at bottom (consistent across all 4 phases).
+  ctx.fillText('DEMO PHASE 1', W / 2, H / 2);
   ctx.fillStyle = '#ffffff';
   ctx.font = '14px monospace';
   ctx.fillText('PRESS ANY KEY TO PLAY', W / 2, H - 30);
@@ -8878,13 +9132,26 @@ function loop(ts) {
       // Phase determination + loop wrap.
       if (attractTime >= ATTRACT_LOOP_LEN) {
         attractTime = 0;
+        // P-ATTRACT-2B: loop wrap re-enters Phase 1 demo from a fresh L1 state.
+        // exitAttractDemo first (defensive — should be no-op since Phase 4 just ended)
+        // then enterAttractDemo to snapshot+reset for the new cycle.
+        exitAttractDemo();
+        enterAttractDemo();
       }
       const _newPhase = Math.min(4, Math.floor(attractTime / ATTRACT_PHASE_LEN) + 1);
       if (_newPhase !== attractPhase) {
         console.log('[ATTRACT-PHASE]', { phase: _newPhase, time: +attractTime.toFixed(2) });
         attractPhase = _newPhase;
+        // P-ATTRACT-2B: Phase 1 → Phase 2 transition ends the demo and restores real state.
+        // Demo entities cleared; renderAttractPhase2 takes over with the roster ribbon.
+        if (attractPhase === 2 && attractDemoMode) {
+          exitAttractDemo();
+        }
       }
-      // Music: silent in Phase 1, free_world (loop:true, vol 0.4) for Phases 2-4.
+      // Music: silent in Phase 1 (P-ATTRACT-1 spec; demo runs without BGM for now —
+      // wiring BGM_ROTATION mid-attract conflicts with the manual free_world control
+      // in Phases 2-4. Tradeoff per implementation note in P-ATTRACT-2B Phase A).
+      // Phases 2-4: free_world (loop:true, vol 0.4) per existing P-ATTRACT-1 logic.
       const _musicShouldPlay = (attractPhase >= 2);
       if (_musicShouldPlay && !attractMusicPlaying) {
         if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.free_world) {
@@ -8898,6 +9165,29 @@ function loop(ts) {
           SOUND_LIBRARY.free_world.stop();
         }
         attractMusicPlaying = false;
+      }
+      // P-ATTRACT-2B: Phase 1 = demo gameplay. Run gameplay update mirror (subset of
+      // GAMEPLAY case body — same update calls, no Press-To-Start overlay). Player
+      // immortality refreshed each frame so a capsule contact never escapes ATTRACT.
+      // levelTime + DK ramp ticked as in real GAMEPLAY so DK throw cadence is correct.
+      if (attractPhase === 1 && attractDemoMode) {
+        // Top up invulnerability so demo can never die out of ATTRACT state.
+        player.invulnT = 9999;
+        // Fire pending DEMO_INPUTS up to current elapsed.
+        _fireDemoInputsUpTo(performance.now() - attractDemoStartTime);
+        // Tick gameplay (mirror of case 'GAMEPLAY' body, minus Press-To-Start UI).
+        levelTime += dt;
+        const _baseDiff = (getLevelParams().dkDifficulty || 1);
+        const _newDiff  = Math.min(_baseDiff + Math.floor(levelTime / DK_DIFFICULTY_RAMP_INTERVAL), 5);
+        if (_newDiff !== dkDifficultyEffective) dkDifficultyEffective = _newDiff;
+        updatePlayer(dt);
+        updateCapsules(dt);
+        updatePickup(dt);
+        updateHelpers(dt);
+        updatePelosi(dt);
+        updateHats(dt);
+        updateBadges(dt);
+        updateSS(dt);
       }
       // Dispatch to per-phase render.
       if      (attractPhase === 1) renderAttractPhase1();
