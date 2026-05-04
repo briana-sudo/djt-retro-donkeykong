@@ -2089,11 +2089,13 @@ window.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (GAME_KEYS.has(e.code)) e.preventDefault();
   ensureAudioContext();                                          // L — first-input audio gate (PC keyboard path)
-  // P-ATTRACT-1: ATTRACT cancels on ANY input → back to GAME_OVER. Input is
+  // P-ATTRACT-1: ATTRACT cancels on ANY input → restore source state. Input is
   // consumed (do NOT also start a game in same event — next input does that).
   // GAME_OVER input resets idle timer so each input restarts the 30s window.
+  // P-ATTRACT-1.5: also reset preGameplayIdleTime on INTRO_BLACK input (cold-boot path).
   if (state === 'ATTRACT') { exitAttract('input-keyboard'); e.preventDefault(); return; }
   if (state === 'GAME_OVER' && !initialsEntryActive) attractIdleTime = 0;
+  if (state === 'INTRO_BLACK' && !introHasPlayed) preGameplayIdleTime = 0;
   // P-DIFFICULTY-1-FIX BUG 8 — Ctrl+Shift+L debug level skip. GAMEPLAY-only;
   // increments currentLevel only. DOES NOT advance bgmRotationIdx (per Brian:
   // lets per-level audio testing stay isolated). e.repeat filter prevents
@@ -4326,32 +4328,50 @@ function restartFromGameOver() {
   resetForGameOver();
 }
 
-// P-ATTRACT-1: enter ATTRACT mode from GAME_OVER after ATTRACT_IDLE_THRESHOLD seconds idle.
+// P-ATTRACT-1: enter ATTRACT mode after ATTRACT_IDLE_THRESHOLD seconds idle.
 // Resets phase counters, kicks off the loop. Music starts at Phase 2 entry, not here (Phase 1 is silent).
+// P-ATTRACT-1.5: saves attractSourceState so exit can restore the originating state
+// (cold-boot returns to INTRO_BLACK, post-game-over to GAME_OVER).
 function enterAttract() {
-  console.log('[ATTRACT-ENTER]', { idleTime: +attractIdleTime.toFixed(2) });
+  attractSourceState = state;     // remember what we came from for exit restore
+  console.log('[ATTRACT-ENTER]', { idleTime: +attractIdleTime.toFixed(2), source: attractSourceState });
   state               = 'ATTRACT';
   stateT              = 0;
   attractTime         = 0;
   attractPhase        = 1;
   attractMusicPlaying = false;
   attractIdleTime     = 0;
+  preGameplayIdleTime = 0;
 }
 
-// P-ATTRACT-1: exit ATTRACT back to GAME_OVER. Restores free_world Howl defaults (loop:false,
-// volume:0.6) so the next intro doesn't inherit attract settings. Stops music if playing.
-// Called from input handlers (any input cancels) AND internally if state is forced elsewhere.
+// P-ATTRACT-1: exit ATTRACT. Restores free_world Howl defaults (loop:false, volume:0.6)
+// so the next intro doesn't inherit attract settings. Stops music if playing.
+// P-ATTRACT-1.5: restores to attractSourceState (cold-boot → INTRO_BLACK with stateT=0
+// so the natural intro chain resumes from the start; post-game-over → GAME_OVER).
+// Any INTRO_* source normalizes to INTRO_BLACK because mid-intro states have internal
+// sub-state (escalator position, stair progress) that wouldn't restore cleanly.
 function exitAttract(reason) {
-  console.log('[ATTRACT-EXIT]', { reason: reason || 'unknown', phase: attractPhase, time: +attractTime.toFixed(2) });
+  console.log('[ATTRACT-EXIT]', { reason: reason || 'unknown', phase: attractPhase, time: +attractTime.toFixed(2), restore: attractSourceState });
   if (typeof SOUND_LIBRARY !== 'undefined' && SOUND_LIBRARY.free_world) {
     SOUND_LIBRARY.free_world.stop();
     SOUND_LIBRARY.free_world.loop(false);
     SOUND_LIBRARY.free_world.volume(0.6);
   }
   attractMusicPlaying = false;
-  state               = 'GAME_OVER';
-  stateT              = 0;
+  // Normalize INTRO_* sources to INTRO_BLACK (mid-intro restoration would replay from
+  // a partial visual state). GAME_OVER restores cleanly. Anything else (defensive) → GAME_OVER.
+  if (typeof attractSourceState === 'string' && attractSourceState.indexOf('INTRO_') === 0) {
+    state  = 'INTRO_BLACK';
+    stateT = 0;
+  } else if (attractSourceState === 'GAME_OVER') {
+    state  = 'GAME_OVER';
+    stateT = 0;
+  } else {
+    state  = 'GAME_OVER';
+    stateT = 0;
+  }
   attractIdleTime     = 0;        // restart the 30s idle clock from this exit
+  preGameplayIdleTime = 0;
   attractTime         = 0;
 }
 
@@ -4748,9 +4768,11 @@ const ATTRACT_PHASE_LEN      = 20.0;        // sec per phase (4 phases × 20s = 
 const ATTRACT_LOOP_LEN       = 80.0;        // total loop length (4 × ATTRACT_PHASE_LEN)
 const ATTRACT_FREE_WORLD_VOL = 0.4;         // music volume during phases 2-4
 let attractIdleTime          = 0;           // counts up while !initialsEntryActive on GAME_OVER
+let preGameplayIdleTime      = 0;           // P-ATTRACT-1.5: counts up on INTRO_BLACK while !introHasPlayed && !audioContext
 let attractTime              = 0;           // 0..80 within ATTRACT loop
 let attractPhase             = 1;           // 1..4
 let attractMusicPlaying      = false;       // tracks free_world play/stop transitions to avoid restart-each-frame
+let attractSourceState       = 'GAME_OVER'; // P-ATTRACT-1.5: state to restore on exit (cold-boot returns to INTRO_BLACK, post-game-over to GAME_OVER)
 
 // 10-level parameter table. Index = currentLevel - 1 (clamped to 9 for L11+ which
 // reuses L10 row; winBonus extends linearly via getLevelParams).
@@ -6687,9 +6709,11 @@ canvas.addEventListener('pointerdown', e => {
   if (IS_MOBILE) return;                                         // PAUSE-MOBILE-TOUCHSTART-ONLY — touchstart owns mobile input
   e.preventDefault();
   ensureAudioContext();                                          // L — first-input audio gate (mobile primary path)
-  // P-ATTRACT-1: ATTRACT cancels on ANY input → GAME_OVER. GAME_OVER click resets idle timer.
+  // P-ATTRACT-1: ATTRACT cancels on ANY input → restore source state. GAME_OVER click resets idle timer.
+  // P-ATTRACT-1.5: also reset preGameplayIdleTime on INTRO_BLACK pointer (cold-boot path).
   if (state === 'ATTRACT') { exitAttract('input-pointer'); return; }
   if (state === 'GAME_OVER' && !initialsEntryActive) attractIdleTime = 0;
+  if (state === 'INTRO_BLACK' && !introHasPlayed) preGameplayIdleTime = 0;
   // N — speaker + pause icon hit-test (canvas-pixel coords). Icons render top-right; tap-zones
   // checked BEFORE state routing so the toggles work in any state where the icons are visible
   // (audio: any state; pause: only in pausable states, but the icon is rendered then).
@@ -6784,9 +6808,11 @@ canvas.addEventListener('touchstart', e=>{
                         // synthesized pointerdown — that's now handled by an unconditional
                         // IS_MOBILE early-return at the top of the pointerdown handler.
   ensureAudioContext(); // L — first-input audio gate (iOS Safari fallback path)
-  // P-ATTRACT-1: ATTRACT cancels on ANY input → GAME_OVER. GAME_OVER tap resets idle timer.
+  // P-ATTRACT-1: ATTRACT cancels on ANY input → restore source state. GAME_OVER tap resets idle timer.
+  // P-ATTRACT-1.5: also reset preGameplayIdleTime on INTRO_BLACK touch (cold-boot path).
   if (state === 'ATTRACT') { exitAttract('input-touch'); return; }
   if (state === 'GAME_OVER' && !initialsEntryActive) attractIdleTime = 0;
+  if (state === 'INTRO_BLACK' && !introHasPlayed) preGameplayIdleTime = 0;
   // N — speaker + pause icon hit-test before state routing.
   {
     const r0 = canvas.getBoundingClientRect();
@@ -7233,7 +7259,7 @@ const ATTRACT_ROSTER = [
   { sprite: 'dtj_idle',         name: 'DTJ',                   subtitle: 'MR. PRESIDENT' },
   { sprite: 'DNC_PLAYER',       name: 'DNC',                   subtitle: 'FIRST YEAR CONGRESSMAN' },   // procedural — drawDonkey
   { sprite: 'pelosi_idle',      name: 'PELOSI',                subtitle: 'TEARS UP THE CONSTITUTION' },
-  { sprite: 'barrel_endview',   name: 'CONSTITUTION CAPSULES', subtitle: '' },
+  { sprite: 'barrel_upright',   name: 'CONSTITUTION CAPSULES', subtitle: '' },   // P-ATTRACT-1.5: barrel_endview → barrel_upright (better visual fit + restores sprite-contract grep to 7)
   { sprite: 'eagle_fly',        name: 'EAGLE',                 subtitle: 'AMERICAN VOTERS' },
   { sprite: 'maga_hat',         name: 'MAGA HAT',              subtitle: '' },
   { sprite: 'fbi_badge',        name: 'FBI BADGE',             subtitle: 'CORRUPT COMEY FBI' },
@@ -7971,9 +7997,21 @@ function loop(ts) {
       // entire intro ran silently. With the gate, the user MUST gesture before the song
       // schedules; that gesture also creates audioContext.
       if(stateT>1.4 && audioContext){state='INTRO_TITLE';stateT=0; /* N-FIX-7 — escalator music now state-driven via tickBGM/computeDesiredMusic */ }
+      // P-ATTRACT-1.5 (May 3 2026): COLD-BOOT ATTRACT ENTRY. On first cold boot
+      // (introHasPlayed=false), if user never gestures, suppress the 5s silent fallback
+      // and tick preGameplayIdleTime instead. At ATTRACT_IDLE_THRESHOLD (30s), enter
+      // ATTRACT mode. Post-game-over restarts (introHasPlayed=true) keep the original
+      // 5s silent fallback so silent-test rigs / users without audio can still proceed.
+      else if (!introHasPlayed && !audioContext) {
+        preGameplayIdleTime += dt;
+        if (preGameplayIdleTime >= ATTRACT_IDLE_THRESHOLD) {
+          enterAttract();
+        }
+      }
       // N-FIX-5 BUG 2 — fallback: if user never gestures (e.g. silent test rig), still
       // advance after 5s so the intro doesn't deadlock. Music will be silent in that case.
-      else if(stateT>5.0 && !audioContext){state='INTRO_TITLE';stateT=0; /* silent advance — no audio gesture */ }
+      // P-ATTRACT-1.5: gated on introHasPlayed so cold-boot routes to ATTRACT instead.
+      else if(introHasPlayed && stateT>5.0 && !audioContext){state='INTRO_TITLE';stateT=0; /* silent advance — no audio gesture */ }
       break;
 
     case 'INTRO_TITLE':
